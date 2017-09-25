@@ -9,6 +9,12 @@ data/mpii/images
 *.idea/*
 test_transforms.py
 experiments
+data/mscoco/coco
+data/mscoco/keypoint
+*.m~
+miscs/posetrack
+miscs/h36m
+data/h36m
 
 __pycache__/
 *.py[cod]
