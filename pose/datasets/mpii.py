@@ -15,8 +15,10 @@ from pose.utils.transforms import *
 
 
 class Mpii(data.Dataset):
+    LABEL_POINTS_MAP = 0
+    LABEL_PARTS_MAP = 1
     def __init__(self, jsonfile, img_folder, inp_res=256, out_res=64, train=True, sigma=1,
-                 scale_factor=0.25, rot_factor=30):
+                 scale_factor=0.25, rot_factor=30, label_type=Mpii.LABEL_POINTS_MAP):
         self.img_folder = img_folder    # root image folders
         self.is_train = train           # training set or test set
         self.inp_res = inp_res
@@ -36,6 +38,7 @@ class Mpii(data.Dataset):
             else:
                 self.train.append(idx)
         self.mean, self.std = self._compute_mean()
+        self.label_type = label_type
 
     def _compute_mean(self):
         meanstd_file = './data/mpii/mean.pth.tar'
@@ -111,11 +114,16 @@ class Mpii(data.Dataset):
         # Generate ground truth
         tpts = pts.clone()
         target = torch.zeros(nparts, self.out_res, self.out_res)
-        for i in range(nparts):
-            # if tpts[i, 2] > 0: # This is evil!!
-            if tpts[i, 0] > 0:
-                tpts[i, 0:2] = to_torch(transform(tpts[i, 0:2]+1, c, s, [self.out_res, self.out_res], rot=r))
-                target[i] = draw_gaussian(target[i], tpts[i]-1, self.sigma)
+        if self.label_type = Mpii.LABEL_POINTS_MAP:
+            for i in range(nparts):
+                # if tpts[i, 2] > 0: # This is evil!!
+                if tpts[i, 0] > 0:
+                    tpts[i, 0:2] = to_torch(transform(tpts[i, 0:2]+1, c, s, [self.out_res, self.out_res], rot=r))
+                    target[i] = draw_gaussian(target[i], tpts[i]-1, self.sigma)
+        elif self.label_type = Mpii.LABEL_PARTS_MAP:
+            for i in range(nparts):
+                # TODO
+                pass
 
         # Meta info
         meta = {'index' : index, 'center' : c, 'scale' : s, 
