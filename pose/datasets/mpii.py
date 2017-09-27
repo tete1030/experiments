@@ -18,7 +18,7 @@ class Mpii(data.Dataset):
     LABEL_POINTS_MAP = 0
     LABEL_PARTS_MAP = 1
     def __init__(self, jsonfile, img_folder, inp_res=256, out_res=64, train=True, sigma=1,
-                 scale_factor=0.25, rot_factor=30, label_type='Gaussian', label_data=Mpii.LABEL_POINTS_MAP):
+                 scale_factor=0.25, rot_factor=30, label_type='Gaussian', label_data=LABEL_POINTS_MAP):
         self.img_folder = img_folder    # root image folders
         self.is_train = train           # training set or test set
         self.inp_res = inp_res
@@ -115,13 +115,13 @@ class Mpii(data.Dataset):
         # Generate ground truth
         tpts = pts.clone()
         target = torch.zeros(nparts, self.out_res, self.out_res)
-        if self.label_data = Mpii.LABEL_POINTS_MAP:
+        if self.label_data == Mpii.LABEL_POINTS_MAP:
             for i in range(nparts):
                 # if tpts[i, 2] > 0: # This is evil!!
                 if tpts[i, 0] > 0:
                     tpts[i, 0:2] = to_torch(transform(tpts[i, 0:2]+1, c, s, [self.out_res, self.out_res], rot=r))
                     target[i] = draw_labelmap(target[i], tpts[i]-1, self.sigma, type=self.label_type)
-        elif self.label_data = Mpii.LABEL_PARTS_MAP:
+        elif self.label_data == Mpii.LABEL_PARTS_MAP:
             for i in range(nparts):
                 # TODO
                 pass
