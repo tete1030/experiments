@@ -16,7 +16,8 @@ from pose.utils.transforms import *
 
 class Mpii(data.Dataset):
     def __init__(self, jsonfile, img_folder, inp_res=256, out_res=64, train=True, sigma=1,
-                 scale_factor=0.25, rot_factor=30, label_type='Gaussian'):
+                 scale_factor=0.25, rot_factor=30, label_type='Gaussian',
+                 meanstd_file='./data/mpii/mean.pth.tar'):
         self.img_folder = img_folder    # root image folders
         self.is_train = train           # training set or test set
         self.inp_res = inp_res
@@ -36,12 +37,12 @@ class Mpii(data.Dataset):
                 self.valid.append(idx)
             else:
                 self.train.append(idx)
+        self.meanstd_file = meanstd_file
         self.mean, self.std = self._compute_mean()
 
     def _compute_mean(self):
-        meanstd_file = './data/mpii/mean.pth.tar'
-        if isfile(meanstd_file):
-            meanstd = torch.load(meanstd_file)
+        if isfile(self.meanstd_file):
+            meanstd = torch.load(self.meanstd_file)
         else:
             mean = torch.zeros(3)
             std = torch.zeros(3)
@@ -57,7 +58,7 @@ class Mpii(data.Dataset):
                 'mean': mean,
                 'std': std,
                 }
-            torch.save(meanstd, meanstd_file)
+            torch.save(meanstd, self.meanstd_file)
         if self.is_train:
             print('    Mean: %.4f, %.4f, %.4f' % (meanstd['mean'][0], meanstd['mean'][1], meanstd['mean'][2]))
             print('    Std:  %.4f, %.4f, %.4f' % (meanstd['std'][0], meanstd['std'][1], meanstd['std'][2]))
