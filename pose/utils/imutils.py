@@ -84,6 +84,90 @@ def draw_labelmap(img, pt, sigma, type='Gaussian'):
     img[img_y[0]:img_y[1], img_x[0]:img_x[1]] = g[g_y[0]:g_y[1], g_x[0]:g_x[1]]
     return to_torch(img)
 
+def pillar_dist(A, B, P, base=0.):
+    """ line AB, point P, where each one is an array([x, y]) """
+    assert P.ndim >= 1 and A.ndim == 1 and B.ndim == 1
+    assert A.shape[-1] == P.shape[-1] and B.shape[-1] == P.shape[-1]
+    P = P.astype(np.float32)
+    if np.all(A == B):
+        return np.clip(np.linalg.norm(P - A, axis=-1) - base, 0., None).astype(np.float32)
+
+    if P.ndim == 1:
+        ori_shape = 0
+        P = P[np.newaxis]
+    else:
+        ori_shape = P.shape[:-1]
+        P = P.reshape((-1, P.shape[-1]))
+    # distance from P to line of A-B
+    ret = (np.abs(np.cross(A - B, P - B)) / np.linalg.norm(A - B)).astype(np.float32)
+    pt_eq = lambda x, y: (x==y).sum(axis=-1)==x.shape[-1]
+    # point P on A or B
+    P_on = pt_eq(A, P) | pt_eq(B, P)
+    ret[P_on] = 0
+    # angle between a vector and an array of vectors
+    vec_angle = lambda a, b: np.arccos(np.inner(a/(np.linalg.norm(a,axis=-1)[...,np.newaxis]),b/(np.linalg.norm(b,axis=-1)[...,np.newaxis])).clip(-1.0, 1.0))
+    P_other = ~P_on
+    # point P on A side
+    A_side = P_other.copy()
+    A_side[P_other] = (vec_angle(P[P_other] - A, B - A) > np.pi/2)
+    ret[A_side] = np.linalg.norm((P[A_side] - A), axis=-1)
+    # point P on B side
+    B_side = P_other.copy()
+    B_side[P_other] = (vec_angle(P[P_other] - B, A - B) > np.pi/2)
+    ret[B_side] = np.linalg.norm((P[B_side] - B), axis=-1)
+    assert np.all(~(A_side & B_side))
+    # if np.all(A == P) or np.all(B == P):
+    #     ret = 0
+    # elif np.arccos(np.dot((P - A) / np.linalg.norm(P - A), (B - A) / np.linalg.norm(B - A))) > pi / 2:
+    #     ret = np.linalg.norm(P - A)
+    # elif np.arccos(np.dot((P - B) / np.linalg.norm(P - B), (A - B) / np.linalg.norm(A - B))) > pi / 2:
+    #     ret = np.linalg.norm(P - B)
+    # else:
+    #     ret = np.abs(np.dot(A - B, P[::-1]) + np.det([A, B])) / np.linalg.norm(A - B)
+    ret = np.clip(ret - base, 0., None)
+    if ori_shape == 0:
+        ret = ret[0]
+    else:
+        ret = ret.reshape(ori_shape)
+    return ret
+
+def draw_labelmap_ex(img, pts, scale, sigma, shape='pillar'):
+    assert shape in ['pillar', 'circle']
+    img = to_numpy(img)
+    pts = to_numpy(pts)
+
+    if shape == 'pillar':
+        pa = pts[0]
+        pb = pts[1]
+        left = max(int(round(min(pa[0] - 3*sigma - scale, pb[0] - 3*sigma - scale))), 0)
+        top = max(int(round(min(pa[1] - 3*sigma - scale, pb[1] - 3*sigma - scale))), 0)
+        width = min(int(round(max(pa[0] + 3*sigma + scale, pb[0] + 3*sigma + scale))), img.shape[1]) - left
+        height = min(int(round(max(pa[1] + 3*sigma + scale, pb[1] + 3*sigma + scale))), img.shape[0]) - top
+        dist_func = lambda x: pillar_dist(pa, pb, x, base=scale)
+    elif shape == 'circle':
+        center = pts[0]
+        left = max(int(round(center[0] - 3*sigma - scale)), 0)
+        top = max(int(round(center[1] - 3*sigma - scale)), 0)
+        width = min(int(round(center[0] + 3*sigma + scale)), img.shape[1]) - left
+        height = min(int(round(center[1] + 3*sigma + scale)), img.shape[0]) - top
+        dist_func = lambda x: (np.linalg.norm(x - center, axis=-1) - scale).clip(0.)
+
+    if width > 0 and height > 0:
+        # [[1, 0]]: from (y,x) coord to (x,y) coord
+        mesh = np.mgrid[0:height, 0:width].astype(np.float32)[[1, 0]]
+        # 0.5: align pos to center of a pixel
+        mesh = mesh.transpose(1, 2, 0) + np.array([left, top], dtype=np.float32) + 0.5
+        dist = dist_func(mesh)
+        dist[dist > 3*sigma] = np.inf
+        if np.isclose(sigma, 0):
+            g = np.isclose(dist, 0).astype(np.float32)
+        else:
+            g = np.exp(- dist ** 2 / (2 * sigma ** 2))
+        img[top:top+height, left:left+width] = g
+
+    return to_torch(img)
+
+
 # =============================================================================
 # Helpful display functions
 # =============================================================================

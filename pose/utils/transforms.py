@@ -12,7 +12,7 @@ from .imutils import *
 
 def color_normalize(x, mean, std):
     if x.size(0) == 1:
-        x = x.repeat(3, x.size(1), x.size(2))
+        x = x.repeat(3, 1, 1)
 
     for t, m, s in zip(x, mean, std):
         t.sub_(m)
@@ -111,9 +111,18 @@ def transform(pt, center, scale, res, invert=0, rot=0):
     t = get_transform(center, scale, res, rot=rot)
     if invert:
         t = np.linalg.inv(t)
-    new_pt = np.array([pt[0] - 1, pt[1] - 1, 1.]).T
+    if torch.is_tensor(pt):
+        pt = to_numpy(pt)
+    elif isinstance(pt, (list, tuple, np.ndarray)):
+        pt = np.array(pt)
+    pt = pt.astype(float)
+    assert pt.ndim == 1 or pt.ndim == 2
+    if pt.ndim == 1:
+        new_pt = np.array([pt[0], pt[1], 1.]).T
+    elif pt.ndim == 2:
+        new_pt = np.c_[pt[:, 0:2], np.ones((pt.shape[0], 1))].T
     new_pt = np.dot(t, new_pt)
-    return new_pt[:2].astype(int) + 1
+    return new_pt[:2].round().astype(int)
 
 
 def transform_preds(coords, center, scale, res):

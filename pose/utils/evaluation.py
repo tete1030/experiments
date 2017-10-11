@@ -18,15 +18,15 @@ def get_preds(scores):
     maxval, idx = torch.max(scores.view(scores.size(0), scores.size(1), -1), 2)
 
     maxval = maxval.view(scores.size(0), scores.size(1), 1)
-    idx = idx.view(scores.size(0), scores.size(1), 1) + 1
+    idx = idx.view(scores.size(0), scores.size(1), 1)
 
     preds = idx.repeat(1, 1, 2).float()
 
-    preds[:,:,0] = (preds[:,:,0] - 1) % scores.size(3) + 1
-    preds[:,:,1] = torch.floor((preds[:,:,1] - 1) / scores.size(2)) + 1
+    preds[:,:,0] = preds[:,:,0] % scores.size(3)
+    preds[:,:,1] = torch.floor(preds[:,:,1] / scores.size(3))
 
     pred_mask = maxval.gt(0).repeat(1, 1, 2).float()
-    preds *= pred_mask
+    preds = (preds + 1) * pred_mask - 1
     return preds
 
 def calc_dists(preds, target, normalize):
@@ -35,7 +35,7 @@ def calc_dists(preds, target, normalize):
     dists = torch.zeros(preds.size(1), preds.size(0))
     for n in range(preds.size(0)):
         for c in range(preds.size(1)):
-            if target[n,c,0] > 1 and target[n, c, 1] > 1:
+            if target[n, c, 0] >= 0 and target[n, c, 1] >= 0:
                 dists[c, n] = torch.dist(preds[n,c,:], target[n,c,:])/normalize[n]
             else:
                 dists[c, n] = -1
@@ -77,12 +77,12 @@ def final_preds(output, center, scale, res):
     # pose-processing
     for n in range(coords.size(0)):
         for p in range(coords.size(1)):
-            hm = output[n][p]
-            px = int(math.floor(coords[n][p][0]))
-            py = int(math.floor(coords[n][p][1]))
-            if px > 1 and px < res[0] and py > 1 and py < res[1]:
-                diff = torch.Tensor([hm[py - 1][px] - hm[py - 1][px - 2], hm[py][px - 1]-hm[py - 2][px - 1]])
-                coords[n][p] += diff.sign() * .25
+            hm = output[n, p]
+            px = int(math.floor(coords[n, p, 0]))
+            py = int(math.floor(coords[n, p, 1]))
+            if px >= 0 and px < res[0] and py >= 0 and py < res[1]:
+                diff = torch.Tensor([hm[py, px+1] - hm[py, px-1], hm[py+1, px] - hm[py-1, px]])
+                coords[n, p] += diff.sign() * .25
     coords += 0.5
     preds = coords.clone()
 
