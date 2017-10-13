@@ -5,7 +5,7 @@ BLOCK=1
 EPOCHS=220
 TRAINBATCH=12
 TESTBATCH=12
-WORKER=20
+WORKER=32
 LR=5e-4
 # RESUME="--resume checkpoint/mpii/model_best.pth.tar"
 # EVALUATE="--evaluate"
@@ -22,6 +22,7 @@ CUDA_VISIBLE_DEVICES=${ID} python experiments/hg_part.py \
    -j ${WORKER} \
    --lr ${LR} \
    --schedule 150 175 200 \
+   --no-hd \
    ${RESUME} \
    ${EVALUATE}
 

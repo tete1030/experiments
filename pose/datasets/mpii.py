@@ -77,7 +77,7 @@ seg_sigma_ratios = [head_sigma_ratio] + \
                    [shoulder_sigma_ratio] * 2 + [side_sigma_ratio] * 2 + \
                    [TP_sigma_ratio] + [LRhip_sigma_ratio]
 
-# disable sigma
+# disable sigma (for test)
 if False:
     seg_sigma_ratios = [0.] * len(seg_sigma_ratios)
 
@@ -235,7 +235,6 @@ class Mpii(data.Dataset):
         # Meta info
         meta = {'index' : index, 'center' : c, 'scale' : s, 
         'pts' : pts, 'tpts' : tpts}
-
         return inp, target, meta
 
     def __len__(self):

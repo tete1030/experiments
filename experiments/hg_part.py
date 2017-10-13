@@ -18,24 +18,30 @@ from pose.utils.misc import save_checkpoint, save_pred, adjust_learning_rate
 from pose.utils.osutils import mkdir_p, isfile, isdir, join
 from pose.utils.imutils import batch_with_heatmap
 from pose.utils.transforms import fliplr, flip_back
+import pose.utils.config as config
 import pose.models as models
 import pose.datasets as datasets
 
+# Hyperdash
 from hyperdash import Experiment
+config.hyperdash_exp = None
+
+# Handle sigint
 import signal
+config.sigint_triggered = False
+def sigint_handler(signal, frame):
+    config.sigint_triggered = True
+    print("SIGINT Detected")
+
+# Profiling
+import cProfile, pstats, StringIO
+config.profiler = None
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
 
 best_acc = 0
-
-sigint_triggered = False
-def sigint_handler(signal, frame):
-    global sigint_triggered
-    sigint_triggered = True
-
-hyperdash_exp = None
 
 def main(args):
     global best_acc
@@ -96,8 +102,12 @@ def main(args):
 
     lr = args.lr
 
-    global hyperdash_exp
-    hyperdash_exp = Experiment("Hourglass-Part")
+    if args.hyperdash:
+        config.hyperdash_exp = Experiment("Hourglass-Part")
+
+    if args.profile:
+        config.profiler = cProfile.Profile()
+
     signal.signal(signal.SIGINT, sigint_handler)
     for epoch in range(args.start_epoch, args.epochs):
         lr = adjust_learning_rate(optimizer, epoch, lr, args.schedule, args.gamma)
@@ -113,14 +123,14 @@ def main(args):
         # train for one epoch
         train_loss, train_acc = train(train_loader, model, criterion, optimizer, args.debug, args.flip)
 
-        if sigint_triggered:
+        if config.sigint_triggered:
             break
 
         # evaluate on validation set
         valid_loss, valid_acc = validate(val_loader, model, criterion, args.num_classes,
                                                       args.debug, args.flip)
 
-        if sigint_triggered:
+        if config.sigint_triggered:
             break
 
         # TODO
@@ -140,10 +150,18 @@ def main(args):
             'optimizer' : optimizer.state_dict(),
         }, predictions, is_best, checkpoint=args.checkpoint)
 
-        if sigint_triggered:
+        if config.sigint_triggered:
             break
 
-    hyperdash_exp.end()
+    # if config.profiler:
+    #     s = StringIO.StringIO()
+    #     ps = pstats.Stats(config.profiler, stream=s).sort_stats('cumulative')
+    #     ps.print_stats()
+    #     print(s.getvalue())
+
+    if config.hyperdash_exp:
+        config.hyperdash_exp.end()
+
     logger.close()
     logger.plot(['Train Acc', 'Val Acc'])
     savefig(os.path.join(args.checkpoint, 'log.eps'))
@@ -162,6 +180,10 @@ def train(train_loader, model, criterion, optimizer, debug=False, flip=True):
 
     gt_win, pred_win = None, None
     bar = Bar('Processing', max=len(train_loader))
+
+    # if config.profiler:
+    #     config.profiler.enable()
+
     for i, (inputs, target, meta) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
@@ -233,12 +255,14 @@ def train(train_loader, model, criterion, optimizer, debug=False, flip=True):
                   )
         print(loginfo)
 
-        hyperdash_exp.metric("accuracy", acces.avg, log=False)
-        hyperdash_exp.metric("loss", losses.avg, log=False)
+        if config.hyperdash_exp:
+            config.hyperdash_exp.metric("accuracy", acces.avg, log=False)
+            config.hyperdash_exp.metric("loss", losses.avg, log=False)
 
-        if sigint_triggered:
+        if config.sigint_triggered:
             break
 
+    # if config.profiler: config.profiler.disable()
     # bar.finish()
     return losses.avg, acces.avg
 
@@ -339,7 +363,7 @@ def validate(val_loader, model, criterion, num_classes, debug=False, flip=True):
                   )
         print(loginfo)
 
-        if sigint_triggered:
+        if config.sigint_triggered:
             break
 
     # bar.finish()
@@ -402,7 +426,10 @@ if __name__ == '__main__':
                         help='evaluate model on validation set')
     parser.add_argument('-d', '--debug', dest='debug', action='store_true',
                         help='show intermediate results')
-
+    parser.add_argument('--no-hd', dest='hyperdash', action='store_false',
+                        help='disable hyperdash')
+    parser.add_argument('--profile', action='store_true',
+                        help='profile training')
 
     # import ipdb; ipdb.set_trace()
     main(parser.parse_args())
