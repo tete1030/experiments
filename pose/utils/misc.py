@@ -41,6 +41,9 @@ def save_checkpoint(state, preds, is_best, checkpoint='checkpoint', filename='ch
         if preds:
             scipy.io.savemat(os.path.join(checkpoint, 'preds_best.mat'), mdict={'preds' : preds})
 
+def detect_checkpoint(checkpoint='checkpoint', filename='checkpoint.pth.tar'):
+    return os.path.isfile(os.path.join(checkpoint, filename)) or \
+           os.path.isfile(os.path.join(checkpoint, 'model_best.pth.tar'))
 
 def save_pred(preds, checkpoint='checkpoint', filename='preds_valid.mat'):
     preds = to_numpy(preds)

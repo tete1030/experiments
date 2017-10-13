@@ -1,6 +1,7 @@
 from __future__ import print_function, absolute_import
 
 import os
+import sys
 import argparse
 import time
 import matplotlib.pyplot as plt
@@ -14,7 +15,7 @@ import torchvision.datasets as datasets
 from pose import Bar
 from pose.utils.logger import Logger, savefig
 from pose.utils.evaluation import part_accuracy, accuracy, AverageMeter, final_preds
-from pose.utils.misc import save_checkpoint, save_pred, adjust_learning_rate
+from pose.utils.misc import save_checkpoint, detect_checkpoint, save_pred, adjust_learning_rate
 from pose.utils.osutils import mkdir_p, isfile, isdir, join
 from pose.utils.imutils import batch_with_heatmap
 from pose.utils.transforms import fliplr, flip_back
@@ -61,6 +62,7 @@ def main(args):
                                     weight_decay=args.weight_decay)
 
     title = 'mpii-' + args.arch
+    logger = None
     if args.resume:
         if isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
@@ -71,10 +73,17 @@ def main(args):
             optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
-            logger = Logger(join(args.checkpoint, 'log.txt'), title=title, resume=True)
+            if isfile(join(args.checkpoint, 'log.txt')):
+                logger = Logger(join(args.checkpoint, 'log.txt'), title=title, resume=True)
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
-    else:        
+            sys.exit(1)
+    else:
+        if isfile(join(args.checkpoint, 'log.txt')) or detect_checkpoint(checkpoint=args.checkpoint):
+            print("Already existed log.txt or checkpoint in %s, using --resume or moving them" % args.checkpoint)
+            sys.exit(1)
+            
+    if not logger:        
         logger = Logger(join(args.checkpoint, 'log.txt'), title=title)
         logger.set_names(['Epoch', 'LR', 'Train Loss', 'Val Loss', 'Train Acc', 'Val Acc'])
 
@@ -121,13 +130,13 @@ def main(args):
         #     val_loader.dataset.sigma *=  args.sigma_decay
 
         # train for one epoch
-        train_loss, train_acc = train(train_loader, model, criterion, optimizer, args.debug, args.flip)
+        train_loss, train_acc = train(train_loader, model, criterion, optimizer, epoch, args.debug, args.flip)
 
         if config.sigint_triggered:
             break
 
         # evaluate on validation set
-        valid_loss, valid_acc = validate(val_loader, model, criterion, args.num_classes,
+        valid_loss, valid_acc = validate(val_loader, model, criterion, args.num_classes, epoch,
                                                       args.debug, args.flip)
 
         if config.sigint_triggered:
@@ -167,7 +176,7 @@ def main(args):
     savefig(os.path.join(args.checkpoint, 'log.eps'))
 
 
-def train(train_loader, model, criterion, optimizer, debug=False, flip=True):
+def train(train_loader, model, criterion, optimizer, epoch, debug=False, flip=True):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -243,8 +252,10 @@ def train(train_loader, model, criterion, optimizer, debug=False, flip=True):
         #             acc=acces.avg
         #             )
         # bar.next()
-        loginfo = '({batch}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
+        loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
+                  epoch=epoch,
                   batch=i + 1,
+                  size_width=len(str(len(train_loader))),
                   size=len(train_loader),
                   data=data_time.val,
                   bt=batch_time.val,
@@ -267,7 +278,7 @@ def train(train_loader, model, criterion, optimizer, debug=False, flip=True):
     return losses.avg, acces.avg
 
 
-def validate(val_loader, model, criterion, num_classes, debug=False, flip=True):
+def validate(val_loader, model, criterion, num_classes, epoch, debug=False, flip=True):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -351,8 +362,10 @@ def validate(val_loader, model, criterion, num_classes, debug=False, flip=True):
         #             acc=acces.avg
         #             )
         # bar.next()
-        loginfo = '({batch}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
+        loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
+                  epoch=epoch,
                   batch=i + 1,
+                  size_width=len(str(len(val_loader))),
                   size=len(val_loader),
                   data=data_time.val,
                   bt=batch_time.avg,
