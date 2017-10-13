@@ -13,7 +13,7 @@ import torchvision.datasets as datasets
 
 from pose import Bar
 from pose.utils.logger import Logger, savefig
-from pose.utils.evaluation import accuracy, AverageMeter, final_preds
+from pose.utils.evaluation import part_accuracy, accuracy, AverageMeter, final_preds
 from pose.utils.misc import save_checkpoint, save_pred, adjust_learning_rate
 from pose.utils.osutils import mkdir_p, isfile, isdir, join
 from pose.utils.imutils import batch_with_heatmap
@@ -21,37 +21,39 @@ from pose.utils.transforms import fliplr, flip_back
 import pose.models as models
 import pose.datasets as datasets
 
+from hyperdash import Experiment
+import signal
+
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
 
-idx = [1,2,3,4,5,6,11,12,15,16]
-
 best_acc = 0
 
+sigint_triggered = False
+def sigint_handler(signal, frame):
+    global sigint_triggered
+    sigint_triggered = True
+
+hyperdash_exp = None
 
 def main(args):
     global best_acc
 
-    # create checkpoint dir
     if not isdir(args.checkpoint):
         mkdir_p(args.checkpoint)
 
-    # create model
     print("==> creating model '{}', stacks={}, blocks={}".format(args.arch, args.stacks, args.blocks))
     model = models.__dict__[args.arch](num_stacks=args.stacks, num_blocks=args.blocks, num_classes=args.num_classes)
 
     model = torch.nn.DataParallel(model).cuda()
 
-    # define loss function (criterion) and optimizer
+    # loss function and optimizer
     criterion = torch.nn.MSELoss(size_average=True).cuda()
+    optimizer = torch.optim.RMSprop(model.parameters(),
+                                    lr=args.lr,
+                                    weight_decay=args.weight_decay)
 
-    optimizer = torch.optim.RMSprop(model.parameters(), 
-                                lr=args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
-
-    # optionally resume from a checkpoint
     title = 'mpii-' + args.arch
     if args.resume:
         if isfile(args.resume):
@@ -70,44 +72,59 @@ def main(args):
         logger = Logger(join(args.checkpoint, 'log.txt'), title=title)
         logger.set_names(['Epoch', 'LR', 'Train Loss', 'Val Loss', 'Train Acc', 'Val Acc'])
 
-    cudnn.benchmark = True
-    print('    Total params: %.2fM' % (sum(p.numel() for p in model.parameters())/1000000.0))
-
     # Data loading code
     train_loader = torch.utils.data.DataLoader(
         datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
-                      sigma=args.sigma, label_type=args.label_type),
+                      sigma=args.sigma, label_data=datasets.Mpii.LABEL_PARTS_MAP,
+                      label_type=args.label_type),
         batch_size=args.train_batch, shuffle=True,
         num_workers=args.workers, pin_memory=True)
     
     val_loader = torch.utils.data.DataLoader(
         datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
-                      sigma=args.sigma, label_type=args.label_type, train=False),
+                      sigma=args.sigma, label_data=datasets.Mpii.LABEL_PARTS_MAP,
+                      label_type=args.label_type, train=False),
         batch_size=args.test_batch, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
-    if args.evaluate:
-        print('\nEvaluation only') 
-        loss, acc, predictions = validate(val_loader, model, criterion, args.num_classes, args.debug, args.flip)
-        save_pred(predictions, checkpoint=args.checkpoint)
-        return
+    # TODO: save_pred not ready
+    # if args.evaluate:
+    #     print('\nEvaluation only') 
+    #     loss, acc, predictions = validate(val_loader, model, criterion, args.num_classes, args.debug, args.flip)
+    #     save_pred(predictions, checkpoint=args.checkpoint)
+    #     return
 
     lr = args.lr
+
+    global hyperdash_exp
+    hyperdash_exp = Experiment("Hourglass-Part")
+    signal.signal(signal.SIGINT, sigint_handler)
     for epoch in range(args.start_epoch, args.epochs):
         lr = adjust_learning_rate(optimizer, epoch, lr, args.schedule, args.gamma)
+        
         print('\nEpoch: %d | LR: %.8f' % (epoch + 1, lr))
 
-        # decay sigma
-        if args.sigma_decay > 0:
-            train_loader.dataset.sigma *=  args.sigma_decay
-            val_loader.dataset.sigma *=  args.sigma_decay
+        # TODO: sigma_decay not used
+        # # decay sigma
+        # if args.sigma_decay > 0:
+        #     train_loader.dataset.sigma *=  args.sigma_decay
+        #     val_loader.dataset.sigma *=  args.sigma_decay
 
         # train for one epoch
         train_loss, train_acc = train(train_loader, model, criterion, optimizer, args.debug, args.flip)
 
+        if sigint_triggered:
+            break
+
         # evaluate on validation set
-        valid_loss, valid_acc, predictions = validate(val_loader, model, criterion, args.num_classes,
+        valid_loss, valid_acc = validate(val_loader, model, criterion, args.num_classes,
                                                       args.debug, args.flip)
+
+        if sigint_triggered:
+            break
+
+        # TODO
+        predictions = None
 
         # append logger file
         logger.append([epoch + 1, lr, train_loss, valid_loss, train_acc, valid_acc])
@@ -123,6 +140,10 @@ def main(args):
             'optimizer' : optimizer.state_dict(),
         }, predictions, is_best, checkpoint=args.checkpoint)
 
+        if sigint_triggered:
+            break
+
+    hyperdash_exp.end()
     logger.close()
     logger.plot(['Train Acc', 'Val Acc'])
     savefig(os.path.join(args.checkpoint, 'log.eps'))
@@ -155,7 +176,9 @@ def train(train_loader, model, criterion, optimizer, debug=False, flip=True):
         loss = criterion(output[0], target_var)
         for j in range(1, len(output)):
             loss += criterion(output[j], target_var)
-        acc = accuracy(score_map, target, idx)
+
+        # TODO: show chn_acc
+        acc = part_accuracy(score_map, target)
 
         if debug: # visualize groundtruth and predictions
             gt_batch_img = batch_with_heatmap(inputs, target)
@@ -186,20 +209,37 @@ def train(train_loader, model, criterion, optimizer, debug=False, flip=True):
         batch_time.update(time.time() - end)
         end = time.time()
 
-        # plot progress
-        bar.suffix  = '({batch}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
-                    batch=i + 1,
-                    size=len(train_loader),
-                    data=data_time.val,
-                    bt=batch_time.val,
-                    total=bar.elapsed_td,
-                    eta=bar.eta_td,
-                    loss=losses.avg,
-                    acc=acces.avg
-                    )
-        bar.next()
+        # # plot progress
+        # bar.suffix  = '({batch}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
+        #             batch=i + 1,
+        #             size=len(train_loader),
+        #             data=data_time.val,
+        #             bt=batch_time.val,
+        #             total=bar.elapsed_td,
+        #             eta=bar.eta_td,
+        #             loss=losses.avg,
+        #             acc=acces.avg
+        #             )
+        # bar.next()
+        loginfo = '({batch}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
+                  batch=i + 1,
+                  size=len(train_loader),
+                  data=data_time.val,
+                  bt=batch_time.val,
+                  total=bar.elapsed_td,
+                  eta=bar.eta_td,
+                  loss=losses.avg,
+                  acc=acces.avg
+                  )
+        print(loginfo)
 
-    bar.finish()
+        hyperdash_exp.metric("accuracy", acces.avg, log=False)
+        hyperdash_exp.metric("loss", losses.avg, log=False)
+
+        if sigint_triggered:
+            break
+
+    # bar.finish()
     return losses.avg, acces.avg
 
 
@@ -239,18 +279,19 @@ def validate(val_loader, model, criterion, num_classes, debug=False, flip=True):
             flip_output = flip_back(flip_output_var[-1].data.cpu())
             score_map += flip_output
 
-
-
         loss = 0
         for o in output:
             loss += criterion(o, target_var)
-        acc = accuracy(score_map, target.cpu(), idx)
+
+        # TODO: show channel accuracy
+        acc = part_accuracy(score_map, target.cpu())
 
         # generate predictions
-        preds = final_preds(score_map, meta['center'], meta['scale'], [64, 64])
-        for n in range(score_map.size(0)):
-            predictions[meta['index'][n], :, :] = preds[n, :, :]
-
+        # TODO: final_preds
+        # preds = final_preds(score_map, meta['center'], meta['scale'], [64, 64])
+        # for n in range(score_map.size(0)):
+        #    predictions[meta['index'][n], :, :] = preds[n, :, :]
+        
 
         if debug:
             gt_batch_img = batch_with_heatmap(inputs, target)
@@ -274,21 +315,36 @@ def validate(val_loader, model, criterion, num_classes, debug=False, flip=True):
         batch_time.update(time.time() - end)
         end = time.time()
 
-        # plot progress
-        bar.suffix  = '({batch}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
-                    batch=i + 1,
-                    size=len(val_loader),
-                    data=data_time.val,
-                    bt=batch_time.avg,
-                    total=bar.elapsed_td,
-                    eta=bar.eta_td,
-                    loss=losses.avg,
-                    acc=acces.avg
-                    )
-        bar.next()
+        # # plot progress
+        # bar.suffix  = '({batch}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
+        #             batch=i + 1,
+        #             size=len(val_loader),
+        #             data=data_time.val,
+        #             bt=batch_time.avg,
+        #             total=bar.elapsed_td,
+        #             eta=bar.eta_td,
+        #             loss=losses.avg,
+        #             acc=acces.avg
+        #             )
+        # bar.next()
+        loginfo = '({batch}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
+                  batch=i + 1,
+                  size=len(val_loader),
+                  data=data_time.val,
+                  bt=batch_time.avg,
+                  total=bar.elapsed_td,
+                  eta=bar.eta_td,
+                  loss=losses.avg,
+                  acc=acces.avg
+                  )
+        print(loginfo)
 
-    bar.finish()
-    return losses.avg, acces.avg, predictions
+        if sigint_triggered:
+            break
+
+    # bar.finish()
+    return losses.avg, acces.avg # , predictions
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
@@ -297,14 +353,14 @@ if __name__ == '__main__':
                         choices=model_names,
                         help='model architecture: ' +
                             ' | '.join(model_names) +
-                            ' (default: resnet18)')
-    parser.add_argument('-s', '--stacks', default=8, type=int, metavar='N',
+                            ' (default: hg)')
+    parser.add_argument('-s', '--stacks', default=1, type=int, metavar='N',
                         help='Number of hourglasses to stack')
     parser.add_argument('--features', default=256, type=int, metavar='N',
                         help='Number of features in the hourglass')
     parser.add_argument('-b', '--blocks', default=1, type=int, metavar='N',
                         help='Number of residual modules at each location in the hourglass')
-    parser.add_argument('--num-classes', default=16, type=int, metavar='N',
+    parser.add_argument('--num-classes', default=15, type=int, metavar='N',
                         help='Number of keypoints')
     # Training strategy
     parser.add_argument('-j', '--workers', default=1, type=int, metavar='N',
@@ -348,4 +404,5 @@ if __name__ == '__main__':
                         help='show intermediate results')
 
 
+    # import ipdb; ipdb.set_trace()
     main(parser.parse_args())

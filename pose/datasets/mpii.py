@@ -42,7 +42,7 @@ lower_arm_scale_ratio = 4
 lower_arm_sigma_ratio = 0.5
 
 upper_leg_segs = [5,7]
-upper_leg_scale_ratio = 7
+upper_leg_scale_ratio = 6
 upper_leg_sigma_ratio = 0.7
 
 lower_leg_segs = [6,8]
@@ -198,8 +198,8 @@ class Mpii(data.Dataset):
             for isi, si in enumerate(seg_idx):
                 if np.intersect1d(np.array(si), not_annoted).size > 0:
                     # TODO: #NI2 missing one solution
-                    print("missing one")
-                    print(si)
+                    # print("missing one")
+                    # print(si)
                     continue
                 if isi == head_seg:
                     head_top = coords[si[0]]

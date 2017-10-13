@@ -69,7 +69,25 @@ def accuracy(output, target, idxs, thr=0.5):
             
     if cnt != 0:  
         acc[0] = avg_acc / cnt
-    return acc
+ 
+def part_accuracy(output, target, score_thr=0.5, IoU_thr=0.5):
+    ''' Calculate the accuracy of body part prediction, similar to IoU'''
+    preds = (output > score_thr)
+    gts = (target > score_thr)
+    union = preds | gts
+    its = preds & gts
+    
+    its_sum = its.sum(3).sum(2)
+    union_sum = union.sum(3).sum(2)
+    empty_idx = (union_sum == 0)
+    its_sum[empty_idx] = 1
+    union_sum[empty_idx] = 1
+    IoU = its_sum.float() / union_sum.float()
+    correct = (IoU > IoU_thr).float()
+    chn_acc = correct.mean(0)
+    avg_acc = correct.mean()
+    
+    return torch.cat([torch.FloatTensor([avg_acc]), chn_acc])
 
 def final_preds(output, center, scale, res):
     coords = get_preds(output) # float type
