@@ -252,7 +252,7 @@ def train(train_loader, model, criterion, optimizer, epoch, debug=False, flip=Tr
         #             acc=acces.avg
         #             )
         # bar.next()
-        loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
+        loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:2.6f}s | Batch: {bt:2.3f}s | Total: {total:} | Loss: {loss:.4f} | Acc: {acc:.4f} | A.Loss: {avgloss:.4f} | A.Acc: {avgacc: .4f}'.format(
                   epoch=epoch,
                   batch=i + 1,
                   size_width=len(str(len(train_loader))),
@@ -260,15 +260,20 @@ def train(train_loader, model, criterion, optimizer, epoch, debug=False, flip=Tr
                   data=data_time.val,
                   bt=batch_time.val,
                   total=bar.elapsed_td,
-                  eta=bar.eta_td,
-                  loss=losses.avg,
-                  acc=acces.avg
+                  loss=losses.val,
+                  acc=acces.val,
+                  avgloss=losses.avg,
+                  avgacc=acces.avg
                   )
         print(loginfo)
 
         if config.hyperdash_exp:
-            config.hyperdash_exp.metric("accuracy", acces.avg, log=False)
-            config.hyperdash_exp.metric("loss", losses.avg, log=False)
+            config.hyperdash_exp.metric("accuracy", acces.val, log=False)
+            config.hyperdash_exp.metric("loss", losses.val, log=False)
+            if i > 10:
+                # initial accuracy is inaccurate
+                config.hyperdash_exp.metric("avg.accuracy", acces.avg, log=False)
+                config.hyperdash_exp.metric("avg.loss", losses.avg, log=False)
 
         if config.sigint_triggered:
             break
@@ -362,7 +367,8 @@ def validate(val_loader, model, criterion, num_classes, epoch, debug=False, flip
         #             acc=acces.avg
         #             )
         # bar.next()
-        loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
+        
+        loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:2.6f}s | Batch: {bt:2.3f}s | Total: {total:} | Loss: {loss:.4f} | Acc: {acc:.4f} | A.Loss: {avgloss:.4f} | A.Acc: {avgacc: .4f}'.format(
                   epoch=epoch,
                   batch=i + 1,
                   size_width=len(str(len(val_loader))),
@@ -370,9 +376,10 @@ def validate(val_loader, model, criterion, num_classes, epoch, debug=False, flip
                   data=data_time.val,
                   bt=batch_time.avg,
                   total=bar.elapsed_td,
-                  eta=bar.eta_td,
-                  loss=losses.avg,
-                  acc=acces.avg
+                  loss=losses.val,
+                  acc=acces.val,
+                  avgloss=losses.avg,
+                  avgacc=acces.avg
                   )
         print(loginfo)
 
