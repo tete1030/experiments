@@ -19,15 +19,21 @@ def color_normalize(x, mean, std):
     return x
 
 
-def flip_back(flip_output, dataset='mpii'):
+def flip_back(flip_output, dataset='mpii', datatype='keypoints'):
     """
     flip output map
     """
     if dataset ==  'mpii':
-        matchedParts = (
-            [0,5],   [1,4],   [2,3],
-            [10,15], [11,14], [12,13]
-        )
+        if datatype == 'keypoints':
+            matchedParts = (
+                [0,5],   [1,4],   [2,3],
+                [10,15], [11,14], [12,13]
+            )
+        elif datatype == 'parts':
+            from pose.datasets.mpii import upper_arm_segs, lower_arm_segs, upper_leg_segs, lower_leg_segs, shoulder_segs, side_segs
+            matchedParts = (
+                upper_arm_segs, lower_arm_segs, upper_leg_segs, lower_leg_segs, shoulder_segs, side_segs
+            )
     else:
         print('Not supported dataset: ' + dataset)
 

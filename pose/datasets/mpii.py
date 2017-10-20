@@ -208,10 +208,10 @@ class Mpii(data.Dataset):
                     head_radius = (head_top - upper_neck).norm() / 2
                     head_radius *= seg_ratios[isi]
                     head_sigma = seg_sigma_ratios[isi] * head_radius
-                    draw_labelmap_ex(target[isi], head_center.view(1,2), head_radius, head_sigma, shape='circle')
+                    target[isi] = draw_labelmap_ex(target[isi], head_center.view(1,2), head_radius, head_sigma, shape='circle')
                 else:
                     size = seg_ratios[isi] * float(self.out_res) / 200.
-                    draw_labelmap_ex(target[isi], coords[torch.LongTensor(si)], size, seg_sigma_ratios[isi] * size, shape='pillar')
+                    target[isi] = draw_labelmap_ex(target[isi], coords[torch.LongTensor(si)], size, seg_sigma_ratios[isi] * size, shape='pillar')
 
                 # elif isi in arm_segs:
                 #     arm_size = arm_scale_ratio * (self.inp_res / 200)

@@ -47,6 +47,8 @@ best_acc = 0
 def main(args):
     global best_acc
 
+    config.debug = args.debug
+
     if not isdir(args.checkpoint):
         mkdir_p(args.checkpoint)
 
@@ -63,6 +65,7 @@ def main(args):
 
     title = 'mpii-' + args.arch
     logger = None
+    logfile = join(args.checkpoint, 'log.txt')
     if args.resume:
         if isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
@@ -73,13 +76,13 @@ def main(args):
             optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
-            if isfile(join(args.checkpoint, 'log.txt')):
-                logger = Logger(join(args.checkpoint, 'log.txt'), title=title, resume=True)
+            if isfile(logfile):
+                logger = Logger(logfile, title=title, resume=True)
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
             sys.exit(1)
     else:
-        if isfile(join(args.checkpoint, 'log.txt')) or detect_checkpoint(checkpoint=args.checkpoint):
+        if isfile(logfile) or detect_checkpoint(checkpoint=args.checkpoint):
             print("Already existed log.txt or checkpoint in %s, using --resume or moving them" % args.checkpoint)
             sys.exit(1)
             
@@ -102,12 +105,11 @@ def main(args):
         batch_size=args.test_batch, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
-    # TODO: save_pred not ready
-    # if args.evaluate:
-    #     print('\nEvaluation only') 
-    #     loss, acc, predictions = validate(val_loader, model, criterion, args.num_classes, args.debug, args.flip)
-    #     save_pred(predictions, checkpoint=args.checkpoint)
-    #     return
+    if args.evaluate:
+        print('\nEvaluation only') 
+        loss, acc, predictions = validate(val_loader, model, criterion, args.num_classes, args.flip)
+        save_pred(predictions, checkpoint=args.checkpoint)
+        return
 
     lr = args.lr
 
@@ -130,20 +132,18 @@ def main(args):
         #     val_loader.dataset.sigma *=  args.sigma_decay
 
         # train for one epoch
-        train_loss, train_acc = train(train_loader, model, criterion, optimizer, epoch, args.debug, args.flip)
+        train_loss, train_acc = train(train_loader, model, criterion, optimizer, epoch)
 
         if config.sigint_triggered:
             break
+
+        print("Validation")
 
         # evaluate on validation set
-        valid_loss, valid_acc = validate(val_loader, model, criterion, args.num_classes, epoch,
-                                                      args.debug, args.flip)
+        valid_loss, valid_acc, predictions = validate(val_loader, model, criterion, args.num_classes, epoch, args.flip)
 
         if config.sigint_triggered:
             break
-
-        # TODO
-        predictions = None
 
         # append logger file
         logger.append([epoch + 1, lr, train_loss, valid_loss, train_acc, valid_acc])
@@ -151,13 +151,18 @@ def main(args):
         # remember best acc and save checkpoint
         is_best = valid_acc > best_acc
         best_acc = max(valid_acc, best_acc)
+
+        cp_filename = 'checkpoint_{}.pth.tar'.format(epoch + 1)
         save_checkpoint({
             'epoch': epoch + 1,
             'arch': args.arch,
             'state_dict': model.state_dict(),
             'best_acc': best_acc,
             'optimizer' : optimizer.state_dict(),
-        }, predictions, is_best, checkpoint=args.checkpoint)
+        }, is_best, checkpoint=args.checkpoint, filename=cp_filename)
+
+        preds_filename = 'preds_{}.npy'.format(epoch + 1)
+        save_pred(preds, checkpoint=args.checkpoint, filename=preds_filename)
 
         if config.sigint_triggered:
             break
@@ -176,7 +181,7 @@ def main(args):
     savefig(os.path.join(args.checkpoint, 'log.eps'))
 
 
-def train(train_loader, model, criterion, optimizer, epoch, debug=False, flip=True):
+def train(train_loader, model, criterion, optimizer, epoch):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -211,7 +216,7 @@ def train(train_loader, model, criterion, optimizer, epoch, debug=False, flip=Tr
         # TODO: show chn_acc
         acc = part_accuracy(score_map, target)
 
-        if debug: # visualize groundtruth and predictions
+        if config.debug: # visualize groundtruth and predictions
             gt_batch_img = batch_with_heatmap(inputs, target)
             pred_batch_img = batch_with_heatmap(inputs, score_map)
             if not gt_win or not pred_win:
@@ -253,7 +258,7 @@ def train(train_loader, model, criterion, optimizer, epoch, debug=False, flip=Tr
         #             )
         # bar.next()
         loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:2.6f}s | Batch: {bt:2.3f}s | Total: {total:} | Loss: {loss:.4f} | Acc: {acc:.4f} | A.Loss: {avgloss:.4f} | A.Acc: {avgacc: .4f}'.format(
-                  epoch=epoch,
+                  epoch=epoch + 1,
                   batch=i + 1,
                   size_width=len(str(len(train_loader))),
                   size=len(train_loader),
@@ -283,14 +288,15 @@ def train(train_loader, model, criterion, optimizer, epoch, debug=False, flip=Tr
     return losses.avg, acces.avg
 
 
-def validate(val_loader, model, criterion, num_classes, epoch, debug=False, flip=True):
+def validate(val_loader, model, criterion, num_classes, epoch, flip=True):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
     acces = AverageMeter()
 
     # predictions
-    predictions = torch.Tensor(val_loader.dataset.__len__(), num_classes, 2)
+    # predictions = torch.Tensor(val_loader.dataset.__len__(), num_classes, 2)
+    predictions = torch.Tensor(val_loader.dataset.__len__(), num_classes, 64, 64)
 
     # switch to evaluate mode
     model.eval()
@@ -316,8 +322,9 @@ def validate(val_loader, model, criterion, num_classes, epoch, debug=False, flip
                     volatile=True
                 )
             flip_output_var = model(flip_input_var)
-            flip_output = flip_back(flip_output_var[-1].data.cpu())
+            flip_output = flip_back(flip_output_var[-1].data.cpu(), datatype='parts')
             score_map += flip_output
+            scroe_map /= 2.
 
         loss = 0
         for o in output:
@@ -327,13 +334,10 @@ def validate(val_loader, model, criterion, num_classes, epoch, debug=False, flip
         acc = part_accuracy(score_map, target.cpu())
 
         # generate predictions
-        # TODO: final_preds
-        # preds = final_preds(score_map, meta['center'], meta['scale'], [64, 64])
-        # for n in range(score_map.size(0)):
-        #    predictions[meta['index'][n], :, :] = preds[n, :, :]
-        
+        for n in range(score_map.size(0)):
+            predictions[meta['index'][n], :, :, :] = score_map[n, :, :64, :64]
 
-        if debug:
+        if config.debug:
             gt_batch_img = batch_with_heatmap(inputs, target)
             pred_batch_img = batch_with_heatmap(inputs, score_map)
             if not gt_win or not pred_win:
@@ -369,7 +373,7 @@ def validate(val_loader, model, criterion, num_classes, epoch, debug=False, flip
         # bar.next()
         
         loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:2.6f}s | Batch: {bt:2.3f}s | Total: {total:} | Loss: {loss:.4f} | Acc: {acc:.4f} | A.Loss: {avgloss:.4f} | A.Acc: {avgacc: .4f}'.format(
-                  epoch=epoch,
+                  epoch=epoch + 1,
                   batch=i + 1,
                   size_width=len(str(len(val_loader))),
                   size=len(val_loader),
@@ -387,7 +391,7 @@ def validate(val_loader, model, criterion, num_classes, epoch, debug=False, flip
             break
 
     # bar.finish()
-    return losses.avg, acces.avg # , predictions
+    return losses.avg, acces.avg, predictions
 
 
 if __name__ == '__main__':
