@@ -198,23 +198,25 @@ def train(train_loader, model, criterion, optimizer, epoch):
     # if config.profiler:
     #     config.profiler.enable()
 
-    for i, (inputs, target, meta) in enumerate(train_loader):
+    for i, (inputs, target, mask, meta) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
 
         input_var = torch.autograd.Variable(inputs.cuda())
         target_var = torch.autograd.Variable(target.cuda(async=True))
+        mask_var = torch.autograd.Variable(mask.cuda())
+        mask_mul = mask.float()[:, :, None, None]
 
         # compute output
         output = model(input_var)
         score_map = output[-1].data.cpu()
 
-        loss = criterion(output[0], target_var)
+        loss = criterion(output[0][mask_var], target_var[mask_var])
         for j in range(1, len(output)):
-            loss += criterion(output[j], target_var)
+            loss += criterion(output[j][mask_var], target_var[mask_var])
 
         # TODO: show chn_acc
-        acc = part_accuracy(score_map, target)
+        acc = part_accuracy(score_map * mask_mul, target * mask_mul)
 
         if config.debug: # visualize groundtruth and predictions
             gt_batch_img = batch_with_heatmap(inputs, target)
@@ -304,14 +306,14 @@ def validate(val_loader, model, criterion, num_classes, epoch, flip=True):
     gt_win, pred_win = None, None
     end = time.time()
     bar = Bar('Processing', max=len(val_loader))
-    for i, (inputs, target, meta) in enumerate(val_loader):
+    for i, (inputs, target, mask, meta) in enumerate(val_loader):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        target = target.cuda(async=True)
-
         input_var = torch.autograd.Variable(inputs.cuda(), volatile=True)
-        target_var = torch.autograd.Variable(target, volatile=True)
+        target_var = torch.autograd.Variable(target.cuda(async=True), volatile=True)
+        mask_var = torch.autograd.Variable(mask.cuda(), volatile=True)
+        mask_mul = mask.float()[:, :, None, None]
 
         # compute output
         output = model(input_var)
@@ -328,10 +330,9 @@ def validate(val_loader, model, criterion, num_classes, epoch, flip=True):
 
         loss = 0
         for o in output:
-            loss += criterion(o, target_var)
+            loss += criterion(o[mask_var], target_var[mask_var])
 
-        # TODO: show channel accuracy
-        acc = part_accuracy(score_map, target.cpu())
+        acc = part_accuracy(score_map * mask_mul, target * mask_mul)
 
         # generate predictions
         for n in range(score_map.size(0)):

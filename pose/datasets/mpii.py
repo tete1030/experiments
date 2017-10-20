@@ -183,6 +183,7 @@ class Mpii(data.Dataset):
         inp = crop(img, c, s, [self.inp_res, self.inp_res], rot=r)
         inp = color_normalize(inp, self.mean, self.std)
 
+        mask = None
         # Generate ground truth
         if self.label_data == Mpii.LABEL_POINTS_MAP:
             target = torch.zeros(nparts, self.out_res, self.out_res)
@@ -193,6 +194,7 @@ class Mpii(data.Dataset):
                     target[i] = draw_labelmap(target[i], tpts[i], self.sigma, type=self.label_type)
         elif self.label_data == Mpii.LABEL_PARTS_MAP:
             target = torch.zeros(len(seg_idx), self.out_res, self.out_res)
+            mask = torch.zeros(len(seg_idx))
             tpts[:, 0:2] = to_torch(transform(tpts[:, 0:2], c, s, [self.out_res, self.out_res], rot=r).T)
             coords = tpts[:, 0:2]
             for isi, si in enumerate(seg_idx):
@@ -209,9 +211,11 @@ class Mpii(data.Dataset):
                     head_radius *= seg_ratios[isi]
                     head_sigma = seg_sigma_ratios[isi] * head_radius
                     target[isi] = draw_labelmap_ex(target[isi], head_center.view(1,2), head_radius, head_sigma, shape='circle')
+                    mask[isi] = 1
                 else:
                     size = seg_ratios[isi] * float(self.out_res) / 200.
                     target[isi] = draw_labelmap_ex(target[isi], coords[torch.LongTensor(si)], size, seg_sigma_ratios[isi] * size, shape='pillar')
+                    mask[isi] = 1
 
                 # elif isi in arm_segs:
                 #     arm_size = arm_scale_ratio * (self.inp_res / 200)
@@ -234,8 +238,8 @@ class Mpii(data.Dataset):
 
         # Meta info
         meta = {'index' : index, 'center' : c, 'scale' : s, 
-        'pts' : pts, 'tpts' : tpts}
-        return inp, target, meta
+                'pts' : pts, 'tpts' : tptsi}
+        return inp, target, mask, meta
 
     def __len__(self):
         if self.is_train:
