@@ -198,13 +198,13 @@ def train(train_loader, model, criterion, optimizer, epoch):
     # if config.profiler:
     #     config.profiler.enable()
 
-    for i, (inputs, target, mask, meta) in enumerate(train_loader):
+    for i, (inputs, target, meta) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
 
         input_var = torch.autograd.Variable(inputs.cuda())
         target_var = torch.autograd.Variable(target.cuda(async=True))
-        mask_var = torch.autograd.Variable(mask.cuda())
+        mask_var = torch.autograd.Variable(meta['mask'].cuda())
         mask_mul = mask.float()[:, :, None, None]
 
         # compute output
@@ -306,13 +306,13 @@ def validate(val_loader, model, criterion, num_classes, epoch, flip=True):
     gt_win, pred_win = None, None
     end = time.time()
     bar = Bar('Processing', max=len(val_loader))
-    for i, (inputs, target, mask, meta) in enumerate(val_loader):
+    for i, (inputs, target, meta) in enumerate(val_loader):
         # measure data loading time
         data_time.update(time.time() - end)
 
         input_var = torch.autograd.Variable(inputs.cuda(), volatile=True)
         target_var = torch.autograd.Variable(target.cuda(async=True), volatile=True)
-        mask_var = torch.autograd.Variable(mask.cuda(), volatile=True)
+        mask_var = torch.autograd.Variable(meta['mask'].cuda(), volatile=True)
         mask_mul = mask.float()[:, :, None, None]
 
         # compute output

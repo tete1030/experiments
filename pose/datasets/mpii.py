@@ -238,8 +238,8 @@ class Mpii(data.Dataset):
 
         # Meta info
         meta = {'index' : index, 'center' : c, 'scale' : s, 
-                'pts' : pts, 'tpts' : tptsi}
-        return inp, target, mask, meta
+                'pts' : pts, 'tpts' : tptsi, 'mask': mask}
+        return inp, target, meta
 
     def __len__(self):
         if self.is_train:
