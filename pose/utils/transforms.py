@@ -61,16 +61,17 @@ def shufflelr(x, width, dataset='mpii'):
     else:
         print('Not supported dataset: ' + dataset)
 
-    # Flip horizontal
-    x[:, 0] = width - x[:, 0]
+    newx = x.clone()
 
     # Change left-right parts
-    for pair in matchedParts:
-        tmp = x[pair[0], :].clone()
-        x[pair[0], :] = x[pair[1], :]
-        x[pair[1], :] = tmp
+    matchedParts = torch.LongTensor(matchedParts)
+    newx.select(-2, matchedParts[:, 0]).copy_(x.select(-2, matchedParts[:, 1]))
+    newx.select(-2, matchedParts[:, 1]).copy_(x.select(-2, matchedParts[:, 0]))
 
-    return x
+    # Flip horizontal
+    newx.select(-1, 0).neg_().add_(width)
+
+    return newx
 
 
 def fliplr(x):
@@ -141,7 +142,7 @@ def transform_preds(coords, center, scale, res):
 
 
 def crop(img, center, scale, res, rot=0):
-    img = im_to_numpy(img)
+    assert type(img) is np.ndarray and img.dtype is np.float32
 
     # Upper left point
     ul = np.array(transform([0, 0], center, scale, res, invert=1))
@@ -172,5 +173,5 @@ def crop(img, center, scale, res, rot=0):
         new_img = scipy.misc.imrotate(new_img, rot)
         new_img = new_img[pad:-pad, pad:-pad]
 
-    new_img = im_to_torch(scipy.misc.imresize(new_img, res))
+    new_img = scipy.misc.imresize(new_img, res).astype(np.float32) / 255
     return new_img

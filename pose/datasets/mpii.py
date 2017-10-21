@@ -12,6 +12,7 @@ import torch.utils.data as data
 from pose.utils.osutils import *
 from pose.utils.imutils import *
 from pose.utils.transforms import *
+import scipy.misc
 
 seg_idx = [(9,8),
            (13,14), (14,15), (12,11), (11,10),
@@ -84,9 +85,10 @@ if False:
 class Mpii(data.Dataset):
     LABEL_POINTS_MAP = 0
     LABEL_PARTS_MAP = 1
+    LABEL_MIX_MAP = 2
     def __init__(self, jsonfile, img_folder, inp_res=256, out_res=64, train=True, sigma=1,
                  scale_factor=0.25, rot_factor=30, label_type='Gaussian', label_data=LABEL_POINTS_MAP,
-                 meanstd_file='./data/mpii/mean.pth.tar'):
+                 single_person=True, meanstd_file='./data/mpii/mean.pth.tar'):
         self.img_folder = img_folder    # root image folders
         self.is_train = train           # training set or test set
         self.inp_res = inp_res
@@ -95,6 +97,7 @@ class Mpii(data.Dataset):
         self.scale_factor = scale_factor
         self.rot_factor = rot_factor
         self.label_data = label_data
+        self.single_person = single_person
 
         # create train/val split
         with open(jsonfile) as anno_file:   
@@ -134,74 +137,18 @@ class Mpii(data.Dataset):
             print('    Std:  %.4f, %.4f, %.4f' % (meanstd['std'][0], meanstd['std'][1], meanstd['std'][2]))
             
         return meanstd['mean'], meanstd['std']
-
-    def __getitem__(self, index):
-        sf = self.scale_factor
-        rf = self.rot_factor
-        if self.is_train:
-            a = self.anno[self.train[index]]
-        else:
-            a = self.anno[self.valid[index]]
-
-        img_path = os.path.join(self.img_folder, a['img_paths'])
-        pts = torch.Tensor(a['joint_self'])
-        # TODO: #NI1 Need a better solution
-        not_annoted = np.nonzero(np.isclose(to_numpy(pts), 0).sum(1) == 3)
-        # pts[:, 0:2] -= 1  # Convert pts to zero based
-
-        # c = torch.Tensor(a['objpos']) - 1
-        c = torch.Tensor(a['objpos'])
-        s = a['scale_provided']
-
-        # Adjust center/scale slightly to avoid cropping limbs
-        if c[0] != -1:
-            c[1] = c[1] + 15 * s
-            s = s * 1.25
-
-        # For single-person pose estimation with a centered/scaled figure
-        nparts = pts.size(0)
-        img = load_image(img_path)  # CxHxW
-
-        r = 0
-        tpts = pts.clone()
-        if self.is_train:
-            s = s*torch.randn(1).mul_(sf).add_(1).clamp(1-sf, 1+sf)[0]
-            r = torch.randn(1).mul_(rf).clamp(-2*rf, 2*rf)[0] if random.random() <= 0.6 else 0
-
-            # Flip
-            if random.random() <= 0.5:
-                img = torch.from_numpy(fliplr(img.numpy())).float()
-                tpts = shufflelr(tpts, width=img.size(2), dataset='mpii')
-                c[0] = img.size(2) - c[0]
-
-            # Color
-            img[0, :, :].mul_(random.uniform(0.8, 1.2)).clamp_(0, 1)
-            img[1, :, :].mul_(random.uniform(0.8, 1.2)).clamp_(0, 1)
-            img[2, :, :].mul_(random.uniform(0.8, 1.2)).clamp_(0, 1)
-
-        # Prepare image and groundtruth map
-        inp = crop(img, c, s, [self.inp_res, self.inp_res], rot=r)
-        inp = color_normalize(inp, self.mean, self.std)
-
-        mask = None
+ 
+    def _draw_label(self, tpts, not_annoted, scale, label_data, out_target, out_mask):
         # Generate ground truth
-        if self.label_data == Mpii.LABEL_POINTS_MAP:
-            target = torch.zeros(nparts, self.out_res, self.out_res)
+        if label_data == Mpii.LABEL_POINTS_MAP:
             for i in range(nparts):
-                # if tpts[i, 2] > 0: # This is evil!!
                 if i not in not_annoted:
-                    tpts[i, 0:2] = to_torch(transform(tpts[i, 0:2], c, s, [self.out_res, self.out_res], rot=r))
-                    target[i] = draw_labelmap(target[i], tpts[i], self.sigma, type=self.label_type)
-        elif self.label_data == Mpii.LABEL_PARTS_MAP:
-            target = torch.zeros(len(seg_idx), self.out_res, self.out_res)
-            mask = torch.zeros(len(seg_idx))
-            tpts[:, 0:2] = to_torch(transform(tpts[:, 0:2], c, s, [self.out_res, self.out_res], rot=r).T)
+                    out_target[i] = draw_labelmap(out_target[i], tpts[i], self.sigma, type=self.label_type)
+        elif label_data == Mpii.LABEL_PARTS_MAP:
             coords = tpts[:, 0:2]
             for isi, si in enumerate(seg_idx):
                 if np.intersect1d(np.array(si), not_annoted).size > 0:
                     # TODO: #NI2 missing one solution
-                    # print("missing one")
-                    # print(si)
                     continue
                 if isi == head_seg:
                     head_top = coords[si[0]]
@@ -210,36 +157,128 @@ class Mpii(data.Dataset):
                     head_radius = (head_top - upper_neck).norm() / 2
                     head_radius *= seg_ratios[isi]
                     head_sigma = seg_sigma_ratios[isi] * head_radius
-                    target[isi] = draw_labelmap_ex(target[isi], head_center.view(1,2), head_radius, head_sigma, shape='circle')
-                    mask[isi] = 1
+                    out_target[isi] = draw_labelmap_ex(out_target[isi], head_center.view(1,2), head_radius, head_sigma, shape='circle')
+                    out_mask[isi] = 1
                 else:
                     size = seg_ratios[isi] * float(self.out_res) / 200.
-                    target[isi] = draw_labelmap_ex(target[isi], coords[torch.LongTensor(si)], size, seg_sigma_ratios[isi] * size, shape='pillar')
-                    mask[isi] = 1
+                    out_target[isi] = draw_labelmap_ex(out_target[isi], coords[torch.LongTensor(si)], size, seg_sigma_ratios[isi] * size, shape='pillar')
+                    out_mask[isi] = 1
 
-                # elif isi in arm_segs:
-                #     arm_size = arm_scale_ratio * (self.inp_res / 200)
-                #     draw_labelmap_ex(target[isi], coords[torch.LongTensor(si)], arm_size, arm_sigma_ratio*arm_size, shape='pillar')
-                # elif isi in leg_segs:
-                #     leg_size = leg_scale_ratio * (self.inp_res / 200)
-                #     draw_labelmap_ex(target[isi], coords[torch.LongTensor(si)], leg_size, leg_sigma_ratio*leg_size, shape='pillar')
-                # elif isi in shoulder_segs:
-                #     shoulder_size = shoulder_scale_ratio * (self.inp_res / 200)
-                #     draw_labelmap_ex(target[isi], coords[torch.LongTensor(si)], shoulder_size, shoulder_sigma_ratio*shoulder_size, shape='pillar')
-                # elif isi in side_segs:
-                #     side_size = side_scale_ratio * (self.inp_res / 200)
-                #     draw_labelmap_ex(target[isi], coords[torch.LongTensor(si)], side_size, side_sigma_ratio*side_size, shape='pillar')
-                # elif isi == TP_seg:
-                #     TP_size = TP_scale_ratio * (self.inp_res / 200)
-                #     draw_labelmap_ex(target[isi], coords[torch.LongTensor(si)], TP_size, TP_sigma_ratio*TP_size, shape='pillar')
-                # elif isi == LRhip_seg:
-                #     LRhip_size = LRhip_scale_ratio * (self.inp_res / 200)
-                #     draw_labelmap_ex(target[isi], coords[torch.LongTensor(si)], LRhip_size, LRhip_sigma_ratio*LRhip_size, shape='pillar')
+    def __getitem__(self, index):
+        sf = self.scale_factor
+        rf = self.rot_factor
 
-        # Meta info
-        meta = {'index' : index, 'center' : c, 'scale' : s, 
-                'pts' : pts, 'tpts' : tptsi, 'mask': mask}
-        return inp, target, meta
+        if self.is_train:
+            a = self.anno[self.train[index]]
+        else:
+            a = self.anno[self.valid[index]]
+
+        img_path = os.path.join(self.img_folder, a['img_paths'])
+        img = scipy.misc.imread(img_path, mode='RGB').astype(np.float32) / 255
+        img_size = torch.FloatTensor(list(img.shape[:2][::-1])) # W, H
+
+        self_pts = torch.Tensor(a['joint_self'])
+        npoints = self_pts.size(0)
+
+        self_scale = torch.Tensor(a['scale_provided'])
+
+        person_num = a['numOtherPeople'] + 1 if not self.single_person else 1
+
+        pts_list = torch.FloatTensor(person_num, npoints, 3)
+        pts_list[0] = self_pts
+
+        scale_list = torch.FloatTensor(person_num)
+        scale_list[0] = self_scale
+
+        if self.single_person:
+            c = torch.FloatTensor(a['objpos'])
+            s = self_scale
+
+            # Adjust center/scale slightly to avoid cropping limbs
+            if c[0] != -1:
+                c[1] = c[1] + 15 * s
+                s = s * 1.25
+        else:
+            c = img_size / 2.
+            s = 1.
+
+            for pi, (pts_other, scale_other) in enumerate(zip(a['joint_others'], a['scale_provided_other'])):
+                pts_list[pi+1] = pts_other
+                scale_list[pi+1] = scale_other
+
+        tpts_list = pts_list.clone()
+
+        # TODO: #NI1 Need a better solution
+        mask_points = torch.from_numpy((np.isclose(pts_list.numpy(), 0).sum(-1) == 3).astype(np.uint8))
+        not_annoted = np.nonzero(mask_points.numpy())
+
+        r = 0
+        if self.is_train:
+            s = s * torch.randn(1).mul_(sf).add_(1).clamp(1-sf, 1+sf)[0]
+            r = torch.randn(1).mul_(rf).clamp(-2*rf, 2*rf)[0] if random.random() <= 0.6 else 0
+            if not self.single_person:
+                # normal distribution location with mean the image center and standard deviation img_size / 4 (so that 2\sigma == img_size/2)
+                c += torch.randn(2) * img_size / 4
+                outer = (c < 0 | c > img_size)
+                # if fall in outside, take uniform random location for the outer axis
+                c[outer] = (torch.rand(2) * img_size)[outer]
+                
+            # Flip
+            if random.random() <= 0.5:
+                img = np.fliplr(img)
+                tpts_list = shufflelr(tpts_list, width=img_size[0], dataset='mpii')
+                c[0] = img_size[0] - c[0]
+
+            # Brightness
+            contrast_factor = np.clip(np.random.rand() / 6. + 1., 1.5, 2.5)
+            img = tune_contrast(img, contrast_factor)
+
+            # Contrast
+            brightness_factor = np.clip(np.random.rand() / 6. + 1., 1.5, 2.5)
+            img = tune_brightness(img, brightness_factor)
+
+            # Color distort
+            img = (img * (np.random.rand(3) * 0.4 + 0.8)).clip(0, 1)
+
+        # Prepare image and groundtruth map
+        img = crop(img, c, s, [self.inp_res, self.inp_res], rot=r)
+
+        # Color normalize
+        img -= self.mean
+
+        img = torch.from_numpy(img.transpose(2, 0, 1))
+
+        tpts_list.view(-1, 3)[:, 0:2] = torch.from_numpy(transform(tpts_list.view(-1, 3)[:, 0:2], c, s, [self.out_res, self.out_res], rot=r).T)
+
+        is_points = (self.label_data in (Mpii.LABEL_POINTS_MAP, Mpii.LABEL_MIX_MAP))
+        is_parts = (self.label_data in (Mpii.LABEL_PARTS_MAP, Mpii.LABEL_MIX_MAP))
+
+        if is_points:
+            target_points = torch.zeros(npoints, self.out_res, self.out_res)
+
+        if is_parts:
+            target_parts = torch.zeros(len(seg_idx), self.out_res, self.out_res)
+            mask_parts = torch.zeros(len(seg_idx)).byte()
+
+        for iperson, (tpts, nann, scale) in enumerate(zip(tpts_list, not_annoted, scale_list)):
+            if is_points:
+                self._draw_label(tpts, nann, s, Mpii.LABEL_POINTS_MAP, target_points, None)
+            if is_parts:
+                self._draw_label(tpts, nann, s, Mpii.LABEL_PARTS_MAP, target_parts, mask_parts)
+
+        target = {}
+        meta = {'index': index, 'center': c, 'scale': s, 
+                'pts': pts_list, 'tpts': tpts_list}
+
+        if is_points:
+            target['points'] = target_points
+            meta['mpoints'] = mask_points
+
+        if is_parts:
+            target['parts'] = target_parts
+            meta['mparts'] = mask_parts
+
+        return img, target, meta
 
     def __len__(self):
         if self.is_train:

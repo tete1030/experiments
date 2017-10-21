@@ -6,6 +6,7 @@ import numpy as np
 import scipy.misc
 
 from .misc import *
+from PIL import ImageEnhance
 
 def im_to_numpy(img):
     img = to_numpy(img)
@@ -33,6 +34,20 @@ def resize(img, owidth, oheight):
     img = im_to_torch(img)
     print('%f %f' % (img.min(), img.max()))
     return img
+
+def tune_contrast(img, scale):
+    assert img.dtype is np.float32
+    img_pil = scipy.misc.toimage(img)
+    contrast = ImageEnhance.Contrast(img_pil)
+    img_applied = contrast.enhance(scale)
+    return scipy.misc.fromimage(img_applied).astype(np.float32) / 255
+
+def tune_brightness(img, scale)
+    assert img.dtype is np.float32
+    img_pil = scipy.misc.toimage(img)
+    brightness = ImageEnhance.Brightness(img_pil)
+    img_applied = brightness.enhance(scale)
+    return scipy.misc.fromimage(img_applied).astype(np.float32) / 255
 
 # =============================================================================
 # Helpful functions generating groundtruth labelmap 
@@ -81,7 +96,8 @@ def draw_labelmap(img, pt, sigma, type='Gaussian'):
     img_x = max(0, ul[0]), min(br[0], img.shape[1])
     img_y = max(0, ul[1]), min(br[1], img.shape[0])
 
-    img[img_y[0]:img_y[1], img_x[0]:img_x[1]] = g[g_y[0]:g_y[1], g_x[0]:g_x[1]]
+    img[img_y[0]:img_y[1], img_x[0]:img_x[1]] = np.maximum(img[img_y[0]:img_y[1], img_x[0]:img_x[1]], g[g_y[0]:g_y[1], g_x[0]:g_x[1]])
+
     return to_torch(img)
 
 def pillar_dist(A, B, P, base=0.):
@@ -163,7 +179,7 @@ def draw_labelmap_ex(img, pts, scale, sigma, shape='pillar'):
             g = np.isclose(dist, 0).astype(np.float32)
         else:
             g = np.exp(- dist ** 2 / (2 * sigma ** 2))
-        img[top:top+height, left:left+width] = g
+        img[top:top+height, left:left+width] = np.maximum(img[top:top+height, left:left+width], g)
 
     return to_torch(img)
 
