@@ -4,6 +4,7 @@ import math
 import numpy as np
 import matplotlib.pyplot as plt
 from random import randint
+from sklearn.linear_model import LinearRegression
 
 from .misc import *
 from .transforms import transform, transform_preds
@@ -69,6 +70,22 @@ def accuracy(output, target, idxs, thr=0.5):
             
     if cnt != 0:  
         acc[0] = avg_acc / cnt
+
+def get_preds_from_partmap(partmap, score_thr=0.5):
+    # TODO In progress
+    partmap = partmap.numpy()
+    assert partmap.ndim == 4
+    positive = (partmap > score_thr)
+    for i in range(partmap.shape[0]):
+        for c in range(partmap.shape[1]):
+            pmap = partmap[i, c][positive[i, c]]
+            X = np.nonzero(positive[i, c])[::-1].transpose(1, 0).astype(np.float32)
+            if pmap.size() > 1:
+                regressor = LinearRegression()
+                regressor.fit(X, np.zeros(X.shape), pmap)
+                Y_proj = regressor.predict(X)
+                map_proj = np.zeros(partmap.shape[2:], dtype=np.bool)
+                map_proj[X, Y_proj] = True
  
 def part_accuracy(output, target, score_thr=0.5, IoU_thr=0.5):
     ''' Calculate the accuracy of body part prediction, similar to IoU'''

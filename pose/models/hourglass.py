@@ -98,7 +98,7 @@ class HourglassNet(nn.Module):
     '''Hourglass model from Newell et al ECCV 2016'''
     def __init__(self, block, num_stacks=2, num_blocks=4, num_classes=16):
         super(HourglassNet, self).__init__()
-
+        assert type(num_classes) is int or (type(num_classes) is list and len(num_classes) == num_stacks)
         self.inplanes = 64
         self.num_feats = 128
         self.num_stacks = num_stacks
@@ -115,13 +115,14 @@ class HourglassNet(nn.Module):
         ch = self.num_feats*block.expansion
         hg, res, fc, score, fc_, score_ = [], [], [], [], [], []
         for i in range(num_stacks):
+            cur_classes = num_classes if type(num_classes) is int else num_classes[i]
             hg.append(Hourglass(block, num_blocks, self.num_feats, 4))
             res.append(self._make_residual(block, self.num_feats, num_blocks))
             fc.append(self._make_fc(ch, ch))
-            score.append(nn.Conv2d(ch, num_classes, kernel_size=1, bias=True))
+            score.append(nn.Conv2d(ch, cur_classes, kernel_size=1, bias=True))
             if i < num_stacks-1:
                 fc_.append(nn.Conv2d(ch, ch, kernel_size=1, bias=True))
-                score_.append(nn.Conv2d(num_classes, ch, kernel_size=1, bias=True))
+                score_.append(nn.Conv2d(cur_classes, ch, kernel_size=1, bias=True))
         self.hg = nn.ModuleList(hg)
         self.res = nn.ModuleList(res)
         self.fc = nn.ModuleList(fc)

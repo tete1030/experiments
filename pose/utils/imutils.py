@@ -147,7 +147,7 @@ def pillar_dist(A, B, P, base=0.):
         ret = ret.reshape(ori_shape)
     return ret
 
-def draw_labelmap_ex(img, pts, scale, sigma, shape='pillar'):
+def draw_labelmap_ex(img, pts, scale, sigma, shape='pillar', mask=None, mask_value=None):
     assert shape in ['pillar', 'circle']
     img = to_numpy(img)
     pts = to_numpy(pts)
@@ -174,12 +174,15 @@ def draw_labelmap_ex(img, pts, scale, sigma, shape='pillar'):
         # 0.5: align pos to center of a pixel
         mesh = mesh.transpose(1, 2, 0) + np.array([left, top], dtype=np.float32) + 0.5
         dist = dist_func(mesh)
-        dist[dist > 3*sigma] = np.inf
         if np.isclose(sigma, 0):
             g = np.isclose(dist, 0).astype(np.float32)
         else:
             g = np.exp(- dist ** 2 / (2 * sigma ** 2))
+        g[dist > 3*sigma] = 0
         img[top:top+height, left:left+width] = np.maximum(img[top:top+height, left:left+width], g)
+        if mask and mask_value is not None:
+            sel_mask = mask[top:top+height, left:left+width][g > 0]
+            sel_mask[:] = np.maximum(sel_mask, mask_value)
 
     return to_torch(img)
 

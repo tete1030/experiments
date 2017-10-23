@@ -42,6 +42,8 @@ model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
 
+idx = [1,2,3,4,5,6,11,12,15,16]
+
 best_acc = 0
 
 def main(args):
@@ -52,8 +54,11 @@ def main(args):
     if not isdir(args.checkpoint):
         mkdir_p(args.checkpoint)
 
+    assert args.stacks == 2, "Experiment Requirement"
+
     print("==> creating model '{}', stacks={}, blocks={}".format(args.arch, args.stacks, args.blocks))
-    model = models.__dict__[args.arch](num_stacks=args.stacks, num_blocks=args.blocks, num_classes=args.num_classes)
+    model = models.__dict__[args.arch](num_stacks=args.stacks, num_blocks=args.blocks,
+                                       num_classes=[15, 15, 16])
 
     model = torch.nn.DataParallel(model).cuda()
 
@@ -93,15 +98,15 @@ def main(args):
     # Data loading code
     train_loader = torch.utils.data.DataLoader(
         datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
-                      sigma=args.sigma, label_data=datasets.Mpii.LABEL_PARTS_MAP,
-                      label_type=args.label_type),
+                      sigma=args.sigma, label_data=datasets.Mpii.LABEL_MIX_MAP,
+                      label_type=args.label_type, single_person=True),
         batch_size=args.train_batch, shuffle=True,
         num_workers=args.workers, pin_memory=True)
     
     val_loader = torch.utils.data.DataLoader(
         datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
-                      sigma=args.sigma, label_data=datasets.Mpii.LABEL_PARTS_MAP,
-                      label_type=args.label_type, train=False),
+                      sigma=args.sigma, label_data=datasets.Mpii.LABEL_MIX_MAP,
+                      label_type=args.label_type, train=False, single_person=True),
         batch_size=args.test_batch, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
@@ -203,20 +208,31 @@ def train(train_loader, model, criterion, optimizer, epoch):
         data_time.update(time.time() - end)
 
         input_var = torch.autograd.Variable(inputs.cuda())
-        target_var = torch.autograd.Variable(target.cuda(async=True))
-        mask_var = torch.autograd.Variable(meta['mask'].cuda())
-        mask_mul = mask.float()[:, :, None, None]
+        target_vis_var = torch.autograd.Variable(target['parts_v'].cuda(async=True))
+        target_all_var = torch.autograd.Variable(target['parts_a'].cuda(async=True))
+        target_pts_var = torch.autograd.Variable(target['points'].cuda(async=True))
+        mparts_vis_var = torch.autograd.Variable(meta['mparts_v'].cuda(async=True))
+        mparts_all_var = torch.autograd.Variable(meta['mparts_a'].cuda(async=True))
 
         # compute output
         output = model(input_var)
         score_map = output[-1].data.cpu()
 
-        loss = criterion(output[0][mask_var], target_var[mask_var])
-        for j in range(1, len(output)):
-            loss += criterion(output[j][mask_var], target_var[mask_var])
+        output_vis = output[0]
+        output_all = output[1]
+        output_pts = output[2]
 
-        # TODO: show chn_acc
-        acc = part_accuracy(score_map * mask_mul, target * mask_mul)
+        mask_vis = ((target_vis_var < output_vis) & (mparts_vis_var == 2)) | (mparts_vis_var == 1)
+        mask_all = mparts_all_var
+
+        loss_vis = criterion(output_vis[mask_vis], target_vis_var[mask_vis])
+        loss_all = criterion(output_all[mask_all], target_all_var[mask_all])
+        loss_pts = criterion(output_pts, target_pts_var)
+
+        loss = loss_vis + loss_all + loss_pts
+
+        # acc = part_accuracy(score_map * mask_all.data.cpu(), target['parts_a'] * mask_all.data.cpu())
+        acc = accuracy(score_map, target['points'], idx)
 
         if config.debug: # visualize groundtruth and predictions
             gt_batch_img = batch_with_heatmap(inputs, target)
@@ -290,7 +306,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
     return losses.avg, acces.avg
 
 
-def validate(val_loader, model, criterion, num_classes, epoch, flip=True):
+def validate(val_loader, model, criterion, num_classes, epoch, flip=False):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -298,7 +314,9 @@ def validate(val_loader, model, criterion, num_classes, epoch, flip=True):
 
     # predictions
     # predictions = torch.Tensor(val_loader.dataset.__len__(), num_classes, 2)
-    predictions = torch.Tensor(val_loader.dataset.__len__(), num_classes, 64, 64)
+    pred_lim = 50
+    predictions_parts = torch.Tensor(pred_lim, 2, 15, 64, 64)
+    predictions_pts = torch.Tensor(pred_lim, 16, 64, 64)
 
     # switch to evaluate mode
     model.eval()
@@ -311,36 +329,55 @@ def validate(val_loader, model, criterion, num_classes, epoch, flip=True):
         data_time.update(time.time() - end)
 
         input_var = torch.autograd.Variable(inputs.cuda(), volatile=True)
-        target_var = torch.autograd.Variable(target.cuda(async=True), volatile=True)
-        mask_var = torch.autograd.Variable(meta['mask'].cuda(), volatile=True)
-        mask_mul = mask.float()[:, :, None, None]
+        target_vis_var = torch.autograd.Variable(target['parts_v'].cuda(async=True), volatile=True)
+        target_all_var = torch.autograd.Variable(target['parts_a'].cuda(async=True), volatile=True)
+        target_pts_var = torch.autograd.Variable(target['points'].cuda(async=True), volatile=True)
+        mparts_vis_var = torch.autograd.Variable(meta['mparts_v'].cuda(async=True), volatile=True)
+        mparts_all_var = torch.autograd.Variable(meta['mparts_a'].cuda(async=True), volatile=True)
 
         # compute output
         output = model(input_var)
-        score_map = output[-1].data.cpu()
+
+        output_vis = output[0]
+        output_all = output[1]
+        output_pts = output[2]
+
+        mask_vis = ((target_vis_var < output_vis) & (mparts_vis_var == 2)) | (mparts_vis_var == 1)
+        mask_all = mparts_all_var
+
+        loss_vis = criterion(output_vis[mask_vis], target_vis_var[mask_vis])
+        loss_all = criterion(output_all[mask_all], target_all_var[mask_all])
+        loss_pts = criterion(output_pts, target_pts_var)
+
+        loss = loss_vis + loss_all + loss_pts
+
+        acc = accuracy(points_map, target['points'], idx)
+
+        parts_vis_map = output_vis.data.cpu()
+        parts_all_map = output_all.data.cpu()
+        points_map = output_pts.data.cpu()
         if flip:
             flip_input_var = torch.autograd.Variable(
                     torch.from_numpy(fliplr(inputs.clone().numpy())).float().cuda(), 
                     volatile=True
                 )
             flip_output_var = model(flip_input_var)
-            flip_output = flip_back(flip_output_var[-1].data.cpu(), datatype='parts')
-            score_map += flip_output
-            scroe_map /= 2.
-
-        loss = 0
-        for o in output:
-            loss += criterion(o[mask_var], target_var[mask_var])
-
-        acc = part_accuracy(score_map * mask_mul, target * mask_mul)
+            # flip_output = flip_back(flip_output_var[-1].data.cpu(), datatype='parts')
+            flip_output = flip_back(flip_output_var[-1].data.cpu())
+            points_map += flip_output
+            points_map /= 2.
 
         # generate predictions
-        for n in range(score_map.size(0)):
-            predictions[meta['index'][n], :, :, :] = score_map[n, :, :64, :64]
+        for n in range(points_map.size(0)):
+            if meta['index'][n] >= pred_lim:
+                continue
+            predictions_parts[meta['index'][n], 0, :, :, :] = parts_vis_map[n, :, :64, :64]
+            predictions_parts[meta['index'][n], 1, :, :, :] = parts_all_map[n, :, :64, :64]
+            predictions_points[meta['index'][n], :, :, :] = points_map[n, :, :64, :64]
 
         if config.debug:
             gt_batch_img = batch_with_heatmap(inputs, target)
-            pred_batch_img = batch_with_heatmap(inputs, score_map)
+            pred_batch_img = batch_with_heatmap(inputs, points_map)
             if not gt_win or not pred_win:
                 plt.subplot(121)
                 gt_win = plt.imshow(gt_batch_img)

@@ -31,19 +31,19 @@ seg_colors = [[255, 0, 0],
               [170, 0, 255], [255, 0, 255]]
 
 head_seg = 0
-head_size_ratio = 0.8
+head_size_ratio = 0.6
 head_sigma_ratio = 0.5
 
 upper_arm_segs = [1,3]
-upper_arm_scale_ratio = 6
-upper_arm_sigma_ratio = 0.5
+upper_arm_scale_ratio = 4
+upper_arm_sigma_ratio = 0.7
 
 lower_arm_segs = [2,4]
 lower_arm_scale_ratio = 4
 lower_arm_sigma_ratio = 0.5
 
 upper_leg_segs = [5,7]
-upper_leg_scale_ratio = 6
+upper_leg_scale_ratio = 4
 upper_leg_sigma_ratio = 0.7
 
 lower_leg_segs = [6,8]
@@ -59,8 +59,8 @@ side_scale_ratio = 7
 side_sigma_ratio = 0.5
 
 TP_seg = 13
-TP_scale_ratio = 10
-TP_sigma_ratio = 1.
+TP_scale_ratio = 7
+TP_sigma_ratio = 0.5
 
 LRhip_seg = 14
 LRhip_scale_ratio = 7
@@ -77,6 +77,7 @@ seg_sigma_ratios = [head_sigma_ratio] + \
                    [upper_leg_sigma_ratio, lower_leg_sigma_ratio] * 2 + \
                    [shoulder_sigma_ratio] * 2 + [side_sigma_ratio] * 2 + \
                    [TP_sigma_ratio] + [LRhip_sigma_ratio]
+
 
 # disable sigma (for test)
 if False:
@@ -138,31 +139,40 @@ class Mpii(data.Dataset):
             
         return meanstd['mean'], meanstd['std']
  
-    def _draw_label(self, tpts, not_annoted, scale, label_data, out_target, out_mask):
+    def _draw_label(self, tpts, not_annoted, scale, label_data, out_target, out_mask, **kwargs):
         # Generate ground truth
-        if label_data == Mpii.LABEL_POINTS_MAP:
+        if label_data == 'points':
             for i in range(nparts):
                 if i not in not_annoted:
                     out_target[i] = draw_labelmap(out_target[i], tpts[i], self.sigma, type=self.label_type)
-        elif label_data == Mpii.LABEL_PARTS_MAP:
+        elif label_data in 'parts_visible', 'parts_all':
             coords = tpts[:, 0:2]
+            seg_ratios = kwargs['seg_ratios']
+            seg_sigma_ratios = kwargs['seg_sigma_ratios']
             for isi, si in enumerate(seg_idx):
                 if np.intersect1d(np.array(si), not_annoted).size > 0:
                     # TODO: #NI2 missing one solution
                     continue
-                if isi == head_seg:
+
+                # If two points are invisible, which means the whole part is invisible, only punish false positive
+                if label_data == 'parts_visible' and tpts[:, 2].sum(1) == 0:
+                    mask_value = 2
+
+                # Indicate that there are parts presented
+                out_mask[isi][out_mask[isi] != 2] = 1
+
+                # When parts_visible, draw head as round shape
+                if isi == head_seg and label_data == 'parts_visible':
                     head_top = coords[si[0]]
                     upper_neck = coords[si[1]]
                     head_center = (head_top + upper_neck) / 2
                     head_radius = (head_top - upper_neck).norm() / 2
                     head_radius *= seg_ratios[isi]
                     head_sigma = seg_sigma_ratios[isi] * head_radius
-                    out_target[isi] = draw_labelmap_ex(out_target[isi], head_center.view(1,2), head_radius, head_sigma, shape='circle')
-                    out_mask[isi] = 1
+                    out_target[isi] = draw_labelmap_ex(out_target[isi], head_center.view(1,2), head_radius, head_sigma, shape='circle', mask=out_mask[isi], mask_value=mask_value)
                 else:
                     size = seg_ratios[isi] * float(self.out_res) / 200.
-                    out_target[isi] = draw_labelmap_ex(out_target[isi], coords[torch.LongTensor(si)], size, seg_sigma_ratios[isi] * size, shape='pillar')
-                    out_mask[isi] = 1
+                    out_target[isi] = draw_labelmap_ex(out_target[isi], coords[torch.LongTensor(si)], size, seg_sigma_ratios[isi] * size, shape='pillar', mask=out_mask[isi], mask_value=mask_value)
 
     def __getitem__(self, index):
         sf = self.scale_factor
@@ -257,14 +267,17 @@ class Mpii(data.Dataset):
             target_points = torch.zeros(npoints, self.out_res, self.out_res)
 
         if is_parts:
-            target_parts = torch.zeros(len(seg_idx), self.out_res, self.out_res)
-            mask_parts = torch.zeros(len(seg_idx)).byte()
+            target_parts_visible = torch.zeros(len(seg_idx), self.out_res, self.out_res)
+            target_parts_all = torch.zeros(len(seg_idx), self.out_res, self.out_res)
+            mask_parts_visible = torch.zeros(len(seg_idx), self.out_res, self.out_res).byte()
+            mask_parts_all = torch.zeros(len(seg_idx), self.out_res, self.out_res).byte()
 
         for iperson, (tpts, nann, scale) in enumerate(zip(tpts_list, not_annoted, scale_list)):
             if is_points:
-                self._draw_label(tpts, nann, s, Mpii.LABEL_POINTS_MAP, target_points, None)
+                self._draw_label(tpts, nann, s, 'points', target_points, None)
             if is_parts:
-                self._draw_label(tpts, nann, s, Mpii.LABEL_PARTS_MAP, target_parts, mask_parts)
+                self._draw_label(tpts, nann, s, 'parts_visible', target_parts_visible, mask_parts_visible, seg_ratios=seg_ratios, seg_sigma_ratios=seg_sigma_ratios)
+                self._draw_label(tpts, nann, s, 'parts_all', target_parts_all, mask_parts_all, seg_ratios=[1.] * len(seg_idx), seg_sigma_ratios=[0.2] * len(seg_idx))
 
         target = {}
         meta = {'index': index, 'center': c, 'scale': s, 
@@ -275,8 +288,10 @@ class Mpii(data.Dataset):
             meta['mpoints'] = mask_points
 
         if is_parts:
-            target['parts'] = target_parts
-            meta['mparts'] = mask_parts
+            target['parts_v'] = target_parts_visible
+            target['parts_a'] = target_parts_all
+            meta['mparts_v'] = mask_parts_visible
+            meta['mparts_a'] = mask_parts_all
 
         return img, target, meta
 
