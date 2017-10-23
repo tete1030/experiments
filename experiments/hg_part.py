@@ -54,7 +54,7 @@ def main(args):
     if not isdir(args.checkpoint):
         mkdir_p(args.checkpoint)
 
-    assert args.stacks == 2, "Experiment Requirement"
+    assert args.stacks == 3, "Experiment Requirement"
 
     print("==> creating model '{}', stacks={}, blocks={}".format(args.arch, args.stacks, args.blocks))
     model = models.__dict__[args.arch](num_stacks=args.stacks, num_blocks=args.blocks,
@@ -167,7 +167,7 @@ def main(args):
         }, is_best, checkpoint=args.checkpoint, filename=cp_filename)
 
         preds_filename = 'preds_{}.npy'.format(epoch + 1)
-        save_pred(preds, checkpoint=args.checkpoint, filename=preds_filename)
+        save_pred(predictions, is_best=is_best, checkpoint=args.checkpoint, filename=preds_filename)
 
         if config.sigint_triggered:
             break
@@ -222,7 +222,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         output_all = output[1]
         output_pts = output[2]
 
-        mask_vis = ((target_vis_var < output_vis) & (mparts_vis_var == 2)) | (mparts_vis_var == 1)
+        mask_vis = (((target_vis_var < output_vis) + (mparts_vis_var == 2)).eq(2) + (mparts_vis_var == 1)).gt(0)
         mask_all = mparts_all_var
 
         loss_vis = criterion(output_vis[mask_vis], target_vis_var[mask_vis])
@@ -342,7 +342,8 @@ def validate(val_loader, model, criterion, num_classes, epoch, flip=False):
         output_all = output[1]
         output_pts = output[2]
 
-        mask_vis = ((target_vis_var < output_vis) & (mparts_vis_var == 2)) | (mparts_vis_var == 1)
+        # mask_vis = ((target_vis_var < output_vis) & (mparts_vis_var == 2)) | (mparts_vis_var == 1)
+        mask_vis = (((target_vis_var < output_vis) + (mparts_vis_var == 2)).eq(2) + (mparts_vis_var == 1)).gt(0)
         mask_all = mparts_all_var
 
         loss_vis = criterion(output_vis[mask_vis], target_vis_var[mask_vis])
@@ -351,11 +352,12 @@ def validate(val_loader, model, criterion, num_classes, epoch, flip=False):
 
         loss = loss_vis + loss_all + loss_pts
 
-        acc = accuracy(points_map, target['points'], idx)
-
         parts_vis_map = output_vis.data.cpu()
         parts_all_map = output_all.data.cpu()
         points_map = output_pts.data.cpu()
+
+        acc = accuracy(points_map, target['points'], idx)
+
         if flip:
             flip_input_var = torch.autograd.Variable(
                     torch.from_numpy(fliplr(inputs.clone().numpy())).float().cuda(), 
@@ -373,7 +375,7 @@ def validate(val_loader, model, criterion, num_classes, epoch, flip=False):
                 continue
             predictions_parts[meta['index'][n], 0, :, :, :] = parts_vis_map[n, :, :64, :64]
             predictions_parts[meta['index'][n], 1, :, :, :] = parts_all_map[n, :, :64, :64]
-            predictions_points[meta['index'][n], :, :, :] = points_map[n, :, :64, :64]
+            predictions_pts[meta['index'][n], :, :, :] = points_map[n, :, :64, :64]
 
         if config.debug:
             gt_batch_img = batch_with_heatmap(inputs, target)
@@ -429,7 +431,7 @@ def validate(val_loader, model, criterion, num_classes, epoch, flip=False):
             break
 
     # bar.finish()
-    return losses.avg, acces.avg, predictions
+    return losses.avg, acces.avg, {'parts': predictions_parts, 'pts': predictions_pts}
 
 
 if __name__ == '__main__':

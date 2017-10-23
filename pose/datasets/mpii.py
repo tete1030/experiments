@@ -137,15 +137,15 @@ class Mpii(data.Dataset):
             print('    Mean: %.4f, %.4f, %.4f' % (meanstd['mean'][0], meanstd['mean'][1], meanstd['mean'][2]))
             print('    Std:  %.4f, %.4f, %.4f' % (meanstd['std'][0], meanstd['std'][1], meanstd['std'][2]))
             
-        return meanstd['mean'], meanstd['std']
+        return meanstd['mean'].numpy(), meanstd['std'].numpy()
  
     def _draw_label(self, tpts, not_annoted, scale, label_data, out_target, out_mask, **kwargs):
         # Generate ground truth
         if label_data == 'points':
-            for i in range(nparts):
+            for i in range(tpts.size(0)):
                 if i not in not_annoted:
                     out_target[i] = draw_labelmap(out_target[i], tpts[i], self.sigma, type=self.label_type)
-        elif label_data in 'parts_visible', 'parts_all':
+        elif label_data in ('parts_visible', 'parts_all'):
             coords = tpts[:, 0:2]
             seg_ratios = kwargs['seg_ratios']
             seg_sigma_ratios = kwargs['seg_sigma_ratios']
@@ -155,7 +155,8 @@ class Mpii(data.Dataset):
                     continue
 
                 # If two points are invisible, which means the whole part is invisible, only punish false positive
-                if label_data == 'parts_visible' and tpts[:, 2].sum(1) == 0:
+                mask_value = None
+                if label_data == 'parts_visible' and tpts[torch.LongTensor(si)][:, 2].sum() == 0:
                     mask_value = 2
 
                 # Indicate that there are parts presented
@@ -190,7 +191,7 @@ class Mpii(data.Dataset):
         self_pts = torch.Tensor(a['joint_self'])
         npoints = self_pts.size(0)
 
-        self_scale = torch.Tensor(a['scale_provided'])
+        self_scale = a['scale_provided']
 
         person_num = a['numOtherPeople'] + 1 if not self.single_person else 1
 
@@ -248,7 +249,7 @@ class Mpii(data.Dataset):
             img = tune_brightness(img, brightness_factor)
 
             # Color distort
-            img = (img * (np.random.rand(3) * 0.4 + 0.8)).clip(0, 1)
+            img = (img * (np.random.rand(3) * 0.4 + 0.8)).clip(0, 1).astype(np.float32)
 
         # Prepare image and groundtruth map
         img = crop(img, c, s, [self.inp_res, self.inp_res], rot=r)

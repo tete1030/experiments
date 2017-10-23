@@ -36,14 +36,14 @@ def resize(img, owidth, oheight):
     return img
 
 def tune_contrast(img, scale):
-    assert img.dtype is np.float32
+    assert img.dtype == np.float32, img.dtype
     img_pil = scipy.misc.toimage(img)
     contrast = ImageEnhance.Contrast(img_pil)
     img_applied = contrast.enhance(scale)
     return scipy.misc.fromimage(img_applied).astype(np.float32) / 255
 
-def tune_brightness(img, scale)
-    assert img.dtype is np.float32
+def tune_brightness(img, scale):
+    assert img.dtype == np.float32, img.dtype
     img_pil = scipy.misc.toimage(img)
     brightness = ImageEnhance.Brightness(img_pil)
     img_applied = brightness.enhance(scale)
@@ -180,7 +180,8 @@ def draw_labelmap_ex(img, pts, scale, sigma, shape='pillar', mask=None, mask_val
             g = np.exp(- dist ** 2 / (2 * sigma ** 2))
         g[dist > 3*sigma] = 0
         img[top:top+height, left:left+width] = np.maximum(img[top:top+height, left:left+width], g)
-        if mask and mask_value is not None:
+        if mask is not None and mask_value is not None:
+            mask = mask.numpy()
             sel_mask = mask[top:top+height, left:left+width][g > 0]
             sel_mask[:] = np.maximum(sel_mask, mask_value)
 

@@ -32,17 +32,16 @@ def save_checkpoint(state, is_best, checkpoint='checkpoint', filename='checkpoin
 
     if is_best:
         shutil.copyfile(filepath, os.path.join(checkpoint, 'model_best.pth.tar'))
-        if preds:
-            shutil.copyfile(preds_filepath, os.path.join(checkpoint, 'preds_best.npy'))
 
 def detect_checkpoint(checkpoint='checkpoint', filename='checkpoint.pth.tar'):
     return os.path.isfile(os.path.join(checkpoint, filename)) or \
            os.path.isfile(os.path.join(checkpoint, 'model_best.pth.tar'))
 
-def save_pred(preds, checkpoint='checkpoint', filename='preds_valid.npy'):
-    preds = to_numpy(preds)
-    filename = os.path.join(checkpoint, filename)
-    np.save(filename, preds)
+def save_pred(preds, is_best=False, checkpoint='checkpoint', filename='preds_valid.npy'):
+    preds_filepath = os.path.join(checkpoint, filename)
+    np.save(preds_filepath, preds)
+    if is_best:
+        shutil.copyfile(preds_filepath, os.path.join(checkpoint, 'preds_best.npy'))
     return filename
 
 

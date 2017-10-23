@@ -53,6 +53,8 @@ def shufflelr(x, width, dataset='mpii'):
     """
     flip coords
     """
+    assert x.dim() in [3, 4]
+
     if dataset ==  'mpii':
         matchedParts = (
             [0,5],   [1,4],   [2,3],
@@ -65,8 +67,12 @@ def shufflelr(x, width, dataset='mpii'):
 
     # Change left-right parts
     matchedParts = torch.LongTensor(matchedParts)
-    newx.select(-2, matchedParts[:, 0]).copy_(x.select(-2, matchedParts[:, 1]))
-    newx.select(-2, matchedParts[:, 1]).copy_(x.select(-2, matchedParts[:, 0]))
+    if x.dim() == 3:
+        newx[:, matchedParts[:, 0]].copy_(x[:, matchedParts[:, 1]])
+        newx[:, matchedParts[:, 1]].copy_(x[:, matchedParts[:, 0]])
+    else:
+        newx[:, :, matchedParts[:, 0]].copy_(x[:, :, matchedParts[:, 1]])
+        newx[:, :, matchedParts[:, 1]].copy_(x[:, :, matchedParts[:, 0]])
 
     # Flip horizontal
     newx.select(-1, 0).neg_().add_(width)
@@ -142,7 +148,8 @@ def transform_preds(coords, center, scale, res):
 
 
 def crop(img, center, scale, res, rot=0):
-    assert type(img) is np.ndarray and img.dtype is np.float32
+    assert type(img) is np.ndarray, type(img)
+    assert img.dtype == np.float32, img.dtype
 
     # Upper left point
     ul = np.array(transform([0, 0], center, scale, res, invert=1))

@@ -70,6 +70,7 @@ def accuracy(output, target, idxs, thr=0.5):
             
     if cnt != 0:  
         acc[0] = avg_acc / cnt
+    return acc
 
 def get_preds_from_partmap(partmap, score_thr=0.5):
     # TODO In progress
