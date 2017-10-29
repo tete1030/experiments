@@ -17,7 +17,7 @@ from pose.utils.transforms import *
 class Mpii(data.Dataset):
     def __init__(self, jsonfile, img_folder, inp_res=256, out_res=64, train=True, sigma=1,
                  scale_factor=0.25, rot_factor=30, label_type='Gaussian',
-                 meanstd_file='./data/mpii/mean.pth.tar'):
+                 meanstd_file='./data/mpii/mean.pth.tar', selective=None):
         self.img_folder = img_folder    # root image folders
         self.is_train = train           # training set or test set
         self.inp_res = inp_res
@@ -32,11 +32,15 @@ class Mpii(data.Dataset):
             self.anno = json.load(anno_file)
 
         self.train, self.valid = [], []
+        train_counter = 0
         for idx, val in enumerate(self.anno):
             if val['isValidation'] == True:
                 self.valid.append(idx)
             else:
-                self.train.append(idx)
+                if selective is None or train_counter in selective:
+                    self.train.append(idx)
+                train_counter += 1
+
         self.meanstd_file = meanstd_file
         self.mean, self.std = self._compute_mean()
 

@@ -70,13 +70,18 @@ def main(args):
         logger = Logger(join(args.checkpoint, 'log.txt'), title=title)
         logger.set_names(['Epoch', 'LR', 'Train Loss', 'Val Loss', 'Train Acc', 'Val Acc'])
 
+    selective = None
+    if args.selective:
+        import numpy as np
+        selective = np.load(args.selective)
+
     cudnn.benchmark = True
     print('    Total params: %.2fM' % (sum(p.numel() for p in model.parameters())/1000000.0))
 
     # Data loading code
     train_loader = torch.utils.data.DataLoader(
         datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
-                      sigma=args.sigma, label_type=args.label_type),
+                      sigma=args.sigma, label_type=args.label_type, selective=selective),
         batch_size=args.train_batch, shuffle=True,
         num_workers=args.workers, pin_memory=True)
     
@@ -347,5 +352,7 @@ if __name__ == '__main__':
     parser.add_argument('-d', '--debug', dest='debug', action='store_true',
                         help='show intermediate results')
 
+    parser.add_argument('--selective', type=str, metavar='FILE',
+                        help='select a part of dataset')
 
     main(parser.parse_args())
