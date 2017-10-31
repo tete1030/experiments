@@ -40,14 +40,14 @@ def tune_contrast(img, scale):
     img_pil = scipy.misc.toimage(img)
     contrast = ImageEnhance.Contrast(img_pil)
     img_applied = contrast.enhance(scale)
-    return scipy.misc.fromimage(img_applied).astype(np.float32) / 255
+    return scipy.misc.fromimage(img_applied).astype(np.float32) / 255.
 
 def tune_brightness(img, scale):
     assert img.dtype == np.float32, img.dtype
     img_pil = scipy.misc.toimage(img)
     brightness = ImageEnhance.Brightness(img_pil)
     img_applied = brightness.enhance(scale)
-    return scipy.misc.fromimage(img_applied).astype(np.float32) / 255
+    return scipy.misc.fromimage(img_applied).astype(np.float32) / 255.
 
 # =============================================================================
 # Helpful functions generating groundtruth labelmap 
@@ -96,7 +96,8 @@ def draw_labelmap(img, pt, sigma, type='Gaussian'):
     img_x = max(0, ul[0]), min(br[0], img.shape[1])
     img_y = max(0, ul[1]), min(br[1], img.shape[0])
 
-    img[img_y[0]:img_y[1], img_x[0]:img_x[1]] = np.maximum(img[img_y[0]:img_y[1], img_x[0]:img_x[1]], g[g_y[0]:g_y[1], g_x[0]:g_x[1]])
+    img[img_y[0]:img_y[1], img_x[0]:img_x[1]] = \
+            np.maximum(img[img_y[0]:img_y[1], img_x[0]:img_x[1]], g[g_y[0]:g_y[1], g_x[0]:g_x[1]])
 
     return to_torch(img)
 
@@ -121,7 +122,9 @@ def pillar_dist(A, B, P, base=0.):
     P_on = pt_eq(A, P) | pt_eq(B, P)
     ret[P_on] = 0
     # angle between a vector and an array of vectors
-    vec_angle = lambda a, b: np.arccos(np.inner(a/(np.linalg.norm(a,axis=-1)[...,np.newaxis]),b/(np.linalg.norm(b,axis=-1)[...,np.newaxis])).clip(-1.0, 1.0))
+    vec_angle = lambda a, b: np.arccos(
+            np.inner(a/(np.linalg.norm(a,axis=-1)[...,np.newaxis]),
+                     b/(np.linalg.norm(b,axis=-1)[...,np.newaxis])).clip(-1.0, 1.0))
     P_other = ~P_on
     # point P on A side
     A_side = P_other.copy()
@@ -181,9 +184,9 @@ def draw_labelmap_ex(img, pts, scale, sigma, shape='pillar', mask=None, mask_val
         g[dist > 3*sigma] = 0
         img[top:top+height, left:left+width] = np.maximum(img[top:top+height, left:left+width], g)
         if mask is not None and mask_value is not None:
-            mask = mask.numpy()
-            sel_mask = mask[top:top+height, left:left+width][g > 0]
-            sel_mask[:] = np.maximum(sel_mask, mask_value)
+            mask_np = mask.numpy()
+            mask_np[top:top+height, left:left+width][g > 0] = \
+                    np.maximum(mask_np[top:top+height, left:left+width][g > 0], mask_value)
 
     return to_torch(img)
 

@@ -30,9 +30,13 @@ def flip_back(flip_output, dataset='mpii', datatype='keypoints'):
                 [10,15], [11,14], [12,13]
             )
         elif datatype == 'parts':
-            from pose.datasets.mpii import upper_arm_segs, lower_arm_segs, upper_leg_segs, lower_leg_segs, shoulder_segs, side_segs
+            from pose.datasets.mpii import upper_arm_segs, lower_arm_segs, \
+                                           upper_leg_segs, lower_leg_segs, \
+                                           shoulder_segs, side_segs
             matchedParts = (
-                upper_arm_segs, lower_arm_segs, upper_leg_segs, lower_leg_segs, shoulder_segs, side_segs
+                upper_arm_segs, lower_arm_segs,
+                upper_leg_segs, lower_leg_segs,
+                shoulder_segs, side_segs
             )
     else:
         print('Not supported dataset: ' + dataset)
@@ -157,6 +161,7 @@ def crop(img, center, scale, res, rot=0):
     br = np.array(transform(res, center, scale, res, invert=1))
 
     # Padding so that when rotated proper amount of context is included
+    # TODO: ROUND
     pad = int(np.linalg.norm(br - ul) / 2 - float(br[1] - ul[1]) / 2)
     if not rot == 0:
         ul -= pad

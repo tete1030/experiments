@@ -87,29 +87,37 @@ class Mpii(data.Dataset):
     LABEL_POINTS_MAP = 0
     LABEL_PARTS_MAP = 1
     LABEL_MIX_MAP = 2
-    def __init__(self, jsonfile, img_folder, inp_res=256, out_res=64, train=True, sigma=1,
-                 scale_factor=0.25, rot_factor=30, label_type='Gaussian', label_data=LABEL_POINTS_MAP,
-                 single_person=True, meanstd_file='./data/mpii/mean.pth.tar'):
+    def __init__(self, jsonfile, img_folder, inp_res=256, out_res=64, train=True,
+                 sigma_pts=1, scale_factor=0.25, rot_factor=30, label_type='Gaussian',
+                 label_data=LABEL_POINTS_MAP, single_person=True, selective=None,
+                 contrast_factor=0.0, brightness_factor=0.0,
+                 meanstd_file='./data/mpii/mean.pth.tar'):
         self.img_folder = img_folder    # root image folders
         self.is_train = train           # training set or test set
         self.inp_res = inp_res
         self.out_res = out_res
-        self.sigma = sigma
+        self.sigma_pts = sigma_pts
         self.scale_factor = scale_factor
         self.rot_factor = rot_factor
         self.label_data = label_data
         self.single_person = single_person
+        self.contrast_factor = contrast_factor
+        self.brightness_factor = brightness_factor
 
         # create train/val split
         with open(jsonfile) as anno_file:   
             self.anno = json.load(anno_file)
 
         self.train, self.valid = [], []
+        train_counter = 0
         for idx, val in enumerate(self.anno):
             if val['isValidation'] == True:
                 self.valid.append(idx)
             else:
-                self.train.append(idx)
+                if selective is None or train_counter in selective:
+                    self.train.append(idx)
+                train_counter += 1
+
         self.meanstd_file = meanstd_file
         self.mean, self.std = self._compute_mean()
         self.label_type = label_type
@@ -134,17 +142,21 @@ class Mpii(data.Dataset):
                 }
             torch.save(meanstd, self.meanstd_file)
         if self.is_train:
-            print('    Mean: %.4f, %.4f, %.4f' % (meanstd['mean'][0], meanstd['mean'][1], meanstd['mean'][2]))
-            print('    Std:  %.4f, %.4f, %.4f' % (meanstd['std'][0], meanstd['std'][1], meanstd['std'][2]))
+            print('    Mean: %.4f, %.4f, %.4f' % \
+                    (meanstd['mean'][0], meanstd['mean'][1], meanstd['mean'][2]))
+            print('    Std:  %.4f, %.4f, %.4f' % \
+                    (meanstd['std'][0], meanstd['std'][1], meanstd['std'][2]))
             
         return meanstd['mean'].numpy(), meanstd['std'].numpy()
  
-    def _draw_label(self, tpts, not_annoted, scale, label_data, out_target, out_mask, **kwargs):
+    def _draw_label(self, tpts, not_annoted, scale, label_data, out_target, out_mask,
+                    **kwargs):
         # Generate ground truth
         if label_data == 'points':
             for i in range(tpts.size(0)):
                 if i not in not_annoted:
-                    out_target[i] = draw_labelmap(out_target[i], tpts[i], self.sigma, type=self.label_type)
+                    out_target[i] = draw_labelmap(out_target[i], tpts[i], self.sigma_pts,
+                                                  type=self.label_type)
         elif label_data in ('parts_visible', 'parts_all'):
             coords = tpts[:, 0:2]
             seg_ratios = kwargs['seg_ratios']
@@ -154,9 +166,11 @@ class Mpii(data.Dataset):
                     # TODO: #NI2 missing one solution
                     continue
 
-                # If two points are invisible, which means the whole part is invisible, only punish false positive
+                # If two points are invisible, which means the whole part is invisible,
+                # only punish false positive
                 mask_value = None
-                if label_data == 'parts_visible' and tpts[torch.LongTensor(si)][:, 2].sum() == 0:
+                if label_data == 'parts_visible' and \
+                        tpts[torch.LongTensor(si)][:, 2].sum() == 0:
                     mask_value = 2
 
                 # Indicate that there are parts presented
@@ -170,10 +184,16 @@ class Mpii(data.Dataset):
                     head_radius = (head_top - upper_neck).norm() / 2
                     head_radius *= seg_ratios[isi]
                     head_sigma = seg_sigma_ratios[isi] * head_radius
-                    out_target[isi] = draw_labelmap_ex(out_target[isi], head_center.view(1,2), head_radius, head_sigma, shape='circle', mask=out_mask[isi], mask_value=mask_value)
+                    out_target[isi] = draw_labelmap_ex(
+                            out_target[isi], head_center.view(1,2),
+                            head_radius, head_sigma, shape='circle',
+                            mask=out_mask[isi], mask_value=mask_value)
                 else:
-                    size = seg_ratios[isi] * float(self.out_res) / 200.
-                    out_target[isi] = draw_labelmap_ex(out_target[isi], coords[torch.LongTensor(si)], size, seg_sigma_ratios[isi] * size, shape='pillar', mask=out_mask[isi], mask_value=mask_value)
+                    size = seg_ratios[isi] * scale
+                    out_target[isi] = draw_labelmap_ex(
+                            out_target[isi], coords[torch.LongTensor(si)],
+                            size, seg_sigma_ratios[isi] * size, shape='pillar',
+                            mask=out_mask[isi], mask_value=mask_value)
 
     def __getitem__(self, index):
         sf = self.scale_factor
@@ -213,22 +233,28 @@ class Mpii(data.Dataset):
             c = img_size / 2.
             s = 1.
 
-            for pi, (pts_other, scale_other) in enumerate(zip(a['joint_others'], a['scale_provided_other'])):
+            for pi, (pts_other, scale_other) in enumerate(zip(a['joint_others'],
+                                                              a['scale_provided_other'])):
                 pts_list[pi+1] = pts_other
                 scale_list[pi+1] = scale_other
 
         tpts_list = pts_list.clone()
 
         # TODO: #NI1 Need a better solution
-        mask_points = torch.from_numpy((np.isclose(pts_list.numpy(), 0).sum(-1) == 3).astype(np.uint8))
-        not_annoted = np.nonzero(mask_points.numpy())
+        mask_points = torch.from_numpy(
+                (np.isclose(pts_list.numpy(), 0).sum(-1) == 3).astype(np.uint8))
+        assert mask_points.dim() == 2
+        not_annoted = [list(np.nonzero(mask_points[iperson].numpy())[0])
+                for iperson in range(mask_points.size(0))]
 
         r = 0
         if self.is_train:
             s = s * torch.randn(1).mul_(sf).add_(1).clamp(1-sf, 1+sf)[0]
-            r = torch.randn(1).mul_(rf).clamp(-2*rf, 2*rf)[0] if random.random() <= 0.6 else 0
+            r = torch.randn(1).mul_(rf).clamp(-2*rf, 2*rf)[0] \
+                    if random.random() <= 0.6 else 0
             if not self.single_person:
-                # normal distribution location with mean the image center and standard deviation img_size / 4 (so that 2\sigma == img_size/2)
+                # normal distribution location with mean the image center and
+                # standard deviation img_size / 4 (so that 2\sigma == img_size/2)
                 c += torch.randn(2) * img_size / 4
                 outer = (c < 0 | c > img_size)
                 # if fall in outside, take uniform random location for the outer axis
@@ -241,15 +267,17 @@ class Mpii(data.Dataset):
                 c[0] = img_size[0] - c[0]
 
             # Brightness
-            contrast_factor = np.clip(np.random.rand() / 6. + 1., 1.5, 2.5)
-            img = tune_contrast(img, contrast_factor)
+            if not np.isclose(self.contrast_factor, 0):
+                contrast_scale = np.clip(np.random.randn() * .5 * self.contrast_factor + 1., 1. - self.contrast_factor, 1. + self.contrast_factor)
+                img = tune_contrast(img, contrast_scale)
 
             # Contrast
-            brightness_factor = np.clip(np.random.rand() / 6. + 1., 1.5, 2.5)
-            img = tune_brightness(img, brightness_factor)
+            if not np.isclose(self.brightness_factor, 0):
+                brightness_scale = np.clip(np.random.randn() * .5 * self.brightness_factor + 1., 1. - self.brightness_factor, 1. + self.brightness_factor)
+                img = tune_brightness(img, brightness_scale)
 
             # Color distort
-            img = (img * (np.random.rand(3) * 0.4 + 0.8)).clip(0, 1).astype(np.float32)
+            img = (img * (np.random.rand(3) * 0.4 + 0.8)).clip(0, 1).astype(np.float32) 
 
         # Prepare image and groundtruth map
         img = crop(img, c, s, [self.inp_res, self.inp_res], rot=r)
@@ -259,7 +287,9 @@ class Mpii(data.Dataset):
 
         img = torch.from_numpy(img.transpose(2, 0, 1))
 
-        tpts_list.view(-1, 3)[:, 0:2] = torch.from_numpy(transform(tpts_list.view(-1, 3)[:, 0:2], c, s, [self.out_res, self.out_res], rot=r).T)
+        tpts_list.view(-1, 3)[:, 0:2] = torch.from_numpy(
+                transform(tpts_list.view(-1, 3)[:, 0:2],
+                          c, s, [self.out_res, self.out_res], rot=r).T)
 
         is_points = (self.label_data in (Mpii.LABEL_POINTS_MAP, Mpii.LABEL_MIX_MAP))
         is_parts = (self.label_data in (Mpii.LABEL_PARTS_MAP, Mpii.LABEL_MIX_MAP))
@@ -273,16 +303,23 @@ class Mpii(data.Dataset):
             mask_parts_visible = torch.zeros(len(seg_idx), self.out_res, self.out_res).byte()
             mask_parts_all = torch.zeros(len(seg_idx), self.out_res, self.out_res).byte()
 
-        for iperson, (tpts, nann, scale) in enumerate(zip(tpts_list, not_annoted, scale_list)):
+        for iperson, (tpts, nann, scale) in enumerate(zip(tpts_list,
+                                                          not_annoted,
+                                                          scale_list)):
+            scale *= self.out_res / (200 * s)
             if is_points:
-                self._draw_label(tpts, nann, s, 'points', target_points, None)
+                self._draw_label(tpts, nann, scale, 'points', target_points, None)
             if is_parts:
-                self._draw_label(tpts, nann, s, 'parts_visible', target_parts_visible, mask_parts_visible, seg_ratios=seg_ratios, seg_sigma_ratios=seg_sigma_ratios)
-                self._draw_label(tpts, nann, s, 'parts_all', target_parts_all, mask_parts_all, seg_ratios=[1.] * len(seg_idx), seg_sigma_ratios=[0.2] * len(seg_idx))
+                self._draw_label(tpts, nann, scale, 'parts_visible', target_parts_visible,
+                                 mask_parts_visible, seg_ratios=seg_ratios,
+                                 seg_sigma_ratios=seg_sigma_ratios)
+                self._draw_label(tpts, nann, scale, 'parts_all', target_parts_all,
+                                 mask_parts_all, seg_ratios=[2.] * len(seg_idx),
+                                 seg_sigma_ratios=[0.5] * len(seg_idx))
 
         target = {}
         meta = {'index': index, 'center': c, 'scale': s, 
-                'pts': pts_list, 'tpts': tpts_list}
+                'pts': pts_list, 'tpts': tpts_list, 'nann': not_annoted}
 
         if is_points:
             target['points'] = target_points

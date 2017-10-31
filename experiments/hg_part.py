@@ -1,4 +1,6 @@
 from __future__ import print_function, absolute_import
+import matplotlib
+matplotlib.use('Agg')
 
 import os
 import sys
@@ -12,7 +14,6 @@ import torch.backends.cudnn as cudnn
 import torch.optim
 import torchvision.datasets as datasets
 
-from pose import Bar
 from pose.utils.logger import Logger, savefig
 from pose.utils.evaluation import part_accuracy, accuracy, AverageMeter, final_preds
 from pose.utils.misc import save_checkpoint, detect_checkpoint, save_pred, adjust_learning_rate
@@ -30,9 +31,11 @@ config.hyperdash_exp = None
 # Handle sigint
 import signal
 config.sigint_triggered = False
-def sigint_handler(signal, frame):
-    config.sigint_triggered = True
-    print("SIGINT Detected")
+def enable_sigint_handler():
+    def sigint_handler(signal, frame):
+        config.sigint_triggered = True
+        print("SIGINT Detected")
+    signal.signal(signal.SIGINT, sigint_handler)
 
 # Profiling
 import cProfile, pstats, StringIO
@@ -42,6 +45,10 @@ model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
 
+PART_VISIBLE_NC = 15
+PART_ALL_NC = 15
+POINT_NC = 16
+
 idx = [1,2,3,4,5,6,11,12,15,16]
 
 best_acc = 0
@@ -50,15 +57,23 @@ def main(args):
     global best_acc
 
     config.debug = args.debug
+    config.exp = args.exp
+
+    assert args.exp in ['part', 'ori']
 
     if not isdir(args.checkpoint):
         mkdir_p(args.checkpoint)
 
-    assert args.stacks == 3, "Experiment Requirement"
+    if args.exp == 'part':
+        assert args.stacks == 3, "Experiment Requirement"
 
     print("==> creating model '{}', stacks={}, blocks={}".format(args.arch, args.stacks, args.blocks))
-    model = models.__dict__[args.arch](num_stacks=args.stacks, num_blocks=args.blocks,
-                                       num_classes=[15, 15, 16])
+    if args.exp == 'part':
+        model = models.__dict__[args.arch](num_stacks=args.stacks, num_blocks=args.blocks,
+                                           num_classes=[PART_VISIBLE_NC, PART_ALL_NC, POINT_NC])
+    elif args.exp == 'ori':
+        model = models.__dict__[args.arch](num_stacks=args.stacks, num_blocks=args.blocks,
+                                           num_classes=POINT_NC)
 
     model = torch.nn.DataParallel(model).cuda()
 
@@ -68,7 +83,7 @@ def main(args):
                                     lr=args.lr,
                                     weight_decay=args.weight_decay)
 
-    title = 'mpii-' + args.arch
+    title = 'mpii-' + args.exp + '-' + args.arch
     logger = None
     logfile = join(args.checkpoint, 'log.txt')
     if args.resume:
@@ -95,46 +110,69 @@ def main(args):
         logger = Logger(join(args.checkpoint, 'log.txt'), title=title)
         logger.set_names(['Epoch', 'LR', 'Train Loss', 'Val Loss', 'Train Acc', 'Val Acc'])
 
+    selective = None
+    if args.selective:
+        import numpy as np
+        selective_batch_count = 200
+        mpii_train_size = 22246
+        if isfile(args.selective):
+            selective = np.load(args.selective)
+        else:
+            print("Selective not exist, generating ...")
+            selective = np.arange(mpii_train_size, dtype=int)
+            np.random.shuffle(selective)
+            selective = selective[:selective_batch_count * args.train_batch]
+            np.save(args.selective, selective)
+
+    if args.exp == 'part':
+        label_data = datasets.Mpii.LABEL_MIX_MAP
+        is_single_person=True
+    elif args.exp == 'ori':
+        label_data = datasets.Mpii.LABEL_POINTS_MAP
+        is_single_person=True
+
     # Data loading code
     train_loader = torch.utils.data.DataLoader(
         datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
-                      sigma=args.sigma, label_data=datasets.Mpii.LABEL_MIX_MAP,
-                      label_type=args.label_type, single_person=True),
+                      sigma_pts=args.sigma_pts, label_data=label_data,
+                      label_type=args.label_type, single_person=is_single_person,
+                      selective=selective, train=True, contrast_factor=0.,
+                      brightness_factor=0.),
         batch_size=args.train_batch, shuffle=True,
         num_workers=args.workers, pin_memory=True)
     
     val_loader = torch.utils.data.DataLoader(
         datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
-                      sigma=args.sigma, label_data=datasets.Mpii.LABEL_MIX_MAP,
-                      label_type=args.label_type, train=False, single_person=True),
+                      sigma_pts=args.sigma_pts, label_data=label_data,
+                      label_type=args.label_type, train=False, single_person=is_single_person),
         batch_size=args.test_batch, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
     if args.evaluate:
-        print('\nEvaluation only') 
-        loss, acc, predictions = validate(val_loader, model, criterion, args.num_classes, args.flip)
+        print('\nEvaluation-only mode') 
+        loss, acc, predictions = validate(val_loader, model, criterion, args.flip)
         save_pred(predictions, checkpoint=args.checkpoint)
         return
 
     lr = args.lr
 
     if args.hyperdash:
-        config.hyperdash_exp = Experiment("Hourglass-Part")
+        config.hyperdash_exp = Experiment(args.hyperdash)
 
     if args.profile:
+        assert args.workers == 0, "Profiling doesn't support multi-processing"
         config.profiler = cProfile.Profile()
 
-    signal.signal(signal.SIGINT, sigint_handler)
+    enable_sigint_handler()
     for epoch in range(args.start_epoch, args.epochs):
         lr = adjust_learning_rate(optimizer, epoch, lr, args.schedule, args.gamma)
         
         print('\nEpoch: %d | LR: %.8f' % (epoch + 1, lr))
 
-        # TODO: sigma_decay not used
-        # # decay sigma
-        # if args.sigma_decay > 0:
-        #     train_loader.dataset.sigma *=  args.sigma_decay
-        #     val_loader.dataset.sigma *=  args.sigma_decay
+        # decay sigma
+        if args.sigma_decay > 0:
+            train_loader.dataset.sigma_pts *=  args.sigma_decay
+            val_loader.dataset.sigma_pts *=  args.sigma_decay
 
         # train for one epoch
         train_loss, train_acc = train(train_loader, model, criterion, optimizer, epoch)
@@ -142,10 +180,10 @@ def main(args):
         if config.sigint_triggered:
             break
 
-        print("Validation")
+        print("Validation:")
 
         # evaluate on validation set
-        valid_loss, valid_acc, predictions = validate(val_loader, model, criterion, args.num_classes, epoch, args.flip)
+        valid_loss, valid_acc, predictions = validate(val_loader, model, criterion, epoch, args.flip)
 
         if config.sigint_triggered:
             break
@@ -166,17 +204,18 @@ def main(args):
             'optimizer' : optimizer.state_dict(),
         }, is_best, checkpoint=args.checkpoint, filename=cp_filename)
 
-        preds_filename = 'preds_{}.npy'.format(epoch + 1)
-        save_pred(predictions, is_best=is_best, checkpoint=args.checkpoint, filename=preds_filename)
+        if predictions is not None:
+            preds_filename = 'preds_{}.npy'.format(epoch + 1)
+            save_pred(predictions, is_best=is_best, checkpoint=args.checkpoint, filename=preds_filename)
 
         if config.sigint_triggered:
             break
 
-    # if config.profiler:
-    #     s = StringIO.StringIO()
-    #     ps = pstats.Stats(config.profiler, stream=s).sort_stats('cumulative')
-    #     ps.print_stats()
-    #     print(s.getvalue())
+    if config.profiler:
+        s = StringIO.StringIO()
+        ps = pstats.Stats(config.profiler, stream=s).sort_stats('cumulative')
+        ps.print_stats()
+        print(s.getvalue())
 
     if config.hyperdash_exp:
         config.hyperdash_exp.end()
@@ -185,6 +224,128 @@ def main(args):
     logger.plot(['Train Acc', 'Val Acc'])
     savefig(os.path.join(args.checkpoint, 'log.eps'))
 
+def process_part(model, criterion, optimizer, batch, train, flip=False):
+    inputs, target, meta = batch
+    volatile = not train
+    input_var = torch.autograd.Variable(inputs.cuda(), volatile=volatile)
+    target_vis_var = torch.autograd.Variable(target['parts_v'].cuda(async=True), volatile=volatile)
+    target_all_var = torch.autograd.Variable(target['parts_a'].cuda(async=True), volatile=volatile)
+    target_pts_var = torch.autograd.Variable(target['points'].cuda(async=True), volatile=volatile)
+    mparts_vis_var = torch.autograd.Variable(meta['mparts_v'].cuda(async=True), volatile=volatile)
+    mparts_all_var = torch.autograd.Variable(meta['mparts_a'].cuda(async=True), volatile=volatile)
+
+    output = model(input_var)
+
+    output_vis = output[0]
+    output_all = output[1]
+    output_pts = output[2]
+
+    # mask_vis = ((target_vis_var < output_vis) & (mparts_vis_var == 2)) | (mparts_vis_var == 1)
+    mask_vis = (((target_vis_var < output_vis) + (mparts_vis_var == 2)).eq(2) + (mparts_vis_var == 1)).gt(0)
+    mask_all = mparts_all_var
+
+    loss_vis = criterion(output_vis[mask_vis], target_vis_var[mask_vis])
+    loss_all = criterion(output_all[mask_all], target_all_var[mask_all])
+    loss_pts = criterion(output_pts, target_pts_var)
+
+    loss = loss_vis + loss_all + loss_pts
+
+    parts_vis_map = output_vis.data.cpu()
+    parts_all_map = output_all.data.cpu()
+    points_map = output_pts.data.cpu()
+
+    if train:
+        # compute gradient and do SGD step
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    if not train and flip:
+        flip_input_var = torch.autograd.Variable(
+                torch.from_numpy(fliplr(inputs.clone().numpy())).float().cuda(), 
+                volatile=True
+            )
+        flip_output_var = model(flip_input_var)
+        # flip_output = flip_back(flip_output_var[-1].data.cpu(), datatype='parts')
+        flip_output = flip_back(flip_output_var[-1].data.cpu())
+        points_map += flip_output
+        points_map /= 2.
+
+    acc = accuracy(points_map, target['points'], idx)
+
+    if config.debug: # visualize groundtruth and predictions
+        gt_batch_img = batch_with_heatmap(inputs, target['points'])
+        pred_batch_img = batch_with_heatmap(inputs, points_map)
+        if not gt_win or not pred_win:
+            ax1 = plt.subplot(121)
+            ax1.title.set_text('Groundtruth')
+            gt_win = plt.imshow(gt_batch_img)
+            ax2 = plt.subplot(122)
+            ax2.title.set_text('Prediction')
+            pred_win = plt.imshow(pred_batch_img)
+        else:
+            gt_win.set_data(gt_batch_img)
+            pred_win.set_data(pred_batch_img)
+        plt.pause(.05)
+        plt.draw()
+
+    if train:
+        return loss.data[0], acc[0]
+    else:
+        return loss.data[0], acc[0], (parts_vis_map, parts_all_map, points_map)
+
+def process_ori(model, criterion, optimizer, batch, train, flip=False):
+    inputs, target, meta = batch
+    volatile = not train
+    input_var = torch.autograd.Variable(inputs.cuda(), volatile=volatile)
+    target_var = torch.autograd.Variable(target['points'].cuda(async=True), volatile=volatile)
+
+    output = model(input_var)
+    score_map = output[-1].data.cpu()
+
+    loss = criterion(output[0], target_var)
+    for j in range(1, len(output)):
+        loss += criterion(output[j], target_var)
+
+    if train:
+        # compute gradient and do SGD step
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    if not train and flip:
+        flip_input_var = torch.autograd.Variable(
+                torch.from_numpy(fliplr(inputs.clone().numpy())).float().cuda(), 
+                volatile=True
+            )
+        flip_output_var = model(flip_input_var)
+        # flip_output = flip_back(flip_output_var[-1].data.cpu(), datatype='parts')
+        flip_output = flip_back(flip_output_var[-1].data.cpu())
+        score_map += flip_output
+        score_map /= 2.
+
+    acc = accuracy(score_map, target['points'], idx)
+
+    if config.debug: # visualize groundtruth and predictions
+        gt_batch_img = batch_with_heatmap(inputs, target['points'])
+        pred_batch_img = batch_with_heatmap(inputs, score_map)
+        if not gt_win or not pred_win:
+            ax1 = plt.subplot(121)
+            ax1.title.set_text('Groundtruth')
+            gt_win = plt.imshow(gt_batch_img)
+            ax2 = plt.subplot(122)
+            ax2.title.set_text('Prediction')
+            pred_win = plt.imshow(pred_batch_img)
+        else:
+            gt_win.set_data(gt_batch_img)
+            pred_win.set_data(pred_batch_img)
+        plt.pause(.05)
+        plt.draw()
+
+    if train:
+        return loss.data[0], acc[0]
+    else:
+        return loss.data[0], acc[0], score_map
 
 def train(train_loader, model, criterion, optimizer, epoch):
     batch_time = AverageMeter()
@@ -196,93 +357,37 @@ def train(train_loader, model, criterion, optimizer, epoch):
     model.train()
 
     end = time.time()
+    start_time = time.time()
 
     gt_win, pred_win = None, None
-    bar = Bar('Processing', max=len(train_loader))
 
-    # if config.profiler:
-    #     config.profiler.enable()
+    if config.profiler: config.profiler.enable()
 
     for i, (inputs, target, meta) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        input_var = torch.autograd.Variable(inputs.cuda())
-        target_vis_var = torch.autograd.Variable(target['parts_v'].cuda(async=True))
-        target_all_var = torch.autograd.Variable(target['parts_a'].cuda(async=True))
-        target_pts_var = torch.autograd.Variable(target['points'].cuda(async=True))
-        mparts_vis_var = torch.autograd.Variable(meta['mparts_v'].cuda(async=True))
-        mparts_all_var = torch.autograd.Variable(meta['mparts_a'].cuda(async=True))
-
-        # compute output
-        output = model(input_var)
-        score_map = output[-1].data.cpu()
-
-        output_vis = output[0]
-        output_all = output[1]
-        output_pts = output[2]
-
-        mask_vis = (((target_vis_var < output_vis) + (mparts_vis_var == 2)).eq(2) + (mparts_vis_var == 1)).gt(0)
-        mask_all = mparts_all_var
-
-        loss_vis = criterion(output_vis[mask_vis], target_vis_var[mask_vis])
-        loss_all = criterion(output_all[mask_all], target_all_var[mask_all])
-        loss_pts = criterion(output_pts, target_pts_var)
-
-        loss = loss_vis + loss_all + loss_pts
-
-        # acc = part_accuracy(score_map * mask_all.data.cpu(), target['parts_a'] * mask_all.data.cpu())
-        acc = accuracy(score_map, target['points'], idx)
-
-        if config.debug: # visualize groundtruth and predictions
-            gt_batch_img = batch_with_heatmap(inputs, target)
-            pred_batch_img = batch_with_heatmap(inputs, score_map)
-            if not gt_win or not pred_win:
-                ax1 = plt.subplot(121)
-                ax1.title.set_text('Groundtruth')
-                gt_win = plt.imshow(gt_batch_img)
-                ax2 = plt.subplot(122)
-                ax2.title.set_text('Prediction')
-                pred_win = plt.imshow(pred_batch_img)
-            else:
-                gt_win.set_data(gt_batch_img)
-                pred_win.set_data(pred_batch_img)
-            plt.pause(.05)
-            plt.draw()
+        if config.exp == 'part':
+            loss, acc = process_part(model, criterion, optimizer, (inputs, target, meta), train=True)
+        elif config.exp == 'ori':
+            loss, acc = process_ori(model, criterion, optimizer, (inputs, target, meta), train=True)
 
         # measure accuracy and record loss
-        losses.update(loss.data[0], inputs.size(0))
-        acces.update(acc[0], inputs.size(0))
-
-        # compute gradient and do SGD step
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        losses.update(loss, inputs.size(0))
+        acces.update(acc, inputs.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
-        # # plot progress
-        # bar.suffix  = '({batch}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
-        #             batch=i + 1,
-        #             size=len(train_loader),
-        #             data=data_time.val,
-        #             bt=batch_time.val,
-        #             total=bar.elapsed_td,
-        #             eta=bar.eta_td,
-        #             loss=losses.avg,
-        #             acc=acces.avg
-        #             )
-        # bar.next()
-        loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:2.6f}s | Batch: {bt:2.3f}s | Total: {total:} | Loss: {loss:.4f} | Acc: {acc:.4f} | A.Loss: {avgloss:.4f} | A.Acc: {avgacc: .4f}'.format(
+        loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s | Loss: {loss:.4f} | Acc: {acc:7.4f} | A.Loss: {avgloss:.4f} | A.Acc: {avgacc:7.4f}'.format(
                   epoch=epoch + 1,
                   batch=i + 1,
                   size_width=len(str(len(train_loader))),
                   size=len(train_loader),
                   data=data_time.val,
                   bt=batch_time.val,
-                  total=bar.elapsed_td,
+                  total=time.time() - start_time,
                   loss=losses.val,
                   acc=acces.val,
                   avgloss=losses.avg,
@@ -291,135 +396,92 @@ def train(train_loader, model, criterion, optimizer, epoch):
         print(loginfo)
 
         if config.hyperdash_exp:
-            config.hyperdash_exp.metric("accuracy", acces.val, log=False)
+            config.hyperdash_exp.metric("acc", acces.val, log=False)
             config.hyperdash_exp.metric("loss", losses.val, log=False)
             if i > 10:
                 # initial accuracy is inaccurate
-                config.hyperdash_exp.metric("avg.accuracy", acces.avg, log=False)
-                config.hyperdash_exp.metric("avg.loss", losses.avg, log=False)
+                config.hyperdash_exp.metric("acc_avg", acces.avg, log=False)
+                config.hyperdash_exp.metric("loss_avg", losses.avg, log=False)
 
         if config.sigint_triggered:
             break
 
-    # if config.profiler: config.profiler.disable()
-    # bar.finish()
+    if config.profiler: config.profiler.disable()
     return losses.avg, acces.avg
 
 
-def validate(val_loader, model, criterion, num_classes, epoch, flip=False):
+def validate(val_loader, model, criterion, epoch, flip=False):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
     acces = AverageMeter()
 
-    # predictions
-    # predictions = torch.Tensor(val_loader.dataset.__len__(), num_classes, 2)
     pred_lim = 50
-    predictions_parts = torch.Tensor(pred_lim, 2, 15, 64, 64)
-    predictions_pts = torch.Tensor(pred_lim, 16, 64, 64)
+    pred_res = 64
+    # predictions
+    if config.exp == 'part':
+        predictions_parts = torch.Tensor(pred_lim, PART_VISIBLE_NC + PART_ALL_NC, pred_res, pred_res)
+        predictions_pts = torch.Tensor(pred_lim, POINT_NC, pred_res, pred_res)
+        predictions = {'parts': predictions_parts, 'pts': predictions_pts}
+    elif config.exp == 'ori':
+        # predictions = torch.Tensor(val_loader.dataset.__len__(), POINT_NC, 2)
+        predictions = torch.Tensor(pred_lim, POINT_NC, pred_res, pred_res)
 
     # switch to evaluate mode
     model.eval()
 
     gt_win, pred_win = None, None
     end = time.time()
-    bar = Bar('Processing', max=len(val_loader))
+    start_time = time.time()
     for i, (inputs, target, meta) in enumerate(val_loader):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        input_var = torch.autograd.Variable(inputs.cuda(), volatile=True)
-        target_vis_var = torch.autograd.Variable(target['parts_v'].cuda(async=True), volatile=True)
-        target_all_var = torch.autograd.Variable(target['parts_a'].cuda(async=True), volatile=True)
-        target_pts_var = torch.autograd.Variable(target['points'].cuda(async=True), volatile=True)
-        mparts_vis_var = torch.autograd.Variable(meta['mparts_v'].cuda(async=True), volatile=True)
-        mparts_all_var = torch.autograd.Variable(meta['mparts_a'].cuda(async=True), volatile=True)
+        if config.exp == 'part':
+            loss, acc, (parts_vis_map, parts_all_map, points_map) = \
+                    process_part(model, criterion, None, (inputs, target, meta), train=False, flip=flip)
 
-        # compute output
-        output = model(input_var)
+            # generate predictions
+            for n in range(points_map.size(0)):
+                if meta['index'][n] >= pred_lim:
+                    continue
+                predictions_parts[meta['index'][n], :PART_VISIBLE_NC, :, :] = parts_vis_map[n, :, :pred_res, :pred_res]
+                predictions_parts[meta['index'][n], PART_VISIBLE_NC:, :, :, :] = parts_all_map[n, :, :pred_res, :pred_res]
+                predictions_pts[meta['index'][n], :, :, :] = points_map[n, :, :pred_res, :pred_res]
 
-        output_vis = output[0]
-        output_all = output[1]
-        output_pts = output[2]
+        elif config.exp == 'ori':
+            loss, acc, score_map = process_ori(model, criterion, None, (inputs, target, meta), train=False)
 
-        # mask_vis = ((target_vis_var < output_vis) & (mparts_vis_var == 2)) | (mparts_vis_var == 1)
-        mask_vis = (((target_vis_var < output_vis) + (mparts_vis_var == 2)).eq(2) + (mparts_vis_var == 1)).gt(0)
-        mask_all = mparts_all_var
-
-        loss_vis = criterion(output_vis[mask_vis], target_vis_var[mask_vis])
-        loss_all = criterion(output_all[mask_all], target_all_var[mask_all])
-        loss_pts = criterion(output_pts, target_pts_var)
-
-        loss = loss_vis + loss_all + loss_pts
-
-        parts_vis_map = output_vis.data.cpu()
-        parts_all_map = output_all.data.cpu()
-        points_map = output_pts.data.cpu()
-
-        acc = accuracy(points_map, target['points'], idx)
-
-        if flip:
-            flip_input_var = torch.autograd.Variable(
-                    torch.from_numpy(fliplr(inputs.clone().numpy())).float().cuda(), 
-                    volatile=True
-                )
-            flip_output_var = model(flip_input_var)
-            # flip_output = flip_back(flip_output_var[-1].data.cpu(), datatype='parts')
-            flip_output = flip_back(flip_output_var[-1].data.cpu())
-            points_map += flip_output
-            points_map /= 2.
-
-        # generate predictions
-        for n in range(points_map.size(0)):
-            if meta['index'][n] >= pred_lim:
-                continue
-            predictions_parts[meta['index'][n], 0, :, :, :] = parts_vis_map[n, :, :64, :64]
-            predictions_parts[meta['index'][n], 1, :, :, :] = parts_all_map[n, :, :64, :64]
-            predictions_pts[meta['index'][n], :, :, :] = points_map[n, :, :64, :64]
-
-        if config.debug:
-            gt_batch_img = batch_with_heatmap(inputs, target)
-            pred_batch_img = batch_with_heatmap(inputs, points_map)
-            if not gt_win or not pred_win:
-                plt.subplot(121)
-                gt_win = plt.imshow(gt_batch_img)
-                plt.subplot(122)
-                pred_win = plt.imshow(pred_batch_img)
-            else:
-                gt_win.set_data(gt_batch_img)
-                pred_win.set_data(pred_batch_img)
-            plt.pause(.05)
-            plt.draw()
+            for n in range(score_map.size(0)):
+                if meta['index'][n] >= pred_lim:
+                    continue
+                # predictions[meta['index'][n], :, :] = preds[n, :, :]
+                predictions[meta['index'][n], :, :, :] = score_map[n, :, :pred_res, :pred_res]
 
         # measure accuracy and record loss
-        losses.update(loss.data[0], inputs.size(0))
-        acces.update(acc[0], inputs.size(0))
+        losses.update(loss, inputs.size(0))
+        acces.update(acc, inputs.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
-        # # plot progress
-        # bar.suffix  = '({batch}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | Acc: {acc: .4f}'.format(
-        #             batch=i + 1,
-        #             size=len(val_loader),
-        #             data=data_time.val,
-        #             bt=batch_time.avg,
-        #             total=bar.elapsed_td,
-        #             eta=bar.eta_td,
-        #             loss=losses.avg,
-        #             acc=acces.avg
-        #             )
-        # bar.next()
+        if config.hyperdash_exp:
+            config.hyperdash_exp.metric("acc_val", acces.val, log=False)
+            config.hyperdash_exp.metric("loss_val", losses.val, log=False)
+            if i > 10:
+                # initial accuracy is inaccurate
+                config.hyperdash_exp.metric("acc_val_avg", acces.avg, log=False)
+                config.hyperdash_exp.metric("loss_val_avg", losses.avg, log=False)
         
-        loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:2.6f}s | Batch: {bt:2.3f}s | Total: {total:} | Loss: {loss:.4f} | Acc: {acc:.4f} | A.Loss: {avgloss:.4f} | A.Acc: {avgacc: .4f}'.format(
+        loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s | Loss: {loss:.4f} | Acc: {acc:7.4f} | A.Loss: {avgloss:.4f} | A.Acc: {avgacc:7.4f}'.format(
                   epoch=epoch + 1,
                   batch=i + 1,
                   size_width=len(str(len(val_loader))),
                   size=len(val_loader),
                   data=data_time.val,
                   bt=batch_time.avg,
-                  total=bar.elapsed_td,
+                  total=time.time() - start_time,
                   loss=losses.val,
                   acc=acces.val,
                   avgloss=losses.avg,
@@ -430,8 +492,7 @@ def validate(val_loader, model, criterion, num_classes, epoch, flip=False):
         if config.sigint_triggered:
             break
 
-    # bar.finish()
-    return losses.avg, acces.avg, {'parts': predictions_parts, 'pts': predictions_pts}
+    return losses.avg, acces.avg, predictions
 
 
 if __name__ == '__main__':
@@ -448,8 +509,7 @@ if __name__ == '__main__':
                         help='Number of features in the hourglass')
     parser.add_argument('-b', '--blocks', default=1, type=int, metavar='N',
                         help='Number of residual modules at each location in the hourglass')
-    parser.add_argument('--num-classes', default=15, type=int, metavar='N',
-                        help='Number of keypoints')
+
     # Training strategy
     parser.add_argument('-j', '--workers', default=1, type=int, metavar='N',
                         help='number of data loading workers (default: 4)')
@@ -474,8 +534,8 @@ if __name__ == '__main__':
     # Data processing
     parser.add_argument('-f', '--flip', dest='flip', action='store_true',
                         help='flip the input during validation')
-    parser.add_argument('--sigma', type=float, default=1,
-                        help='Groundtruth Gaussian sigma.')
+    parser.add_argument('--sigma-pts', type=float, default=1,
+                        help='Groundtruth Gaussian sigma for points.')
     parser.add_argument('--sigma-decay', type=float, default=0,
                         help='Sigma decay rate for each epoch.')
     parser.add_argument('--label-type', metavar='LABELTYPE', default='Gaussian',
@@ -490,10 +550,13 @@ if __name__ == '__main__':
                         help='evaluate model on validation set')
     parser.add_argument('-d', '--debug', dest='debug', action='store_true',
                         help='show intermediate results')
-    parser.add_argument('--no-hd', dest='hyperdash', action='store_false',
-                        help='disable hyperdash')
     parser.add_argument('--profile', action='store_true',
                         help='profile training')
-
+    parser.add_argument('--selective', type=str, metavar='FILE',
+                        help='select a part of dataset')
+    parser.add_argument('--hyperdash', type=str, metavar='HDNAME',
+                        help='name used by hyperdash')
+    parser.add_argument('--exp', type=str, metavar='EXPNAME',
+                        help='experiment name')
     # import ipdb; ipdb.set_trace()
     main(parser.parse_args())
