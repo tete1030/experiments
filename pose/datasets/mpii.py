@@ -263,7 +263,7 @@ class Mpii(data.Dataset):
             # Flip
             if random.random() <= 0.5:
                 img = np.fliplr(img)
-                tpts_list = shufflelr(tpts_list, width=img_size[0], dataset='mpii')
+                tpts_list = fliplr_pts(tpts_list, width=img_size[0], dataset='mpii')
                 c[0] = img_size[0] - c[0]
 
             # Brightness

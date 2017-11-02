@@ -5,16 +5,16 @@ BLOCK=1
 EPOCHS=220
 TRAINBATCH=12
 TESTBATCH=12
-WORKER=16
+WORKER=24
 LR=5e-4
 EXP="part"
-AFFIX="2"
+AFFIX="3"
 EXPERIMENT_NAME="${ARCH}_${EXP}_S${STACK}_B${BLOCK}_${AFFIX}"
 CHECKPOINT_PATH="checkpoint/mpii/${EXPERIMENT_NAME}"
 # RESUME="--resume ${CHECKPOINT_PATH}/checkpoint.pth.tar"
 # EVALUATE="--evaluate"
 
-cd ~/my/pytorch-pose
+cd ../
 
 CUDA_VISIBLE_DEVICES=${GPUID} python experiments/hg_part.py \
    --exp ${EXP} \
@@ -27,7 +27,8 @@ CUDA_VISIBLE_DEVICES=${GPUID} python experiments/hg_part.py \
    -j ${WORKER} \
    --lr ${LR} \
    --schedule 150 175 200 \
-   --selective "${CHECKPOINT_PATH}/sel.npy" \
+   --selective "experiments/sel.npy" \
+   --skip-val 5 \
    --hyperdash "HG-Part" \
    ${RESUME} \
    ${EVALUATE}

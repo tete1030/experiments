@@ -19,7 +19,7 @@ from pose.utils.evaluation import part_accuracy, accuracy, AverageMeter, final_p
 from pose.utils.misc import save_checkpoint, detect_checkpoint, save_pred, adjust_learning_rate
 from pose.utils.osutils import mkdir_p, isfile, isdir, join
 from pose.utils.imutils import batch_with_heatmap
-from pose.utils.transforms import fliplr, flip_back
+from pose.utils.transforms import fliplr_chwimg, fliplr_map
 import pose.utils.config as config
 import pose.models as models
 import pose.datasets as datasets
@@ -183,7 +183,10 @@ def main(args):
         print("Validation:")
 
         # evaluate on validation set
-        valid_loss, valid_acc, predictions = validate(val_loader, model, criterion, epoch, args.flip)
+        if args.skip_val < 1 and (epoch + 1) % args.skip_val == 0:
+            valid_loss, valid_acc, predictions = validate(val_loader, model, criterion, epoch, args.flip)
+        else:
+            valid_loss, valid_acc, predictions = 0., 0., None
 
         if config.sigint_triggered:
             break
@@ -262,12 +265,12 @@ def process_part(model, criterion, optimizer, batch, train, flip=False):
 
     if not train and flip:
         flip_input_var = torch.autograd.Variable(
-                torch.from_numpy(fliplr(inputs.clone().numpy())).float().cuda(), 
+                torch.from_numpy(fliplr_chwimg(inputs.numpy())).float().cuda(), 
                 volatile=True
             )
         flip_output_var = model(flip_input_var)
-        # flip_output = flip_back(flip_output_var[-1].data.cpu(), datatype='parts')
-        flip_output = flip_back(flip_output_var[-1].data.cpu())
+        # flip_output = fliplr_map(flip_output_var[-1].data.cpu(), datatype='parts')
+        flip_output = fliplr_map(flip_output_var[-1].data.cpu())
         points_map += flip_output
         points_map /= 2.
 
@@ -315,12 +318,12 @@ def process_ori(model, criterion, optimizer, batch, train, flip=False):
 
     if not train and flip:
         flip_input_var = torch.autograd.Variable(
-                torch.from_numpy(fliplr(inputs.clone().numpy())).float().cuda(), 
+                torch.from_numpy(fliplr_chwimg(inputs.numpy())).float().cuda(), 
                 volatile=True
             )
         flip_output_var = model(flip_input_var)
-        # flip_output = flip_back(flip_output_var[-1].data.cpu(), datatype='parts')
-        flip_output = flip_back(flip_output_var[-1].data.cpu())
+        # flip_output = fliplr_map(flip_output_var[-1].data.cpu(), datatype='parts')
+        flip_output = fliplr_map(flip_output_var[-1].data.cpu())
         score_map += flip_output
         score_map /= 2.
 
@@ -450,7 +453,7 @@ def validate(val_loader, model, criterion, epoch, flip=False):
                 predictions_pts[meta['index'][n], :, :, :] = points_map[n, :, :pred_res, :pred_res]
 
         elif config.exp == 'ori':
-            loss, acc, score_map = process_ori(model, criterion, None, (inputs, target, meta), train=False)
+            loss, acc, score_map = process_ori(model, criterion, None, (inputs, target, meta), train=False, flip=flip)
 
             for n in range(score_map.size(0)):
                 if meta['index'][n] >= pred_lim:
@@ -558,5 +561,7 @@ if __name__ == '__main__':
                         help='name used by hyperdash')
     parser.add_argument('--exp', type=str, metavar='EXPNAME',
                         help='experiment name')
+    parser.add_argument('--skip-val', type=int, metavar='EPOCH_COUNT',
+                        default=0, help='Validation skip number')
     # import ipdb; ipdb.set_trace()
     main(parser.parse_args())

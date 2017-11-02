@@ -18,11 +18,13 @@ def color_normalize(x, mean, std):
         t.sub_(m)
     return x
 
-
-def flip_back(flip_output, dataset='mpii', datatype='keypoints'):
+def fliplr_map(flip_output, dataset='mpii', datatype='keypoints'):
     """
     flip output map
     """
+    assert isinstance(flip_output, torch.FloatTensor)
+    assert flip_output.dim() == 4
+
     if dataset ==  'mpii':
         if datatype == 'keypoints':
             matchedParts = (
@@ -42,22 +44,23 @@ def flip_back(flip_output, dataset='mpii', datatype='keypoints'):
         print('Not supported dataset: ' + dataset)
 
     # flip output horizontally
-    flip_output = fliplr(flip_output.numpy())
+    new_flip_output = flip_output.clone()
 
     # Change left-right parts
-    for pair in matchedParts:
-        tmp = np.copy(flip_output[:, pair[0], :, :])
-        flip_output[:, pair[0], :, :] = flip_output[:, pair[1], :, :]
-        flip_output[:, pair[1], :, :] = tmp
+    matchedParts = torch.LongTensor(matchedParts)
+    new_flip_output[:, matchedParts[:, 0]] = flip_output[:, matchedParts[:, 1]]
+    new_flip_output[:, matchedParts[:, 1]] = flip_output[:, matchedParts[:, 0]]
 
-    return torch.from_numpy(flip_output).float()
+    new_flip_output = torch.from_numpy(fliplr_chwimg(new_flip_output.numpy()))
 
+    return new_flip_output
 
-def shufflelr(x, width, dataset='mpii'):
+def fliplr_pts(x, width, dataset='mpii'):
     """
     flip coords
     """
-    assert x.dim() in [3, 4]
+    assert isinstance(x, torch.FloatTensor)
+    assert x.dim() in [2, 3]
 
     if dataset ==  'mpii':
         matchedParts = (
@@ -71,27 +74,25 @@ def shufflelr(x, width, dataset='mpii'):
 
     # Change left-right parts
     matchedParts = torch.LongTensor(matchedParts)
-    if x.dim() == 3:
-        newx[:, matchedParts[:, 0]].copy_(x[:, matchedParts[:, 1]])
-        newx[:, matchedParts[:, 1]].copy_(x[:, matchedParts[:, 0]])
+    if x.dim() == 2:
+        newx[matchedParts[:, 0]] = x[matchedParts[:, 1]]
+        newx[matchedParts[:, 1]] = x[matchedParts[:, 0]]
     else:
-        newx[:, :, matchedParts[:, 0]].copy_(x[:, :, matchedParts[:, 1]])
-        newx[:, :, matchedParts[:, 1]].copy_(x[:, :, matchedParts[:, 0]])
+        newx[:, matchedParts[:, 0]] = x[:, matchedParts[:, 1]]
+        newx[:, matchedParts[:, 1]] = x[:, matchedParts[:, 0]]
 
     # Flip horizontal
     newx.select(-1, 0).neg_().add_(width)
 
     return newx
 
-
-def fliplr(x):
+def fliplr_chwimg(x):
+    assert isinstance(x, np.ndarray)
+    assert x.ndim in [3, 4]
     if x.ndim == 3:
-        x = np.transpose(np.fliplr(np.transpose(x, (0, 2, 1))), (0, 2, 1))
+        return x[:, :, ::-1].copy()
     elif x.ndim == 4:
-        for i in range(x.shape[0]):
-            x[i] = np.transpose(np.fliplr(np.transpose(x[i], (0, 2, 1))), (0, 2, 1))
-    return x.astype(float)
-
+        return x[:, :, :, ::-1].copy()
 
 def get_transform(center, scale, res, rot=0):
     """
