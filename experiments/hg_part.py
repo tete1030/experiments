@@ -58,22 +58,26 @@ def main(args):
 
     config.debug = args.debug
     config.exp = args.exp
+    config.fastpass = args.fastpass
 
     assert args.exp in ['part', 'ori']
 
     if not isdir(args.checkpoint):
         mkdir_p(args.checkpoint)
 
-    if args.exp == 'part':
-        assert args.stacks == 3, "Experiment Requirement"
-
     print("==> creating model '{}', stacks={}, blocks={}".format(args.arch, args.stacks, args.blocks))
     if args.exp == 'part':
+        assert args.stacks == 3, "Experiment Requirement"
         model = models.__dict__[args.arch](num_stacks=args.stacks, num_blocks=args.blocks,
                                            num_classes=[PART_VISIBLE_NC, PART_ALL_NC, POINT_NC])
     elif args.exp == 'ori':
         model = models.__dict__[args.arch](num_stacks=args.stacks, num_blocks=args.blocks,
                                            num_classes=POINT_NC)
+    elif args.exp == 'inf':
+        model = models.NewHourglassNet(models.Bottleneck, 
+                                       num_stacks=args.stacks,
+                                       num_blocks=args.blocks,
+                                       num_classes=POINT_NC*2)
 
     model = torch.nn.DataParallel(model).cuda()
 
@@ -126,10 +130,10 @@ def main(args):
 
     if args.exp == 'part':
         label_data = datasets.Mpii.LABEL_MIX_MAP
-        is_single_person=True
-    elif args.exp == 'ori':
+        is_single_person = True
+    elif args.exp == 'ori' or args.exp == 'inf':
         label_data = datasets.Mpii.LABEL_POINTS_MAP
-        is_single_person=True
+        is_single_person = True
 
     # Data loading code
     train_loader = torch.utils.data.DataLoader(
@@ -180,23 +184,23 @@ def main(args):
         if config.sigint_triggered:
             break
 
-        print("Validation:")
-
         # evaluate on validation set
-        if args.skip_val < 1 and (epoch + 1) % args.skip_val == 0:
+        if args.skip_val > 0 and (epoch + 1) % args.skip_val == 0:
+            print("Validation:")
             valid_loss, valid_acc, predictions = validate(val_loader, model, criterion, epoch, args.flip)
+            # remember best acc and save checkpoint
+            is_best = valid_acc > best_acc
+            best_acc = max(valid_acc, best_acc)
         else:
+            print("Skip validation")
             valid_loss, valid_acc, predictions = 0., 0., None
+            is_best = False
 
         if config.sigint_triggered:
             break
 
         # append logger file
         logger.append([epoch + 1, lr, train_loss, valid_loss, train_acc, valid_acc])
-
-        # remember best acc and save checkpoint
-        is_best = valid_acc > best_acc
-        best_acc = max(valid_acc, best_acc)
 
         cp_filename = 'checkpoint_{}.pth.tar'.format(epoch + 1)
         save_checkpoint({
@@ -297,6 +301,77 @@ def process_part(model, criterion, optimizer, batch, train, flip=False):
     else:
         return loss.data[0], acc[0], (parts_vis_map, parts_all_map, points_map)
 
+def process_inf(model, criterion, optimizer, batch, train, flip=False):
+    inputs, target, meta = batch
+    volatile = not train
+    input_var = torch.autograd.Variable(inputs.cuda(), volatile=volatile)
+    target_var = torch.autograd.Variable(target['points'].cuda(async=True), volatile=volatile)
+    point_num = target_var.size(0)
+
+    output = model(input_var)
+
+    map_acc = 0.
+    mask_acc = 0.
+
+    for j in range(0, len(output)):
+        map_med = output[j][:, :point_num]
+        mask_med = output[j][:, point_num:]
+        map_acc = map_med * mask_med + map_acc
+        mask_acc = mask_med + mask_acc
+    
+    map_loss = criterion(map_acc, target_var)
+    mask_loss = mask_acc.sub_(1.).pow_(2).sum() / mask_acc.numel()
+    # TODO adding restrict on mask diff between levels
+
+    loss = map_loss + mask_loss
+
+    if train:
+        # compute gradient and do SGD step
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    score_map = map_acc.data.cpu()
+    if not train and flip:
+        flip_input_var = torch.autograd.Variable(
+                torch.from_numpy(fliplr_chwimg(inputs.numpy())).float().cuda(), 
+                volatile=True
+            )
+        flip_output_var = model(flip_input_var)
+
+        flip_map_acc = 0.
+        for j in range(0, len(output)):
+            flip_map_med = flip_output_var[j][:, :point_num]
+            flip_mask_med = flip_output_var[j][:, point_num:]
+            flip_map_acc = flip_map_med * flip_mask_med + flip_map_acc
+            
+        flip_output = fliplr_map(flip_map_acc.data.cpu())
+        score_map += flip_output
+        score_map /= 2.
+
+    acc = accuracy(score_map, target['points'], idx)
+
+    if config.debug: # visualize groundtruth and predictions
+        gt_batch_img = batch_with_heatmap(inputs, target['points'])
+        pred_batch_img = batch_with_heatmap(inputs, score_map)
+        if not gt_win or not pred_win:
+            ax1 = plt.subplot(121)
+            ax1.title.set_text('Groundtruth')
+            gt_win = plt.imshow(gt_batch_img)
+            ax2 = plt.subplot(122)
+            ax2.title.set_text('Prediction')
+            pred_win = plt.imshow(pred_batch_img)
+        else:
+            gt_win.set_data(gt_batch_img)
+            pred_win.set_data(pred_batch_img)
+        plt.pause(.05)
+        plt.draw()
+
+    if train:
+        return loss.data[0], acc[0]
+    else:
+        return loss.data[0], acc[0], score_map
+
 def process_ori(model, criterion, optimizer, batch, train, flip=False):
     inputs, target, meta = batch
     volatile = not train
@@ -374,6 +449,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
             loss, acc = process_part(model, criterion, optimizer, (inputs, target, meta), train=True)
         elif config.exp == 'ori':
             loss, acc = process_ori(model, criterion, optimizer, (inputs, target, meta), train=True)
+        elif config.exp == 'inf':
+            loss, acc = process_inf(model, criterion, optimizer, (inputs, target, meta), train=True)
 
         # measure accuracy and record loss
         losses.update(loss, inputs.size(0))
@@ -407,6 +484,10 @@ def train(train_loader, model, criterion, optimizer, epoch):
                 config.hyperdash_exp.metric("loss_avg", losses.avg, log=False)
 
         if config.sigint_triggered:
+            break
+
+        if config.fastpass > 0 and (i+1) >= config.fastpass:
+            print("Fast Pass!")
             break
 
     if config.profiler: config.profiler.disable()
@@ -449,11 +530,12 @@ def validate(val_loader, model, criterion, epoch, flip=False):
                 if meta['index'][n] >= pred_lim:
                     continue
                 predictions_parts[meta['index'][n], :PART_VISIBLE_NC, :, :] = parts_vis_map[n, :, :pred_res, :pred_res]
-                predictions_parts[meta['index'][n], PART_VISIBLE_NC:, :, :, :] = parts_all_map[n, :, :pred_res, :pred_res]
+                predictions_parts[meta['index'][n], PART_VISIBLE_NC:, :, :] = parts_all_map[n, :, :pred_res, :pred_res]
                 predictions_pts[meta['index'][n], :, :, :] = points_map[n, :, :pred_res, :pred_res]
 
-        elif config.exp == 'ori':
-            loss, acc, score_map = process_ori(model, criterion, None, (inputs, target, meta), train=False, flip=flip)
+        elif config.exp in ['ori', 'inf']:
+            process_func = {'ori': process_ori, 'inf': process_inf}[config.exp]
+            loss, acc, score_map = process_func(model, criterion, None, (inputs, target, meta), train=False, flip=flip)
 
             for n in range(score_map.size(0)):
                 if meta['index'][n] >= pred_lim:
@@ -493,6 +575,10 @@ def validate(val_loader, model, criterion, epoch, flip=False):
         print(loginfo)
 
         if config.sigint_triggered:
+            break
+
+        if config.fastpass > 0 and (i+1) >= config.fastpass:
+            print("Fast Pass!")
             break
 
     return losses.avg, acces.avg, predictions
@@ -562,6 +648,8 @@ if __name__ == '__main__':
     parser.add_argument('--exp', type=str, metavar='EXPNAME',
                         help='experiment name')
     parser.add_argument('--skip-val', type=int, metavar='EPOCH_COUNT',
-                        default=0, help='Validation skip number')
+                        default=1, help='do validation for every EPOCH_COUNT epochs (default: 1)')
+    parser.add_argument('--fastpass', nargs='?', type=int, const=2,
+                        default=0, help='for fast test')
     # import ipdb; ipdb.set_trace()
     main(parser.parse_args())

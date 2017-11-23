@@ -30,6 +30,7 @@ CUDA_VISIBLE_DEVICES=${GPUID} python experiments/hg_part.py \
    --selective "experiments/sel.npy" \
    --skip-val 5 \
    --hyperdash "HG-Part" \
+   # --fastpass \
    ${RESUME} \
    ${EVALUATE}
 
