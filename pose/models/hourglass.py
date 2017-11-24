@@ -9,7 +9,7 @@ import torch.nn.functional as F
 # from .preresnet import BasicBlock, Bottleneck
 
 
-__all__ = ['HourglassNet', 'hg']
+__all__ = ['HourglassNet', 'NewHourglassNet', 'Bottleneck', 'hg']
 
 class Bottleneck(nn.Module):
     expansion = 2
@@ -180,8 +180,8 @@ class HourglassNet(nn.Module):
         return out
 
 class NewHourglassNet(nn.Module):
-    def __init__(self, block, num_stacks=2, num_blocks=4, num_classes=16):
-        super(HourglassNet, self).__init__()
+    def __init__(self, block, num_stacks=2, num_blocks=4, num_classes=16, mask=False):
+        super(NewHourglassNet, self).__init__()
         assert type(num_classes) is int or (type(num_classes) is list and len(num_classes) == num_stacks)
         self.inplanes = 64
         self.num_feats = 128
@@ -200,6 +200,8 @@ class NewHourglassNet(nn.Module):
         hg, res, fc, score, fc_, score_ = [], [], [], [], [], []
         for i in range(num_stacks):
             cur_classes = num_classes if type(num_classes) is int else num_classes[i]
+            if mask:
+                cur_classes *= 2
             hg.append(Hourglass(block, num_blocks, self.num_feats, 4))
             res.append(self._make_residual(block, self.num_feats, num_blocks))
             fc.append(self._make_fc(ch, ch))
@@ -213,6 +215,9 @@ class NewHourglassNet(nn.Module):
         self.score = nn.ModuleList(score)
         self.fc_ = nn.ModuleList(fc_) 
         self.score_ = nn.ModuleList(score_)
+        self.sigmoid = nn.Sigmoid()
+        self.mask = mask
+        self.num_classes = num_classes
 
     def _make_residual(self, block, planes, blocks, stride=1):
         downsample = None
@@ -251,15 +256,19 @@ class NewHourglassNet(nn.Module):
         x = self.layer3(x)  
 
         for i in range(self.num_stacks):
+            cur_classes = self.num_classes if type(self.num_classes) is int else self.num_classes[i]
+
             y = self.hg[i](x)
             y = self.res[i](y)
             y = self.fc[i](y)
             # QT: added relu for mask multiplying
-            score = self.relu(self.score[i](y))
+            score = self.score[i](y)
+            if self.mask:
+                score[:, cur_classes:] = self.sigmoid(score[:, cur_classes:])
             out.append(score)
             if i < self.num_stacks-1:
                 fc_ = self.fc_[i](y)
-                score_ = self.score_[i](score_norm)
+                score_ = self.score_[i](score)
                 x = x + fc_ + score_
 
         return out

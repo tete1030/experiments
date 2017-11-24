@@ -1,4 +1,4 @@
-GPUID=0
+GPUID=3
 ARCH=hg
 STACK=3
 BLOCK=1
@@ -7,12 +7,15 @@ TRAINBATCH=12
 TESTBATCH=12
 WORKER=24
 LR=5e-4
-EXP="part"
+EXP="inf"
 AFFIX="3"
 EXPERIMENT_NAME="${ARCH}_${EXP}_S${STACK}_B${BLOCK}_${AFFIX}"
 CHECKPOINT_PATH="checkpoint/mpii/${EXPERIMENT_NAME}"
 # RESUME="--resume ${CHECKPOINT_PATH}/checkpoint.pth.tar"
 # EVALUATE="--evaluate"
+# HYPERDASH="--hyperdash 'HG-Inf'"
+# FASTPASS="--fastpass"
+# NO_HANDLE_SIG="--no-handle-sig"
 
 cd ../
 
@@ -29,8 +32,9 @@ CUDA_VISIBLE_DEVICES=${GPUID} python experiments/hg_part.py \
    --schedule 150 175 200 \
    --selective "experiments/sel.npy" \
    --skip-val 5 \
-   --hyperdash "HG-Part" \
-   # --fastpass \
+   ${HYPERDASH} \
+   ${FASTPASS} \
+   ${NO_HANDLE_SIG} \
    ${RESUME} \
    ${EVALUATE}
 

@@ -13,6 +13,7 @@ from pose.utils.osutils import *
 from pose.utils.imutils import *
 from pose.utils.transforms import *
 import scipy.misc
+from skimage.transform import warp
 
 seg_idx = [(9,8),
            (13,14), (14,15), (12,11), (11,10),
@@ -243,7 +244,7 @@ class Mpii(data.Dataset):
         # TODO: #NI1 Need a better solution
         mask_points = torch.from_numpy(
                 (np.isclose(pts_list.numpy(), 0).sum(-1) == 3).astype(np.uint8))
-        assert mask_points.dim() == 2
+
         not_annoted = [list(np.nonzero(mask_points[iperson].numpy())[0])
                 for iperson in range(mask_points.size(0))]
 
@@ -280,7 +281,10 @@ class Mpii(data.Dataset):
             img = (img * (np.random.rand(3) * 0.4 + 0.8)).clip(0, 1).astype(np.float32) 
 
         # Prepare image and groundtruth map
-        img = crop(img, c, s, [self.inp_res, self.inp_res], rot=r)
+        # img = crop(img, c, s, [self.inp_res, self.inp_res], rot=r)
+        # Faster !!!
+        transform_mat = get_transform(c, s, [self.inp_res, self.inp_res], rot=r)
+        img = warp(img, np.linalg.inv(transform_mat), output_shape=(self.inp_res, self.inp_res), order=1).astype(np.float32)
 
         # Color normalize
         img -= self.mean

@@ -60,7 +60,7 @@ def main(args):
     config.exp = args.exp
     config.fastpass = args.fastpass
 
-    assert args.exp in ['part', 'ori']
+    assert args.exp in ['part', 'ori', 'inf']
 
     if not isdir(args.checkpoint):
         mkdir_p(args.checkpoint)
@@ -77,7 +77,8 @@ def main(args):
         model = models.NewHourglassNet(models.Bottleneck, 
                                        num_stacks=args.stacks,
                                        num_blocks=args.blocks,
-                                       num_classes=POINT_NC*2)
+                                       num_classes=POINT_NC,
+                                       mask=True)
 
     model = torch.nn.DataParallel(model).cuda()
 
@@ -167,7 +168,9 @@ def main(args):
         assert args.workers == 0, "Profiling doesn't support multi-processing"
         config.profiler = cProfile.Profile()
 
-    enable_sigint_handler()
+    if args.handle_sig:
+        enable_sigint_handler()
+
     for epoch in range(args.start_epoch, args.epochs):
         lr = adjust_learning_rate(optimizer, epoch, lr, args.schedule, args.gamma)
         
@@ -306,24 +309,28 @@ def process_inf(model, criterion, optimizer, batch, train, flip=False):
     volatile = not train
     input_var = torch.autograd.Variable(inputs.cuda(), volatile=volatile)
     target_var = torch.autograd.Variable(target['points'].cuda(async=True), volatile=volatile)
-    point_num = target_var.size(0)
+    point_num = target_var.size(1)
 
     output = model(input_var)
 
     map_acc = 0.
     mask_acc = 0.
+    map_loss = 0.
+    mask_loss = 0.
 
     for j in range(0, len(output)):
         map_med = output[j][:, :point_num]
         mask_med = output[j][:, point_num:]
-        map_acc = map_med * mask_med + map_acc
-        mask_acc = mask_med + mask_acc
+        map_acc = map_acc + map_med * mask_med
+        mask_acc = mask_acc + mask_med
+        # TODO need each loss be squared ?
+        map_loss = map_loss + ((map_med * mask_med - target_var * mask_med) ** 2).sum() / map_med.numel()
     
-    map_loss = criterion(map_acc, target_var)
-    mask_loss = mask_acc.sub_(1.).pow_(2).sum() / mask_acc.numel()
+    # map_loss = criterion(map_acc, target_var)
+    mask_loss = mask_acc.sub(1.).pow(2).sum() / mask_acc.numel()
     # TODO adding restrict on mask diff between levels
 
-    loss = map_loss + mask_loss
+    loss = map_loss + 0.1 * mask_loss
 
     if train:
         # compute gradient and do SGD step
@@ -507,7 +514,7 @@ def validate(val_loader, model, criterion, epoch, flip=False):
         predictions_parts = torch.Tensor(pred_lim, PART_VISIBLE_NC + PART_ALL_NC, pred_res, pred_res)
         predictions_pts = torch.Tensor(pred_lim, POINT_NC, pred_res, pred_res)
         predictions = {'parts': predictions_parts, 'pts': predictions_pts}
-    elif config.exp == 'ori':
+    elif config.exp in ['ori', 'inf']:
         # predictions = torch.Tensor(val_loader.dataset.__len__(), POINT_NC, 2)
         predictions = torch.Tensor(pred_lim, POINT_NC, pred_res, pred_res)
 
@@ -651,5 +658,7 @@ if __name__ == '__main__':
                         default=1, help='do validation for every EPOCH_COUNT epochs (default: 1)')
     parser.add_argument('--fastpass', nargs='?', type=int, const=2,
                         default=0, help='for fast test')
+    parser.add_argument('--no-handle-sig', dest='handle_sig', action='store_false',
+                        help='do not handle SIGINT')
     # import ipdb; ipdb.set_trace()
     main(parser.parse_args())
