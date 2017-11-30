@@ -53,14 +53,14 @@ idx = [1,2,3,4,5,6,11,12,15,16]
 
 best_acc = 0
 
-def main(args):
+def main(args, train_loader=None, val_loader=None):
     global best_acc
 
     config.debug = args.debug
     config.exp = args.exp
     config.fastpass = args.fastpass
 
-    assert args.exp in ['part', 'ori', 'inf']
+    assert args.exp in ['part', 'ori', 'inf', 'path', 'weight']
 
     if not isdir(args.checkpoint):
         mkdir_p(args.checkpoint)
@@ -74,11 +74,22 @@ def main(args):
         model = models.__dict__[args.arch](num_stacks=args.stacks, num_blocks=args.blocks,
                                            num_classes=POINT_NC)
     elif args.exp == 'inf':
-        model = models.NewHourglassNet(models.Bottleneck, 
-                                       num_stacks=args.stacks,
-                                       num_blocks=args.blocks,
-                                       num_classes=POINT_NC,
-                                       mask=True)
+        model = models.MaskHourglassNet(models.Bottleneck, 
+                                        num_stacks=args.stacks,
+                                        num_blocks=args.blocks,
+                                        num_classes=POINT_NC,
+                                        mask=True)
+    elif args.exp == 'path':
+        model = models.PathHourglassNet(models.Bottleneck,
+                                         num_stacks=args.stacks,
+                                         num_blocks=args.blocks,
+                                         num_classes=POINT_NC)
+
+    elif args.exp == 'weight':
+        model = models.WeightHourglassNet(models.Bottleneck,
+                                          num_stacks=args.stacks,
+                                          num_blocks=args.blocks,
+                                          num_classes=POINT_NC)
 
     model = torch.nn.DataParallel(model).cuda()
 
@@ -132,26 +143,28 @@ def main(args):
     if args.exp == 'part':
         label_data = datasets.Mpii.LABEL_MIX_MAP
         is_single_person = True
-    elif args.exp == 'ori' or args.exp == 'inf':
+    elif args.exp in ['ori', 'inf', 'path', 'weight']:
         label_data = datasets.Mpii.LABEL_POINTS_MAP
         is_single_person = True
 
-    # Data loading code
-    train_loader = torch.utils.data.DataLoader(
-        datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
-                      sigma_pts=args.sigma_pts, label_data=label_data,
-                      label_type=args.label_type, single_person=is_single_person,
-                      selective=selective, train=True, contrast_factor=0.,
-                      brightness_factor=0.),
-        batch_size=args.train_batch, shuffle=True,
-        num_workers=args.workers, pin_memory=True)
+    if train_loader is None:
+        # Data loading code
+        train_loader = torch.utils.data.DataLoader(
+            datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
+                          sigma_pts=args.sigma_pts, label_data=label_data,
+                          label_type=args.label_type, single_person=is_single_person,
+                          selective=selective, train=True, contrast_factor=0.,
+                          brightness_factor=0.),
+            batch_size=args.train_batch, shuffle=True,
+            num_workers=args.workers, pin_memory=True)
     
-    val_loader = torch.utils.data.DataLoader(
-        datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
-                      sigma_pts=args.sigma_pts, label_data=label_data,
-                      label_type=args.label_type, train=False, single_person=is_single_person),
-        batch_size=args.test_batch, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
+    if val_loader is None:
+        val_loader = torch.utils.data.DataLoader(
+            datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
+                          sigma_pts=args.sigma_pts, label_data=label_data,
+                          label_type=args.label_type, train=False, single_person=is_single_person),
+            batch_size=args.test_batch, shuffle=False,
+            num_workers=args.workers, pin_memory=True)
 
     if args.evaluate:
         print('\nEvaluation-only mode') 
@@ -317,20 +330,20 @@ def process_inf(model, criterion, optimizer, batch, train, flip=False):
     mask_acc = 0.
     map_loss = 0.
     mask_loss = 0.
+    map_level_diff = 0.
 
     for j in range(0, len(output)):
         map_med = output[j][:, :point_num]
         mask_med = output[j][:, point_num:]
         map_acc = map_acc + map_med * mask_med
         mask_acc = mask_acc + mask_med
-        # TODO need each loss be squared ?
-        map_loss = map_loss + ((map_med * mask_med - target_var * mask_med) ** 2).sum() / map_med.numel()
+        map_level_diff = map_level_diff + (map_med - target_var).abs() * mask_med
     
     # map_loss = criterion(map_acc, target_var)
-    mask_loss = mask_acc.sub(1.).pow(2).sum() / mask_acc.numel()
-    # TODO adding restrict on mask diff between levels
+    map_loss = (map_level_diff ** 2).sum() / map_level_diff.numel() + criterion(map_acc, target_var)
+    # mask_loss = mask_acc.sub(1.).pow(2).sum() / mask_acc.numel()
 
-    loss = map_loss + 0.1 * mask_loss
+    loss = map_loss
 
     if train:
         # compute gradient and do SGD step
@@ -353,6 +366,65 @@ def process_inf(model, criterion, optimizer, batch, train, flip=False):
             flip_map_acc = flip_map_med * flip_mask_med + flip_map_acc
             
         flip_output = fliplr_map(flip_map_acc.data.cpu())
+        score_map += flip_output
+        score_map /= 2.
+
+    acc = accuracy(score_map, target['points'], idx)
+
+    if config.debug: # visualize groundtruth and predictions
+        gt_batch_img = batch_with_heatmap(inputs, target['points'])
+        pred_batch_img = batch_with_heatmap(inputs, score_map)
+        if not gt_win or not pred_win:
+            ax1 = plt.subplot(121)
+            ax1.title.set_text('Groundtruth')
+            gt_win = plt.imshow(gt_batch_img)
+            ax2 = plt.subplot(122)
+            ax2.title.set_text('Prediction')
+            pred_win = plt.imshow(pred_batch_img)
+        else:
+            gt_win.set_data(gt_batch_img)
+            pred_win.set_data(pred_batch_img)
+        plt.pause(.05)
+        plt.draw()
+
+    if train:
+        return loss.data[0], acc[0]
+    else:
+        return loss.data[0], acc[0], score_map
+
+def process_weight(model, criterion, optimizer, batch, train, flip=False):
+    inputs, target, meta = batch
+    volatile = not train
+    input_var = torch.autograd.Variable(inputs.cuda(), volatile=volatile)
+    target_var = torch.autograd.Variable(target['points'].cuda(async=True), volatile=volatile)
+
+    output = model(input_var)
+    score_map = output[-1].data.cpu()
+
+    weight_para = model.module.weight
+
+    loss = ((output[0] - target_var) ** 2).sum(-1).sum(-1).sum(0) * weight_para[0]
+    for j in range(1, len(output)):
+        # loss += criterion(output[j], target_var)
+        loss += ((output[j] - target_var) ** 2).sum(-1).sum(-1).sum(0) * weight_para[j]
+
+    loss = loss / weight_para.sum(0)
+    loss = loss.sum()
+
+    if train:
+        # compute gradient and do SGD step
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    if not train and flip:
+        flip_input_var = torch.autograd.Variable(
+                torch.from_numpy(fliplr_chwimg(inputs.numpy())).float().cuda(), 
+                volatile=True
+            )
+        flip_output_var = model(flip_input_var)
+        # flip_output = fliplr_map(flip_output_var[-1].data.cpu(), datatype='parts')
+        flip_output = fliplr_map(flip_output_var[-1].data.cpu())
         score_map += flip_output
         score_map /= 2.
 
@@ -458,6 +530,11 @@ def train(train_loader, model, criterion, optimizer, epoch):
             loss, acc = process_ori(model, criterion, optimizer, (inputs, target, meta), train=True)
         elif config.exp == 'inf':
             loss, acc = process_inf(model, criterion, optimizer, (inputs, target, meta), train=True)
+        elif config.exp == 'path':
+            # TODO ori
+            loss, acc = process_ori(model, criterion, optimizer, (inputs, target, meta), train=True)
+        elif config.exp == 'weight':
+            loss, acc = process_weight(model, criterion, optimizer, (inputs, target, meta), train=True)
 
         # measure accuracy and record loss
         losses.update(loss, inputs.size(0))
@@ -500,21 +577,19 @@ def train(train_loader, model, criterion, optimizer, epoch):
     if config.profiler: config.profiler.disable()
     return losses.avg, acces.avg
 
-
-def validate(val_loader, model, criterion, epoch, flip=False):
+def validate(val_loader, model, criterion, epoch, flip=False, pred_lim=50):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
     acces = AverageMeter()
 
-    pred_lim = 50
     pred_res = 64
     # predictions
     if config.exp == 'part':
         predictions_parts = torch.Tensor(pred_lim, PART_VISIBLE_NC + PART_ALL_NC, pred_res, pred_res)
         predictions_pts = torch.Tensor(pred_lim, POINT_NC, pred_res, pred_res)
         predictions = {'parts': predictions_parts, 'pts': predictions_pts}
-    elif config.exp in ['ori', 'inf']:
+    elif config.exp in ['ori', 'inf', 'path', 'weight']:
         # predictions = torch.Tensor(val_loader.dataset.__len__(), POINT_NC, 2)
         predictions = torch.Tensor(pred_lim, POINT_NC, pred_res, pred_res)
 
@@ -540,8 +615,9 @@ def validate(val_loader, model, criterion, epoch, flip=False):
                 predictions_parts[meta['index'][n], PART_VISIBLE_NC:, :, :] = parts_all_map[n, :, :pred_res, :pred_res]
                 predictions_pts[meta['index'][n], :, :, :] = points_map[n, :, :pred_res, :pred_res]
 
-        elif config.exp in ['ori', 'inf']:
-            process_func = {'ori': process_ori, 'inf': process_inf}[config.exp]
+        elif config.exp in ['ori', 'inf', 'path', 'weight']:
+            # TODO ori
+            process_func = {'ori': process_ori, 'inf': process_inf, 'path': process_ori, 'weight': process_weight}[config.exp]
             loss, acc, score_map = process_func(model, criterion, None, (inputs, target, meta), train=False, flip=flip)
 
             for n in range(score_map.size(0)):
@@ -590,8 +666,7 @@ def validate(val_loader, model, criterion, epoch, flip=False):
 
     return losses.avg, acces.avg, predictions
 
-
-if __name__ == '__main__':
+def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
     # Model structure
     parser.add_argument('--arch', '-a', metavar='ARCH', default='hg',
@@ -660,5 +735,7 @@ if __name__ == '__main__':
                         default=0, help='for fast test')
     parser.add_argument('--no-handle-sig', dest='handle_sig', action='store_false',
                         help='do not handle SIGINT')
-    # import ipdb; ipdb.set_trace()
-    main(parser.parse_args())
+    return parser
+
+if __name__ == '__main__':
+    main(get_parser().parse_args())
