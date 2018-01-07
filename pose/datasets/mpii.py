@@ -207,7 +207,7 @@ class Mpii(data.Dataset):
 
         img_path = os.path.join(self.img_folder, a['img_paths'])
         img = scipy.misc.imread(img_path, mode='RGB').astype(np.float32) / 255
-        img_size = torch.FloatTensor(list(img.shape[:2][::-1])) # W, H
+        img_size = torch.IntTensor(list(img.shape[:2][::-1])) # W, H
 
         self_pts = torch.Tensor(a['joint_self'])
         npoints = self_pts.size(0)
@@ -231,8 +231,8 @@ class Mpii(data.Dataset):
                 c[1] = c[1] + 15 * s
                 s = s * 1.25
         else:
-            c = img_size / 2.
-            s = 1.
+            c = img_size.float() / 2.
+            s = img_size.float().max() / 200.
 
             for pi, (pts_other, scale_other) in enumerate(zip(a['joint_others'],
                                                               a['scale_provided_other'])):
@@ -249,6 +249,7 @@ class Mpii(data.Dataset):
                 for iperson in range(mask_points.size(0))]
 
         r = 0
+        # Image augmentation
         if self.is_train:
             s = s * torch.randn(1).mul_(sf).add_(1).clamp(1-sf, 1+sf)[0]
             r = torch.randn(1).mul_(rf).clamp(-2*rf, 2*rf)[0] \
@@ -256,16 +257,16 @@ class Mpii(data.Dataset):
             if not self.single_person:
                 # normal distribution location with mean the image center and
                 # standard deviation img_size / 4 (so that 2\sigma == img_size/2)
-                c += torch.randn(2) * img_size / 4
-                outer = (c < 0 | c > img_size)
+                c += torch.randn(2) * img_size.float() / 4
+                outer = (c < 0 | c > img_size.float())
                 # if fall in outside, take uniform random location for the outer axis
-                c[outer] = (torch.rand(2) * img_size)[outer]
-                
+                c[outer] = (torch.rand(2) * img_size.float())[outer]
+
             # Flip
             if random.random() <= 0.5:
                 img = np.fliplr(img)
                 tpts_list = fliplr_pts(tpts_list, width=img_size[0], dataset='mpii')
-                c[0] = img_size[0] - c[0]
+                c[0] = img_size[0].float() - c[0]
 
             # Brightness
             if not np.isclose(self.contrast_factor, 0):

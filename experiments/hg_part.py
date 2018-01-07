@@ -23,6 +23,7 @@ from pose.utils.transforms import fliplr_chwimg, fliplr_map
 import pose.utils.config as config
 import pose.models as models
 import pose.datasets as datasets
+import numpy as np
 
 # Hyperdash
 from hyperdash import Experiment
@@ -60,46 +61,58 @@ def main(args, train_loader=None, val_loader=None):
     config.exp = args.exp
     config.fastpass = args.fastpass
 
-    assert args.exp in ['part', 'ori', 'inf', 'path', 'weight']
+    assert config.exp in ['part', 'ori', 'inf', 'path', 'weight']
 
     if not isdir(args.checkpoint):
         mkdir_p(args.checkpoint)
 
     print("==> creating model '{}', stacks={}, blocks={}".format(args.arch, args.stacks, args.blocks))
-    if args.exp == 'part':
+    if config.exp == 'part':
         assert args.stacks == 3, "Experiment Requirement"
         model = models.__dict__[args.arch](num_stacks=args.stacks, num_blocks=args.blocks,
                                            num_classes=[PART_VISIBLE_NC, PART_ALL_NC, POINT_NC])
-    elif args.exp == 'ori':
+    elif config.exp == 'ori':
         model = models.__dict__[args.arch](num_stacks=args.stacks, num_blocks=args.blocks,
                                            num_classes=POINT_NC)
-    elif args.exp == 'inf':
+    elif config.exp == 'inf':
         model = models.MaskHourglassNet(models.Bottleneck, 
                                         num_stacks=args.stacks,
                                         num_blocks=args.blocks,
                                         num_classes=POINT_NC,
                                         mask=True)
-    elif args.exp == 'path':
+    elif config.exp == 'path':
         model = models.PathHourglassNet(models.Bottleneck,
                                          num_stacks=args.stacks,
                                          num_blocks=args.blocks,
                                          num_classes=POINT_NC)
 
-    elif args.exp == 'weight':
-        model = models.WeightHourglassNet(models.Bottleneck,
-                                          num_stacks=args.stacks,
-                                          num_blocks=args.blocks,
-                                          num_classes=POINT_NC)
+    elif config.exp == 'weight':
+        model = models.HourglassNet(models.Bottleneck,
+                                    num_stacks=args.stacks,
+                                    num_blocks=args.blocks,
+                                    num_classes=POINT_NC)
 
     model = torch.nn.DataParallel(model).cuda()
 
     # loss function and optimizer
-    criterion = torch.nn.MSELoss(size_average=True).cuda()
-    optimizer = torch.optim.RMSprop(model.parameters(),
+    if config.exp != 'weight':
+        criterion = torch.nn.MSELoss(size_average=True).cuda()
+    else:
+        init_weight = np.zeros((POINT_NC, args.stacks), dtype=np.float32)
+        init_weight[[7, 8, 9, 12, 13], 0] = 1.
+        init_weight[[7, 8, 9, 12, 13, 6, 11, 14, 2, 3], 1] = 1.
+        init_weight[[7, 8, 9, 12, 13, 6, 11, 14, 2, 3, 10, 15, 1, 4, 0, 5], 2] = 1.
+        init_weight = torch.from_numpy(init_weight)
+        criterion = models.HGDynamicWeightMSELoss(args.stacks, POINT_NC, init_weight=init_weight, dynamic=False).cuda()
+
+    params = list(model.parameters())
+    if config.exp == 'weight':
+        params += filter(lambda p: p.requires_grad, criterion.parameters())
+    optimizer = torch.optim.RMSprop(params,
                                     lr=args.lr,
                                     weight_decay=args.weight_decay)
 
-    title = 'mpii-' + args.exp + '-' + args.arch
+    title = 'mpii-' + config.exp + '-' + args.arch
     logger = None
     logfile = join(args.checkpoint, 'log.txt')
     if args.resume:
@@ -109,6 +122,8 @@ def main(args, train_loader=None, val_loader=None):
             args.start_epoch = checkpoint['epoch']
             best_acc = checkpoint['best_acc']
             model.load_state_dict(checkpoint['state_dict'])
+            if config.exp == 'weight':
+                criterion.load_state_dict(checkpoint['criterion_SD'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
@@ -128,7 +143,6 @@ def main(args, train_loader=None, val_loader=None):
 
     selective = None
     if args.selective:
-        import numpy as np
         selective_batch_count = 200
         mpii_train_size = 22246
         if isfile(args.selective):
@@ -140,10 +154,10 @@ def main(args, train_loader=None, val_loader=None):
             selective = selective[:selective_batch_count * args.train_batch]
             np.save(args.selective, selective)
 
-    if args.exp == 'part':
+    if config.exp == 'part':
         label_data = datasets.Mpii.LABEL_MIX_MAP
         is_single_person = True
-    elif args.exp in ['ori', 'inf', 'path', 'weight']:
+    elif config.exp in ['ori', 'inf', 'path', 'weight']:
         label_data = datasets.Mpii.LABEL_POINTS_MAP
         is_single_person = True
 
@@ -197,6 +211,9 @@ def main(args, train_loader=None, val_loader=None):
         # train for one epoch
         train_loss, train_acc = train(train_loader, model, criterion, optimizer, epoch)
 
+        #if config.exp == 'weight':
+        #    print(criterion.state_dict()['weight'])
+
         if config.sigint_triggered:
             break
 
@@ -219,13 +236,16 @@ def main(args, train_loader=None, val_loader=None):
         logger.append([epoch + 1, lr, train_loss, valid_loss, train_acc, valid_acc])
 
         cp_filename = 'checkpoint_{}.pth.tar'.format(epoch + 1)
-        save_checkpoint({
+        checkpoint_dict = {
             'epoch': epoch + 1,
             'arch': args.arch,
             'state_dict': model.state_dict(),
             'best_acc': best_acc,
             'optimizer' : optimizer.state_dict(),
-        }, is_best, checkpoint=args.checkpoint, filename=cp_filename)
+        }
+        if config.exp == 'weight':
+            checkpoint_dict['criterion_SD'] = criterion.state_dict()
+        save_checkpoint(checkpoint_dict, is_best, checkpoint=args.checkpoint, filename=cp_filename)
 
         if predictions is not None:
             preds_filename = 'preds_{}.npy'.format(epoch + 1)
@@ -401,15 +421,7 @@ def process_weight(model, criterion, optimizer, batch, train, flip=False):
     output = model(input_var)
     score_map = output[-1].data.cpu()
 
-    weight_para = model.module.weight
-
-    loss = ((output[0] - target_var) ** 2).sum(-1).sum(-1).sum(0) * weight_para[0]
-    for j in range(1, len(output)):
-        # loss += criterion(output[j], target_var)
-        loss += ((output[j] - target_var) ** 2).sum(-1).sum(-1).sum(0) * weight_para[j]
-
-    loss = loss / weight_para.sum(0)
-    loss = loss.sum()
+    loss = criterion(output, target_var)
 
     if train:
         # compute gradient and do SGD step

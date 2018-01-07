@@ -151,7 +151,7 @@ def transform_preds(coords, center, scale, res):
         coords[p, 0:2] = to_torch(transform(coords[p, 0:2], center, scale, res, 1, 0))
     return coords
 
-
+# deprecated with using of `warp`
 def crop(img, center, scale, res, rot=0):
     assert type(img) is np.ndarray, type(img)
     assert img.dtype == np.float32, img.dtype
@@ -162,7 +162,6 @@ def crop(img, center, scale, res, rot=0):
     br = np.array(transform(res, center, scale, res, invert=1))
 
     # Padding so that when rotated proper amount of context is included
-    # TODO: ROUND
     pad = int(np.linalg.norm(br - ul) / 2 - float(br[1] - ul[1]) / 2)
     if not rot == 0:
         ul -= pad

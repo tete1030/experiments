@@ -10,7 +10,7 @@ import torch.nn.functional as F
 # from .preresnet import BasicBlock, Bottleneck
 
 
-__all__ = ['HourglassNet', 'MaskHourglassNet', 'PathHourglassNet', 'WeightHourglassNet', 'Bottleneck', 'hg']
+__all__ = ['HourglassNet', 'MaskHourglassNet', 'PathHourglassNet', 'HGDynamicWeightMSELoss', 'Bottleneck', 'hg']
 
 class Bottleneck(nn.Module):
     expansion = 2
@@ -392,10 +392,28 @@ class PathHourglassNet(nn.Module):
 
         return out
 
-class WeightHourglassNet(nn.Module):
-    '''Hourglass model from Newell et al ECCV 2016'''
+class HGDynamicWeightMSELoss(nn.Module):
+    def __init__(self, num_stacks, num_classes, init_weight=None, dynamic=True):
+        super(HGDynamicWeightMSELoss, self).__init__()
+        if init_weight is None:
+            init_weight = torch.zeros((num_classes, num_stacks))
+        self.weight = nn.Parameter(init_weight, requires_grad=dynamic)
+        self.softmax = nn.Softmax()
+    
+    def forward(self, input, target):
+        actual_weight = self.softmax(self.weight)
+        loss_fn = lambda inp, tag, w: (((inp - tag) ** 2).sum(0).sum(-1).sum(-1) * w).sum() / tag.numel()
+
+        loss = loss_fn(input[0], target, actual_weight[:, 0])
+        for i in range(1, len(input)):
+            loss += loss_fn(input[i], target, actual_weight[:, i])
+
+        return loss
+
+class AssoHourglassNet(nn.Module):
     def __init__(self, block, num_stacks=2, num_blocks=4, num_classes=16):
-        super(WeightHourglassNet, self).__init__()
+        super(AssoHourglassNet, self).__init__()
+        assert type(num_classes) is int or (type(num_classes) is list and len(num_classes) == num_stacks)
         self.inplanes = 64
         self.num_feats = 128
         self.num_stacks = num_stacks
@@ -410,23 +428,26 @@ class WeightHourglassNet(nn.Module):
 
         # build hourglass modules
         ch = self.num_feats*block.expansion
-        hg, res, fc, score, fc_, score_ = [], [], [], [], [], []
+        hg, res, fc, score, score_, score_res, start_res = [], [], [], [], [], [], []
         for i in range(num_stacks):
-            cur_classes = num_classes
+            cur_classes = num_classes if type(num_classes) is int else num_classes[i]
             hg.append(Hourglass(block, num_blocks, self.num_feats, 4))
             res.append(self._make_residual(block, self.num_feats, num_blocks))
             fc.append(self._make_fc(ch, ch))
             score.append(nn.Conv2d(ch, cur_classes, kernel_size=1, bias=True))
-            if i < num_stacks-1:
-                fc_.append(nn.Conv2d(ch, ch, kernel_size=1, bias=True))
+            if i < num_stacks - 1:
                 score_.append(nn.Conv2d(cur_classes, ch, kernel_size=1, bias=True))
+                score_res.append(self._make_residual(block, self.num_feats, num_blocks))
+                start_res.append(self._make_residual(block, self.num_feats, num_blocks))
+
         self.hg = nn.ModuleList(hg)
         self.res = nn.ModuleList(res)
         self.fc = nn.ModuleList(fc)
         self.score = nn.ModuleList(score)
-        self.fc_ = nn.ModuleList(fc_) 
         self.score_ = nn.ModuleList(score_)
-        self.weight = nn.Parameter(torch.ones((num_stacks, num_classes)), requires_grad=True)
+        self.score_res = nn.ModuleList(score_res)
+        self.start_res = nn.ModuleList(start_res)
+        self.num_classes = num_classes
 
     def _make_residual(self, block, planes, blocks, stride=1):
         downsample = None
@@ -464,18 +485,24 @@ class WeightHourglassNet(nn.Module):
         x = self.layer2(x)  
         x = self.layer3(x)  
 
+        start_x = x
+
         for i in range(self.num_stacks):
+            cur_classes = self.num_classes if type(self.num_classes) is int else self.num_classes[i]
+
             y = self.hg[i](x)
             y = self.res[i](y)
             y = self.fc[i](y)
             score = self.score[i](y)
             out.append(score)
             if i < self.num_stacks-1:
-                fc_ = self.fc_[i](y)
-                score_ = self.score_[i](score)
-                x = x + fc_ + score_
+                start_ = self.start_res[i](start_x)
+                score_ = self.score_res[i](self.score_[i](score))
+                # x = x + fc_ + score_
+                x = start_ + score_
 
         return out
+
 
 def hg(**kwargs):
     model = HourglassNet(Bottleneck, num_stacks=kwargs['num_stacks'], num_blocks=kwargs['num_blocks'],
