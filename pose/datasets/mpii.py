@@ -89,7 +89,7 @@ class Mpii(data.Dataset):
     LABEL_PARTS_MAP = 1
     LABEL_MIX_MAP = 2
     def __init__(self, jsonfile, img_folder, inp_res=256, out_res=64, train=True,
-                 sigma_pts=1, scale_factor=0.25, rot_factor=30, label_type='Gaussian',
+                 label_sigma=1, scale_factor=0.25, rot_factor=30, label_type='Gaussian',
                  label_data=LABEL_POINTS_MAP, single_person=True, selective=None,
                  contrast_factor=0.0, brightness_factor=0.0,
                  meanstd_file='./data/mpii/mean.pth.tar'):
@@ -97,7 +97,7 @@ class Mpii(data.Dataset):
         self.is_train = train           # training set or test set
         self.inp_res = inp_res
         self.out_res = out_res
-        self.sigma_pts = sigma_pts
+        self.label_sigma = label_sigma
         self.scale_factor = scale_factor
         self.rot_factor = rot_factor
         self.label_data = label_data
@@ -111,6 +111,8 @@ class Mpii(data.Dataset):
 
         self.train, self.valid = [], []
         train_counter = 0
+        if selective is not None:
+            selective = np.load(selective)
         for idx, val in enumerate(self.anno):
             if val['isValidation'] == True:
                 self.valid.append(idx)
@@ -156,7 +158,7 @@ class Mpii(data.Dataset):
         if label_data == 'points':
             for i in range(tpts.size(0)):
                 if i not in not_annoted:
-                    out_target[i] = draw_labelmap(out_target[i], tpts[i], self.sigma_pts,
+                    out_target[i] = draw_labelmap(out_target[i], tpts[i], self.label_sigma,
                                                   type=self.label_type)
         elif label_data in ('parts_visible', 'parts_all'):
             coords = tpts[:, 0:2]
@@ -266,7 +268,7 @@ class Mpii(data.Dataset):
             if random.random() <= 0.5:
                 img = np.fliplr(img)
                 tpts_list = fliplr_pts(tpts_list, width=img_size[0], dataset='mpii')
-                c[0] = img_size[0].float() - c[0]
+                c[0] = img_size.float()[0] - c[0]
 
             # Brightness
             if not np.isclose(self.contrast_factor, 0):

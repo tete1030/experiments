@@ -1,0 +1,42 @@
+default: &DEFAULT
+    workers: 24
+    debug: false
+    profile: false
+    hyperdash: null
+    skip_val: 5
+    fast_pass: 0
+    handle_sig: true
+    evaluate: false
+    checkpoint: 'checkpoint/{exp}/{id}'
+    resume: null
+    pred_lim: 10
+
+profile: &PROFILE
+    <<: *DEFAULT
+    workers: 0
+    profile: true
+
+debug: &DEBUG
+    <<: *DEFAULT
+    workers: 0
+    debug: true
+
+evaluate: &EVALUATE
+    <<: *DEFAULT
+    resume: 'checkpoint/{exp}/{id}'
+    evaluate: true
+
+fast: &FAST
+    <<: *DEFAULT
+    workers: 0
+    skip_val: 1
+    fast_pass: true
+
+resume: &RESUME
+    <<: *DEFAULT
+    resume: 'checkpoint/{exp}/{id}'
+
+start:
+    conf: default
+    exp: hg
+

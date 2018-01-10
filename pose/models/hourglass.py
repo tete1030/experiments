@@ -10,7 +10,7 @@ import torch.nn.functional as F
 # from .preresnet import BasicBlock, Bottleneck
 
 
-__all__ = ['HourglassNet', 'MaskHourglassNet', 'PathHourglassNet', 'HGDynamicWeightMSELoss', 'Bottleneck', 'hg']
+__all__ = ['HourglassNet', 'MaskHourglassNet', 'PathHourglassNet', 'HGDynamicWeightMSELoss', 'Bottleneck']
 
 class Bottleneck(nn.Module):
     expansion = 2
@@ -503,8 +503,3 @@ class AssoHourglassNet(nn.Module):
 
         return out
 
-
-def hg(**kwargs):
-    model = HourglassNet(Bottleneck, num_stacks=kwargs['num_stacks'], num_blocks=kwargs['num_blocks'],
-                         num_classes=kwargs['num_classes'])
-    return model
