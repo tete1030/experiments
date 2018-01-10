@@ -126,7 +126,7 @@ class Mpii(data.Dataset):
         self.label_type = label_type
 
     def _compute_mean(self):
-        if isfile(self.meanstd_file):
+        if os.path.isfile(self.meanstd_file):
             meanstd = torch.load(self.meanstd_file)
         else:
             mean = torch.zeros(3)

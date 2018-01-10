@@ -17,7 +17,7 @@ import torchvision.datasets as datasets
 from pose.utils.logger import Logger, savefig
 from pose.utils.evaluation import AverageMeter
 from pose.utils.misc import save_checkpoint, detect_checkpoint, save_pred
-from pose.utils.osutils import mkdir_p, isfile, isdir, join
+from pose.utils.osutils import mkdir_p
 from pose.utils.imutils import batch_with_heatmap
 from pose.utils.transforms import fliplr_chwimg, fliplr_map
 import pose.utils.config as config
@@ -45,34 +45,37 @@ config.profiler = None
 
 best_acc = 0
 
-def main():
+def main(args):
     global best_acc
 
-    hparams = get_hparams(config.exp_name)
-    config.checkpoint = config.checkpoint.format(**{'exp': config.exp_name, 'id': hparams['id']})
+    exp_name = args.EXP
+
+    hparams = get_hparams(exp_name)
+    config.checkpoint = config.checkpoint.format(**{'exp': exp_name, 'id': hparams['id']})
     if config.resume is not None:
-        config.resume = config.resume.format(**{'exp': config.exp_name, 'id': hparams['id']})
+        config.resume = config.resume.format(**{'exp': exp_name, 'id': hparams['id']})
 
     print("==> creating model")
 
-    if not isdir(config.checkpoint):
+    if not os.path.isdir(config.checkpoint):
         mkdir_p(config.checkpoint)
 
     exp_module = importlib.import_module('experiments.' + hparams['name'])
     exp = exp_module.Experiment(hparams)
     del hparams
 
-    title = config.exp_name
+    title = exp_name
     logger = None
-    log_file = join(config.checkpoint, 'log.txt')
-    hparams_cp_file = join(config.checkpoint, 'hparams.yaml')
+    log_file = os.path.join(config.checkpoint, 'log.txt')
     if config.resume:
-        if isfile(config.resume):
-            if isfile(hparams_cp_file):
-                resume_hparams = get_hparams(config.exp_name, hparams_cp_file)
+        resume_full = os.path.join(config.resume, args.resume_file)
+        if os.path.isfile(resume_full):
+            hparams_cp_file = os.path.join(config.resume, 'hparams.yaml')
+            if os.path.isfile(hparams_cp_file):
+                resume_hparams = YAML().load(open(hparams_cp_file, 'r'))
                 assert resume_hparams == exp.hparams, "hparams from config and from checkpoint are not equal"
-            print("=> loading checkpoint '{}'".format(config.resume))
-            checkpoint = torch.load(config.resume)
+            print("=> loading checkpoint '{}'".format(resume_full))
+            checkpoint = torch.load(resume_full)
             exp.hparams['start_epoch'] = checkpoint['epoch']
             best_acc = checkpoint['best_acc']
             exp.model.load_state_dict(checkpoint['state_dict'])
@@ -80,16 +83,19 @@ def main():
             exp.optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint (epoch {})"
                   .format(checkpoint['epoch']))
-            if isfile(log_file):
+            if os.path.isfile(log_file):
                 logger = Logger(log_file, title=title, resume=True)
         else:
             print("=> no checkpoint found at '{}'".format(config.resume))
             sys.exit(1)
     else:
-        if isfile(log_file) or detect_checkpoint(checkpoint=config.checkpoint) or isfile(hparams_cp_file):
+        hparams_cp_file = os.path.join(config.checkpoint, 'hparams.yaml')
+        YAML().dump(exp.hparams, open(hparams_cp_file, 'w'))
+        if os.path.isfile(log_file) or \
+           detect_checkpoint(checkpoint=config.checkpoint) or \
+           os.path.isfile(hparams_cp_file):
             print("Exist files in %s, resume or delete them" % config.checkpoint)
             sys.exit(1)
-        YAML().dump(exp.hparams, open(hparams_cp_file, 'w'))
             
     if logger is None: 
         logger = Logger(log_file, title=title)
@@ -323,17 +329,22 @@ def validate(val_loader, exp, epoch):
 
     return losses.avg, acces.avg, predictions
 
-def init_config():
+def get_args():
+    argp = argparse.ArgumentParser()
+    argp.add_argument('CONF', type=str)
+    argp.add_argument('EXP', type=str)
+    argp.add_argument('-r', dest='resume_file', type=str, default='model_best.pth.tar')
+    return argp.parse_args()
+
+def init_config(conf_name):
     conf = YAML().load(open('experiments/config.yaml', 'r'))
-    conf_name = conf['start']['conf']
-    exp_name = conf['start']['exp']
     conf_data = conf[conf_name]
-    config.exp_name = exp_name
     config.__dict__.update(conf_data.items())
     
 def get_hparams(exp_name, hp_file='experiments/hparams.yaml'):
     return YAML().load(open(hp_file, 'r'))[exp_name]
 
 if __name__ == '__main__':
-    init_config()
-    main()
+    args = get_args()
+    init_config(args.CONF)
+    main(args)

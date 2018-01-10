@@ -40,7 +40,7 @@ class Mscoco(data.Dataset):
 
     def _compute_mean(self):
         meanstd_file = './data/mscoco/mean.pth.tar'
-        if isfile(meanstd_file):
+        if os.path.isfile(meanstd_file):
             meanstd = torch.load(meanstd_file)
         else:
             print('==> compute mean')

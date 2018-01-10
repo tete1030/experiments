@@ -36,7 +36,3 @@ resume: &RESUME
     <<: *DEFAULT
     resume: 'checkpoint/{exp}/{id}'
 
-start:
-    conf: default
-    exp: hg
-
