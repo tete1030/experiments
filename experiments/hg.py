@@ -7,15 +7,12 @@ from pose.utils.evaluation import accuracy
 import pose.utils.config as config
 from pose.utils.misc import adjust_learning_rate
 
-POINT_NC = 16
-
-idx = [1,2,3,4,5,6,11,12,15,16]
 class Experiment:
     def __init__(self, hparams):
         model = models.HourglassNet(models.Bottleneck,
                                         num_stacks=hparams['model']['stack'],
                                         num_blocks=hparams['model']['block'],
-                                        num_classes=POINT_NC)
+                                        num_classes=datasets.mpii.POINT_NC)
         self.model = torch.nn.DataParallel(model).cuda()
     
         self.criterion = torch.nn.MSELoss(size_average=True).cuda()
@@ -70,11 +67,11 @@ class Experiment:
                     volatile=True
                 )
             flip_output_var = self.model(flip_input_var)
-            flip_output = fliplr_map(flip_output_var[-1].data.cpu())
+            flip_output = fliplr_map(flip_output_var[-1].data.cpu(), datasets.mpii.flipIndex)
             score_map += flip_output
             score_map /= 2.
     
-        acc = accuracy(score_map, target['points'], idx)
+        acc = accuracy(score_map, target['points'], datasets.mpii.evalIndex)
     
         return loss, acc[0], meta['index'], score_map
 

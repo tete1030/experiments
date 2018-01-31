@@ -18,81 +18,39 @@ def color_normalize(x, mean, std):
         t.sub_(m)
     return x
 
-def fliplr_map(flip_output, dataset='mpii', datatype='keypoints'):
+def fliplr_map(x, flipIndex):
     """
     flip output map
     """
-    assert isinstance(flip_output, torch.FloatTensor)
-    assert flip_output.dim() == 4
-
-    if dataset ==  'mpii':
-        if datatype == 'keypoints':
-            matchedParts = (
-                [0,5],   [1,4],   [2,3],
-                [10,15], [11,14], [12,13]
-            )
-        elif datatype == 'parts':
-            from pose.datasets.mpii import upper_arm_segs, lower_arm_segs, \
-                                           upper_leg_segs, lower_leg_segs, \
-                                           shoulder_segs, side_segs
-            matchedParts = (
-                upper_arm_segs, lower_arm_segs,
-                upper_leg_segs, lower_leg_segs,
-                shoulder_segs, side_segs
-            )
-    else:
-        print('Not supported dataset: ' + dataset)
-
-    # flip output horizontally
-    new_flip_output = flip_output.clone()
+    assert type(x) is np.ndarray
+    assert x.ndim in [3, 4]
 
     # Change left-right parts
-    matchedParts = torch.LongTensor(matchedParts)
-    new_flip_output[:, matchedParts[:, 0]] = flip_output[:, matchedParts[:, 1]]
-    new_flip_output[:, matchedParts[:, 1]] = flip_output[:, matchedParts[:, 0]]
+    newx = x[...,flipIndex,:,:]
+    newx = fliplr_chwimg(newx)
 
-    new_flip_output = torch.from_numpy(fliplr_chwimg(new_flip_output.numpy()))
+    return newx
 
-    return new_flip_output
-
-def fliplr_pts(x, width, dataset='mpii'):
+def fliplr_pts(x, flipIndex, width):
     """
     flip coords
     """
-    assert isinstance(x, torch.FloatTensor)
-    assert x.dim() in [2, 3]
+    assert type(x) is np.ndarray
+    assert x.ndim in [2, 3]
 
-    if dataset ==  'mpii':
-        matchedParts = (
-            [0,5],   [1,4],   [2,3],
-            [10,15], [11,14], [12,13]
-        )
-    else:
-        print('Not supported dataset: ' + dataset)
+    assert x.shape[-2] == len(flipIndex)
 
-    newx = x.clone()
-
-    # Change left-right parts
-    matchedParts = torch.LongTensor(matchedParts)
-    if x.dim() == 2:
-        newx[matchedParts[:, 0]] = x[matchedParts[:, 1]]
-        newx[matchedParts[:, 1]] = x[matchedParts[:, 0]]
-    else:
-        newx[:, matchedParts[:, 0]] = x[:, matchedParts[:, 1]]
-        newx[:, matchedParts[:, 1]] = x[:, matchedParts[:, 0]]
+    newx = x[..., flipIndex, :]
 
     # Flip horizontal
-    newx.select(-1, 0).neg_().add_(width)
+    newx[..., 0] = (width - newx[..., 0]).astype(newx.dtype)
 
     return newx
 
 def fliplr_chwimg(x):
     assert isinstance(x, np.ndarray)
-    assert x.ndim in [3, 4]
-    if x.ndim == 3:
-        return x[:, :, ::-1].copy()
-    elif x.ndim == 4:
-        return x[:, :, :, ::-1].copy()
+    assert x.ndim in [2, 3, 4]
+    return x[..., ::-1].copy()
 
 def get_transform(center, scale, res, rot=0):
     """
@@ -123,16 +81,13 @@ def get_transform(center, scale, res, rot=0):
         t = np.dot(t_inv,np.dot(rot_mat,np.dot(t_mat,t)))
     return t
 
-
+# Transform pixel location to different reference
 def transform(pt, center, scale, res, invert=0, rot=0):
-    # Transform pixel location to different reference
+    assert type(pt) is np.ndarray 
     t = get_transform(center, scale, res, rot=rot)
     if invert:
         t = np.linalg.inv(t)
-    if torch.is_tensor(pt):
-        pt = to_numpy(pt)
-    elif isinstance(pt, (list, tuple, np.ndarray)):
-        pt = np.array(pt)
+
     pt = pt.astype(float)
     assert pt.ndim == 1 or pt.ndim == 2
     if pt.ndim == 1:
@@ -140,7 +95,7 @@ def transform(pt, center, scale, res, invert=0, rot=0):
     elif pt.ndim == 2:
         new_pt = np.c_[pt[:, 0:2], np.ones((pt.shape[0], 1))].T
     new_pt = np.dot(t, new_pt)
-    return new_pt[:2].round().astype(int)
+    return new_pt[:2].T
 
 
 def transform_preds(coords, center, scale, res):

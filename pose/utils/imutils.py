@@ -35,20 +35,6 @@ def resize(img, owidth, oheight):
     print('%f %f' % (img.min(), img.max()))
     return img
 
-def tune_contrast(img, scale):
-    assert img.dtype == np.float32, img.dtype
-    img_pil = scipy.misc.toimage(img)
-    contrast = ImageEnhance.Contrast(img_pil)
-    img_applied = contrast.enhance(scale)
-    return scipy.misc.fromimage(img_applied).astype(np.float32) / 255.
-
-def tune_brightness(img, scale):
-    assert img.dtype == np.float32, img.dtype
-    img_pil = scipy.misc.toimage(img)
-    brightness = ImageEnhance.Brightness(img_pil)
-    img_applied = brightness.enhance(scale)
-    return scipy.misc.fromimage(img_applied).astype(np.float32) / 255.
-
 # =============================================================================
 # Helpful functions generating groundtruth labelmap 
 # =============================================================================
@@ -65,44 +51,38 @@ def gaussian(shape=(7,7),sigma=1):
     return to_torch(h).float()
 
 # Generate heatmap quickly
-# from https://github.com/umich-vl/pose-ae-train
-class GenerateHeatmap():
-    def __init__(self, output_res, num_parts):
+# derived from https://github.com/umich-vl/pose-ae-train
+class HeatmapGenerator():
+    def __init__(self, output_res, sigma):
         self.output_res = output_res
-        self.num_parts = num_parts
-        sigma = self.output_res/64
         self.sigma = sigma
         size = 6*sigma + 3
-        x = np.arange(0, size, 1, float)
+        x = np.arange(0, size, 1, np.float32)
         y = x[:, np.newaxis]
         x0, y0 = 3*sigma + 1, 3*sigma + 1
         self.g = np.exp(- ((x - x0) ** 2 + (y - y0) ** 2) / (2 * sigma ** 2))
 
-    def __call__(self, keypoints):
-        hms = np.zeros(shape = (self.num_parts, self.output_res, self.output_res), dtype = np.float32)
+    def __call__(self, pt, index, out):
         sigma = self.sigma
-        for p in keypoints:
-            for idx, pt in enumerate(p):
-                if pt[2]>0:
-                    x, y = int(pt[0]), int(pt[1])
-                    if x<0 or y<0 or x>=self.output_res or y>=self.output_res:
-                        #print('not in', x, y)
-                        continue
-                    ul = int(x - 3*sigma - 1), int(y - 3*sigma - 1)
-                    br = int(x + 3*sigma + 2), int(y + 3*sigma + 2)
+        x, y = int(pt[0]), int(pt[1])
+        if x < (-3*sigma - 1) or y < (-3*sigma - 1) or \
+                x >= (self.output_res + 3*sigma + 1) or y >= (self.output_res + 3*sigma + 1):
+            #print('not in', x, y)
+            return
+        ul = int(x - 3*sigma - 1), int(y - 3*sigma - 1)
+        br = int(x + 3*sigma + 2), int(y + 3*sigma + 2)
 
-                    c,d = max(0, -ul[0]), min(br[0], self.output_res) - ul[0]
-                    a,b = max(0, -ul[1]), min(br[1], self.output_res) - ul[1]
+        c,d = max(0, -ul[0]), min(br[0], self.output_res) - ul[0]
+        a,b = max(0, -ul[1]), min(br[1], self.output_res) - ul[1]
 
-                    cc,dd = max(0, ul[0]), min(br[0], self.output_res)
-                    aa,bb = max(0, ul[1]), min(br[1], self.output_res)
-                    hms[idx, aa:bb,cc:dd] = np.maximum(hms[idx, aa:bb,cc:dd], self.g[a:b,c:d])
-        return hms
+        cc,dd = max(0, ul[0]), min(br[0], self.output_res)
+        aa,bb = max(0, ul[1]), min(br[1], self.output_res)
+        out[index][aa:bb,cc:dd] = np.maximum(out[index][aa:bb,cc:dd], self.g[a:b,c:d])
 
 def draw_labelmap(img, pt, sigma, type='Gaussian'):
     # Draw a 2D gaussian 
     # Adopted from https://github.com/anewell/pose-hg-train/blob/master/src/pypose/draw.py
-    img = to_numpy(img)
+    assert type(img) is np.ndarray
 
     # Check that any part of the gaussian is in-bounds
     ul = [int(pt[0] - 3 * sigma), int(pt[1] - 3 * sigma)]
@@ -110,7 +90,7 @@ def draw_labelmap(img, pt, sigma, type='Gaussian'):
     if (ul[0] >= img.shape[1] or ul[1] >= img.shape[0] or
             br[0] < 0 or br[1] < 0):
         # If not, just return the image as is
-        return to_torch(img)
+        return img
 
     # Generate gaussian
     size = 6 * sigma + 1
@@ -134,7 +114,7 @@ def draw_labelmap(img, pt, sigma, type='Gaussian'):
     img[img_y[0]:img_y[1], img_x[0]:img_x[1]] = \
             np.maximum(img[img_y[0]:img_y[1], img_x[0]:img_x[1]], g[g_y[0]:g_y[1], g_x[0]:g_x[1]])
 
-    return to_torch(img)
+    return img
 
 def pillar_dist(A, B, P, base=0.):
     """ line AB, point P, where each one is an array([x, y]) """
@@ -187,8 +167,8 @@ def pillar_dist(A, B, P, base=0.):
 
 def draw_labelmap_ex(img, pts, scale, sigma, shape='pillar', mask=None, mask_value=None):
     assert shape in ['pillar', 'circle']
-    img = to_numpy(img)
-    pts = to_numpy(pts)
+    assert type(img) is np.ndarray
+    assert type(pts) is np.ndarray
 
     if shape == 'pillar':
         pa = pts[0]
@@ -223,7 +203,7 @@ def draw_labelmap_ex(img, pts, scale, sigma, shape='pillar', mask=None, mask_val
             mask_np[top:top+height, left:left+width][g > 0] = \
                     np.maximum(mask_np[top:top+height, left:left+width][g > 0], mask_value)
 
-    return to_torch(img)
+    return img
 
 
 # =============================================================================

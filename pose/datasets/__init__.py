@@ -1,4 +1,2 @@
-from .mpii import Mpii
-from .mscoco import Mscoco
-
-__all__ = ('Mpii', 'Mscoco')
+from mpii import MPII
+from mscoco import COCOPose

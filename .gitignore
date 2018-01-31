@@ -4,10 +4,10 @@ dev
 *.pth.tar
 data/mpii/images
 !data/mpii/mean.pth.tar
+data/mscoco/images
+!data/mscoco/mean.pth.tar
 *debug*
 *.idea/*
-data/mscoco/coco
-data/mscoco/keypoint
 
 __pycache__/
 *.py[cod]
