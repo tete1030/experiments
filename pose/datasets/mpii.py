@@ -58,7 +58,7 @@ class MPII(data.Dataset):
         img_bgr = cv2.imread(img_file)
         return img_bgr if bgr else img_bgr[...,::-1]
 
-    def _compute_mean(self):
+    def _compute_mean(self, meanstd_file):
         if meanstd_file is None:
             print("Warning: not using mean_std")
             return np.array([0.]*3), np.array([1.]*3)

@@ -1,4 +1,4 @@
 from .hourglass import *
-from .simphg import SimpHourglass
-from .posenet import PoseNet, PoseMapGenerator
+from .simphg import *
+from .posenet import *
 from .preresnet import *

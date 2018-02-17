@@ -88,6 +88,7 @@ def transform(pt, center, scale, res, invert=0, rot=0):
     if invert:
         t = np.linalg.inv(t)
 
+    ori_dtype = pt.dtype
     pt = pt.astype(float)
     assert pt.ndim == 1 or pt.ndim == 2
     if pt.ndim == 1:
@@ -95,7 +96,7 @@ def transform(pt, center, scale, res, invert=0, rot=0):
     elif pt.ndim == 2:
         new_pt = np.c_[pt[:, 0:2], np.ones((pt.shape[0], 1))].T
     new_pt = np.dot(t, new_pt)
-    return new_pt[:2].T
+    return new_pt[:2].T.astype(ori_dtype)
 
 
 def transform_preds(coords, center, scale, res):

@@ -24,11 +24,16 @@ PART_LABELS = ['nose','eye_l','eye_r','ear_l','ear_r',
 NUM_PARTS = 17
 
 class COCOPose(data.Dataset):
-    def __init__(self, img_folder, anno_file, split_file, meanstd_file,
+    def __init__(self, img_folder, anno, split_file, meanstd_file,
                  train, single_person,
+                 # TODO: IMPROVEMENT out_res
                  inp_res=256, out_res=64,
-                 label_sigma=1, scale_factor=0.25, rot_factor=30):
-        assert single_person == False
+                 label_sigma=1, scale_factor=0.25, rot_factor=30,
+                 generate_map=True):
+        assert not single_person
+        assert generate_map == False or \
+            type(generate_map) is list or \
+            generate_map == True
         self.img_folder = img_folder    # root image folders
         self.is_train = train           # training set or test set
         self.inp_res = inp_res
@@ -40,10 +45,14 @@ class COCOPose(data.Dataset):
         self.heatmap_gen = HeatmapGenerator(self.out_res, self.label_sigma)
 
         # create train/val split
-        self.coco = COCO(anno_file)
+        if isinstance(anno, COCO):
+            self.coco = anno
+        else:
+            self.coco = COCO(anno)
 
-        self.train, self.valid = self._split(split_file) 
+        self.train, self.valid = self._split(split_file)
         self.mean, self.std = self._compute_mean(meanstd_file)
+        self.generate_map = generate_map
 
     def _split(self, split_file):
         if split_file is not None and os.path.isfile(split_file):
@@ -51,21 +60,8 @@ class COCOPose(data.Dataset):
             train = split["train"]
             valid = split["valid"]
         else:
-            imgids = self.coco.getImgIds()
-            train = list()
-            valid = list()
-            for imgid in imgids:
-                ann_ids = self.coco.getAnnIds(imgIds=imgid)
-                anns = self.coco.loadAnns(ann_ids)
-                ann_count = 0
-                for ann in anns:
-                    if ann["num_keypoints"] > 0:
-                        ann_count += 1
-                        break
-                if ann_count > 0:
-                    train.append(imgid)
-            if split_file is not None:
-                torch.save({"train": train, "valid": valid}, split_file)
+            raise ValueError("%s not found" % (split_file,))
+
         return train, valid
 
     def _load_image(self, img_index, bgr=True):
@@ -73,7 +69,7 @@ class COCOPose(data.Dataset):
         path = img_info['file_name']
         img_file = os.path.join(self.img_folder, path)
         img_bgr = cv2.imread(img_file)
-        return img_bgr if bgr else img_bgr[...,::-1]
+        return img_bgr if bgr else img_bgr[..., ::-1]
 
     def _compute_mean(self, meanstd_file):
         if meanstd_file is None:
@@ -102,9 +98,9 @@ class COCOPose(data.Dataset):
                     (meanstd['mean'][0], meanstd['mean'][1], meanstd['mean'][2]))
             print('    Std:  %.4f, %.4f, %.4f' % \
                     (meanstd['std'][0], meanstd['std'][1], meanstd['std'][2]))
-        assert type(meanstd['mean']) is np.ndarray  
+        assert type(meanstd['mean']) is np.ndarray
         return meanstd['mean'], meanstd['std']
- 
+
     def _draw_label(self, points, target_map):
         # Generate ground truth
         for ijoint in range(points.shape[0]):
@@ -112,8 +108,8 @@ class COCOPose(data.Dataset):
                 self.heatmap_gen(points[ijoint, :2], ijoint, target_map)
 
     def __getitem__(self, index):
-        sf = self.scale_factor
-        rf = self.rot_factor
+        sf = float(self.scale_factor)
+        rf = float(self.rot_factor)
 
         if self.is_train:
             img_index = self.train[index]
@@ -169,7 +165,7 @@ class COCOPose(data.Dataset):
         anns = self.coco.loadAnns(ann_ids)
 
         keypoints = np.array([ann['keypoints'] for ann in anns \
-                              if ann["num_keypoints"] > 0]) \
+                              if ann["num_keypoints"] > 0], dtype=np.float32) \
                 .reshape((-1, NUM_PARTS, 3))
 
         if flip:
@@ -179,10 +175,18 @@ class COCOPose(data.Dataset):
         keypoints_tf = transform(keypoints.reshape((-1, 3))[...,:2], center, scale, [self.out_res, self.out_res], rot=rotate)
         keypoints_tf = np.c_[keypoints_tf, keypoints.reshape((-1, 3))[:, 2]].reshape(keypoints.shape)
         
-        target_map = np.zeros((NUM_PARTS, self.out_res, self.out_res), dtype=np.float32)
+        if self.generate_map == True:
+            draw_parts = list(range(NUM_PARTS))
+        elif type(self.generate_map) is list:
+            draw_parts = self.generate_map
+        else:
+            draw_parts = []
 
-        for iperson, points in enumerate(keypoints_tf):
-            self._draw_label(points, target_map)
+        if len(draw_parts) > 0:
+            target_map = np.zeros((len(draw_parts), self.out_res, self.out_res), dtype=np.float32)
+
+            for iperson, points in enumerate(keypoints_tf):
+                self._draw_label(points[draw_parts], target_map)
 
         # =====
         # Mask: used to mask off crowds
@@ -204,14 +208,35 @@ class COCOPose(data.Dataset):
         mask_crowd = (mask_crowd > 0.5)
         mask_noncrowd = (~mask_crowd).astype(np.uint8)
 
-        extra = {'index': index, 'center': torch.from_numpy(center), 'scale': scale, 
-                 'keypoints': torch.from_numpy(keypoints) if keypoints.shape[0] > 1 else None,
-                 'keypoints_tf': torch.from_numpy(keypoints_tf) if keypoints.shape[0] > 1 else None}
+        extra = {"index": index, "center": torch.from_numpy(center), "scale": scale, 
+                 "keypoints": torch.from_numpy(keypoints) if keypoints.shape[0] >= 0 else None,
+                 "keypoints_tf": torch.from_numpy(keypoints_tf) if keypoints.shape[0] >= 0 else None}
 
-        return torch.from_numpy(img), \
-               torch.from_numpy(target_map), \
-               torch.from_numpy(mask_noncrowd), \
-               extra
+        if len(draw_parts) > 0:
+            return torch.from_numpy(img), \
+                torch.from_numpy(target_map), \
+                torch.from_numpy(mask_noncrowd), \
+                extra
+        else:
+            return torch.from_numpy(img), \
+                None, \
+                torch.from_numpy(mask_noncrowd), \
+                extra
+    
+    @classmethod
+    def collate_function(cls, batch):
+        transposed = zip(*batch)
+        collate_fn = data.dataloader.default_collate
+        result = [collate_fn(samples)
+            for samples in transposed[:3]]
+        extra_result = {
+            "index": collate_fn([sample["index"] for sample in transposed[3]]),
+            "center": collate_fn([sample["center"] for sample in transposed[3]]),
+            "scale": collate_fn([sample["scale"] for sample in transposed[3]]),
+            "keypoints": [sample["keypoints"] for sample in transposed[3]],
+            "keypoints_tf": [sample["keypoints_tf"] for sample in transposed[3]]
+        }
+        return result + [extra_result]
 
     def __len__(self):
         if self.is_train:

@@ -1,17 +1,20 @@
-default: &DEFAULT
-    learning_rate: 5.e-4
-    lr_gamma: 0.1
-    weight_decay: 0
-    train_batch: 12
-    test_batch: 12
-    start_epoch: 0
-    epochs: 220
-    schedule: [150, 175, 200]
-    model: &MODEL_HOURGLASS
+default_conf:
+    hparam_default: &DEFAULT
+        learning_rate: 5.e-4
+        lr_gamma: 0.1
+        weight_decay: 0
+        train_batch: 12
+        test_batch: 12
+        start_epoch: 0
+        epochs: 220
+        schedule: [150, 175, 200]
+
+    model_hourglass: &MODEL_HOURGLASS
         flip: true
         stack: 3
         block: 1
-    dataset: &DATASET_MPII
+
+    dataset_mpii: &DATASET_MPII
         selective: experiments/sel.npy
         label_type: Gaussian
         label_sigma: 1
@@ -37,3 +40,24 @@ pair:
         block: 1
     dataset:
         <<: *DATASET_MPII
+
+stretch:
+    <<: *DEFAULT
+    id: 0
+    name: stretch
+    learning_rate: 2.e-4
+    model:
+        part_locate: 0
+        loc_hg_dim: 256
+        loc_bn: false
+        reg_hg_dim: 256
+        reg_bn: false
+        max_person: 30
+        co_loc: 100
+        co_reg: 0.01
+        reg_stack: 3
+        reg_use_gt: true
+        reg_init_noise: 0.1
+        reg_mid_noise: 0.1
+    # dataset:
+    #     <<: *DATASET_COCO

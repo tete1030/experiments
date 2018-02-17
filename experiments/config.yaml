@@ -1,5 +1,5 @@
 default: &DEFAULT
-    workers: 24
+    workers: 10
     debug: false
     profile: false
     hyperdash: null

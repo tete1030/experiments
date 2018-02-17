@@ -6,6 +6,8 @@ import time
 import numpy as np
 import torch
 
+__all__ = ["Conv", "Pool", "SimpHourglass"]
+
 Pool = nn.MaxPool2d
 
 def batchnorm(x):
@@ -52,23 +54,32 @@ class Conv(nn.Module):
         return x
 
 class SimpHourglass(nn.Module):
-    # n: stacks number
-    # f: dimension of high res. part
-    # increase: increasement of dimension of low res. part
-    def __init__(self, n, f, bn=None, increase=128):
+    def __init__(self, inp_dim, n, bn=None, increase=128):
+        """Hourglass with out residual module
+        
+        Arguments:
+            inp_dim {int} -- dimension of high res. part
+            n {int} -- scale number
+        
+        Keyword Arguments:
+            bn {bool} -- batch normalization module (default: {None})
+            increase {int} -- increasement of dimension of low res. part (default: {128})
+        """
+
         super(SimpHourglass, self).__init__()
-        nf = f + increase
-        self.up1 = Conv(f, f, 3, bn=bn)
+        low_dim = inp_dim + increase
+        self.up1 = Conv(inp_dim, inp_dim, 3, bn=bn)
         # Lower branch
         self.pool1 = Pool(2, 2)
-        self.low1 = Conv(f, nf, 3, bn=bn)
+        self.low1 = Conv(inp_dim, low_dim, 3, bn=bn)
         # Recursive hourglass
         if n > 1:
-            self.low2 = SimpHourglass(n-1, nf, bn=bn)
+            self.low2 = SimpHourglass(low_dim, n-1, bn=bn)
         else:
-            self.low2 = Conv(nf, nf, 3, bn=bn)
-        self.low3 = Conv(nf, f, 3)
-        self.up2  = nn.UpsamplingNearest2d(scale_factor=2)
+            self.low2 = Conv(low_dim, low_dim, 3, bn=bn)
+        self.low3 = Conv(low_dim, inp_dim, 3)
+        # TODO: COMPATIBILITY Change to new module
+        self.up2 = nn.UpsamplingNearest2d(scale_factor=2)
 
     def forward(self, x):
         up1  = self.up1(x)

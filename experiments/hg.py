@@ -12,7 +12,7 @@ class Experiment:
         model = models.HourglassNet(models.Bottleneck,
                                         num_stacks=hparams['model']['stack'],
                                         num_blocks=hparams['model']['block'],
-                                        num_classes=datasets.mpii.POINT_NC)
+                                        num_classes=datasets.mpii.NUM_PARTS)
         self.model = torch.nn.DataParallel(model).cuda()
     
         self.criterion = torch.nn.MSELoss(size_average=True).cuda()
@@ -21,9 +21,8 @@ class Experiment:
                                              lr=hparams['learning_rate'],
                                              weight_decay=hparams['weight_decay'])
 
-        self.train_dataset = datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
+        self.train_dataset = datasets.MPII('data/mpii/mpii_annotations.json', 'data/mpii/images',
                                            label_sigma=hparams['dataset']['label_sigma'],
-                                           label_data=datasets.Mpii.LABEL_POINTS_MAP,
                                            label_type=hparams['dataset']['label_type'],
                                            single_person=True,
                                            selective=hparams['dataset']['selective'],
@@ -31,9 +30,8 @@ class Experiment:
                                            contrast_factor=hparams['dataset']['contrast_factor'],
                                            brightness_factor=hparams['dataset']['brightness_factor'])
     
-        self.val_dataset = datasets.Mpii('data/mpii/mpii_annotations.json', 'data/mpii/images',
+        self.val_dataset = datasets.MPII('data/mpii/mpii_annotations.json', 'data/mpii/images',
                                          label_sigma=hparams['dataset']['label_sigma'],
-                                         label_data=datasets.Mpii.LABEL_POINTS_MAP,
                                          label_type=hparams['dataset']['label_type'],
                                          train=False,
                                          single_person=True)
@@ -67,11 +65,11 @@ class Experiment:
                     volatile=True
                 )
             flip_output_var = self.model(flip_input_var)
-            flip_output = fliplr_map(flip_output_var[-1].data.cpu(), datasets.mpii.flipIndex)
+            flip_output = fliplr_map(flip_output_var[-1].data.cpu(), datasets.mpii.FLIP_INDEX)
             score_map += flip_output
             score_map /= 2.
     
-        acc = accuracy(score_map, target['points'], datasets.mpii.evalIndex)
+        acc = accuracy(score_map, target['points'], datasets.mpii.EVAL_INDEX)
     
         return loss, acc[0], meta['index'], score_map
 

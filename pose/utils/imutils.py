@@ -7,6 +7,8 @@ import scipy.misc
 
 from .misc import *
 from PIL import ImageEnhance
+import matplotlib
+import matplotlib.pyplot as plt
 
 def im_to_numpy(img):
     img = to_numpy(img)
@@ -295,3 +297,53 @@ def batch_with_heatmap(inputs, outputs, mean=torch.Tensor([0.5, 0.5, 0.5]), num_
             sample_with_heatmap(inp.clamp(0, 1), outputs[n], num_rows=num_rows, parts_to_show=parts_to_show)
         )
     return np.concatenate(batch_img)
+
+def init_axes(figsize=None, n_rows=1, n_cols=1, axis_off=True):
+    kwargs = {}
+    if figsize is not None:
+        kwargs["figsize"] = figsize
+    fig, axes = plt.subplots(nrows=n_rows, ncols=n_cols, **kwargs)
+    if axis_off:
+        for ax in axes.flat:
+            ax.axis('off')
+    return fig, axes
+
+def show_heatmap(hmap, figsize=None, n_rows=None, n_cols=None, transpose=None, v_min=None, v_max=None):
+    if isinstance(axes, np.ndarray):
+        if len(hmap) != len(axes):
+            print("len(hmap) != len(axes)")
+            return
+
+    if isinstance(hmap, torch.autograd.Variable):
+        hmap = hmap.data
+    if isinstance(hmap, torch.cuda._TensorBase):
+        hmap = hmap.cpu()
+    if isinstance(hmap, torch._TensorBase):
+        hmap = hmap.numpy()
+    if not isinstance(hmap, np.ndarray):
+        print("hmap not Ndarray")
+        return
+
+    if transpose is not None:
+        hmap = hmap.transpose(*transpose)
+
+    init_kwargs = {}
+    if figsize is not None:
+        init_kwargs["figsize"] = figsize
+    if n_rows is not None:
+        init_kwargs["n_rows"] = n_rows
+    if n_cols is not None:
+        init_kwargs["n_cols"] = n_cols
+    
+    fig, axes = init_axes(**init_kwargs)
+
+    imshow_kwargs = {}
+    if v_min is not None:
+        imshow_kwargs["vmin"] = v_min
+    if v_max is not None:
+        imshow_kwargs["vmax"] = v_max
+    
+    for ax, hm in zip(axes, hmap):
+        ax.imshow(hm, **imshow_kwargs)
+    
+    fig.show()
