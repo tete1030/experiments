@@ -9,6 +9,7 @@ from .misc import *
 from PIL import ImageEnhance
 import matplotlib
 import matplotlib.pyplot as plt
+import cv2
 
 def im_to_numpy(img):
     img = to_numpy(img)
@@ -298,6 +299,17 @@ def batch_with_heatmap(inputs, outputs, mean=torch.Tensor([0.5, 0.5, 0.5]), num_
         )
     return np.concatenate(batch_img)
 
+def assure_ndarray(hmap):
+    if isinstance(hmap, torch.autograd.Variable):
+        hmap = hmap.data
+    if isinstance(hmap, torch.cuda._TensorBase):
+        hmap = hmap.cpu()
+    if isinstance(hmap, torch._TensorBase):
+        hmap = hmap.numpy()
+    if not isinstance(hmap, np.ndarray):
+        raise ("hmap not Ndarray")
+    return hmap
+
 def init_axes(figsize=None, n_rows=1, n_cols=1, axis_off=True):
     kwargs = {}
     if figsize is not None:
@@ -308,24 +320,14 @@ def init_axes(figsize=None, n_rows=1, n_cols=1, axis_off=True):
             ax.axis('off')
     return fig, axes
 
-def show_heatmap(hmap, figsize=None, n_rows=None, n_cols=None, transpose=None, v_min=None, v_max=None):
-    if isinstance(axes, np.ndarray):
-        if len(hmap) != len(axes):
-            print("len(hmap) != len(axes)")
-            return
-
-    if isinstance(hmap, torch.autograd.Variable):
-        hmap = hmap.data
-    if isinstance(hmap, torch.cuda._TensorBase):
-        hmap = hmap.cpu()
-    if isinstance(hmap, torch._TensorBase):
-        hmap = hmap.numpy()
-    if not isinstance(hmap, np.ndarray):
-        print("hmap not Ndarray")
-        return
+def show_heatmap(hmap, figsize=None, n_rows=None, n_cols=None, fig=None, axes=None, transpose=None, v_min=None, v_max=None, alpha=None, mean=None, show=True):
+    hmap = assure_ndarray(hmap)
 
     if transpose is not None:
         hmap = hmap.transpose(*transpose)
+
+    if mean is not None:
+        hmap = hmap + mean
 
     init_kwargs = {}
     if figsize is not None:
@@ -334,16 +336,37 @@ def show_heatmap(hmap, figsize=None, n_rows=None, n_cols=None, transpose=None, v
         init_kwargs["n_rows"] = n_rows
     if n_cols is not None:
         init_kwargs["n_cols"] = n_cols
-    
-    fig, axes = init_axes(**init_kwargs)
+
+    if fig is None or axes is None:
+        fig, axes = init_axes(**init_kwargs)
 
     imshow_kwargs = {}
     if v_min is not None:
         imshow_kwargs["vmin"] = v_min
     if v_max is not None:
         imshow_kwargs["vmax"] = v_max
+    if alpha is not None:
+        imshow_kwargs["alpha"] = alpha
     
-    for ax, hm in zip(axes, hmap):
+    for ax, hm in zip(axes.flat, hmap):
         ax.imshow(hm, **imshow_kwargs)
     
-    fig.show()
+    if show:
+        fig.show()
+
+    return fig, axes
+
+def batch_resize(hmap, new_size):
+    hmap = assure_ndarray(hmap)
+    new_size_real = hmap.shape[:-2] + new_size
+
+    if hmap.ndim == 3:
+        hmap = hmap[None]
+    assert hmap.ndim == 4, "Not 4 dimension: %d" % (hmap.ndim,)
+
+    new_size_all = hmap.shape[:-2] + new_size
+    hmap_new = np.zeros(new_size_all, dtype=np.float32)
+    for i, hm_samp in enumerate(hmap):
+        for j, hm_chan in enumerate(hm_samp):
+            hmap_new[i, j] = cv2.resize(hm_chan, dsize=new_size)
+    return hmap_new.reshape(new_size_real)

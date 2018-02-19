@@ -43,10 +43,6 @@ def enable_sigint_handler():
         print("SIGINT Detected")
     signal.signal(signal.SIGINT, sigint_handler)
 
-# Profiling
-import cProfile, pstats, StringIO
-config.profiler = None
-
 best_acc = 0
 
 def main(args):
@@ -93,6 +89,7 @@ def main(args):
         if os.path.isfile(resume_full):
             hparams_cp_file = os.path.join(config.resume, 'hparams.yaml')
             if os.path.isfile(hparams_cp_file):
+                # TODO: FIXME
                 resume_hparams = YAML().load(open(hparams_cp_file, 'r'))
                 assert resume_hparams == exp.hparams, "hparams from config and from checkpoint are not equal"
             print("=> loading checkpoint '{}'".format(resume_full))
@@ -143,10 +140,6 @@ def main(args):
 
     if config.hyperdash:
         config.hyperdash = hyperdash.Experiment(config.hyperdash)
-
-    if config.profile:
-        assert config.workers == 0, "Profiling doesn't support multi-processing"
-        config.profiler = cProfile.Profile()
 
     if config.handle_sig:
         enable_sigint_handler()
@@ -204,12 +197,6 @@ def main(args):
         if config.sigint_triggered:
             break
 
-    if config.profiler:
-        s = StringIO.StringIO()
-        ps = pstats.Stats(config.profiler, stream=s).sort_stats('cumulative')
-        ps.print_stats()
-        print(s.getvalue())
-
     if config.hyperdash:
         config.hyperdash.end()
 
@@ -240,8 +227,6 @@ def train(train_loader, exp, epoch):
 
     gt_win, pred_win = None, None
 
-    if config.profiler: config.profiler.enable()
-
     for i, batch in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
@@ -259,10 +244,11 @@ def train(train_loader, exp, epoch):
         losses.update(loss.data[0], batch_size)
         # TODO: STRUCTURE dynamic metrics
         losses_locate.update(loss_locate.data[0], batch_size)
-        if loss_pose.data[0] >= 0:
+        if loss_pose is not None:
             losses_pose.update(loss_pose.data[0], batch_size)
-        acces_locate.update(acc_locate, batch_size)
-        if acc_pose >= 0:
+        if acc_locate is not None:
+            acces_locate.update(acc_locate, batch_size)
+        if acc_pose is not None:
             acces_pose.update(acc_pose, batch_size)
 
         # measure elapsed time
@@ -295,11 +281,10 @@ def train(train_loader, exp, epoch):
             total=time.time() - start_time,
             loss=losses.val,
             loss_locate=losses_locate.val,
-            # losses_pose.val may not be updated
-            loss_pose=loss_pose.data[0],
-            acc_locate=acces_locate.val,
-            # acces_pose.val may not be updated
-            acc_pose=acc_pose,
+            # may not be updated
+            loss_pose=loss_pose.data[0] if loss_pose is not None else -1.,
+            acc_locate=acc_locate if acc_locate is not None else -1.,
+            acc_pose=acc_pose if acc_pose is not None else -1.,
             loss_avg=losses.avg,
             loss_locate_avg=losses_locate.avg,
             loss_pose_avg=losses_pose.avg,
@@ -322,8 +307,6 @@ def train(train_loader, exp, epoch):
         if config.fast_pass > 0 and (i+1) >= config.fast_pass:
             print("Fast Pass!")
             break
-
-    if config.profiler: config.profiler.disable()
     
     # TODO: STRUCTURE dynamic metrics
     return losses.avg, losses_locate.avg, losses_pose.avg, acces_locate.avg, acces_pose.avg
@@ -378,10 +361,11 @@ def validate(val_loader, exp, epoch):
         # acces.update(acc, batch[0].size(0))
         # TODO: STRUCTURE dynamic metrics
         losses_locate.update(loss_locate.data[0], batch_size)
-        if loss_pose.data[0] >= 0:
+        if loss_pose is not None:
             losses_pose.update(loss_pose.data[0], batch_size)
-        acces_locate.update(acc_locate, batch_size)
-        if acc_pose >= 0:
+        if acc_locate is not None:
+            acces_locate.update(acc_locate, batch_size)
+        if acc_pose is not None:
             acces_pose.update(acc_pose, batch_size)
 
         # measure elapsed time
@@ -424,11 +408,10 @@ def validate(val_loader, exp, epoch):
             total=time.time() - start_time,
             loss=losses.val,
             loss_locate=losses_locate.val,
-            # losses_pose.val may not be updated
-            loss_pose=loss_pose.data[0],
-            acc_locate=acces_locate.val,
-            # acces_pose.val may not be updated
-            acc_pose=acc_pose,
+            # may not be updated
+            loss_pose=loss_pose.data[0] if loss_pose is not None else -1.,
+            acc_locate=acc_locate if acc_locate is not None else -1.,
+            acc_pose=acc_pose if acc_pose is not None else -1.,
             loss_avg=losses.avg,
             loss_locate_avg=losses_locate.avg,
             loss_pose_avg=losses_pose.avg,

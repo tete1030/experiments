@@ -14,6 +14,11 @@ from pycocotools.coco import COCO
 import numpy as np
 import copy
 
+try:
+    profile
+except NameError:
+    profile = lambda func: func
+
 """
 1. Detect person location / head
 2. Generate maps of part location and embedding
@@ -102,14 +107,14 @@ class Experiment(object):
                                                  (INP_RES, INP_RES),
                                                  self.hparams["model"]["max_person"],
                                                  cuda=True,
-                                                 sigma=1)
+                                                 sigma=1*FACTOR)
 
         self.test_pose_mgr = models.PoseManager(self.hparams["test_batch"],
                                                 self.num_parts,
                                                 (INP_RES, INP_RES),
                                                 self.hparams["model"]["max_person"],
                                                 cuda=True,
-                                                sigma=1)
+                                                sigma=1*FACTOR)
         
         self.train_collate_fn = datasets.COCOPose.collate_function
         self.test_collate_fn = datasets.COCOPose.collate_function
@@ -129,6 +134,7 @@ class Experiment(object):
         #     self.train_dataset.label_sigma *= label_sigma_decay
         #     self.val_dataset.label_sigma *= label_sigma_decayn
 
+    @profile
     def process(self, batch, train):
         locate_index = self.hparams["model"]["part_locate"]
         coeff_loc = float(self.hparams["model"]["co_loc"])
@@ -145,10 +151,10 @@ class Experiment(object):
         img, locate_map_gt, mask, extra = batch
         volatile = not train
 
-        img_var = torch.autograd.Variable(img.cuda(), volatile=volatile)
+        img_var = torch.autograd.Variable(img.cuda(async=True), volatile=volatile)
         locate_map_gt_var = torch.autograd.Variable(locate_map_gt.cuda(async=True), volatile=volatile)
         mask_var = torch.autograd.Variable(mask.cuda(async=True), volatile=volatile)
-        keypoint_gt = extra["keypoints_tf"]
+        keypoint_gt = extra["keypoints_tf_inp"]
         num_gt_per_part = []
         for bi in range(len(keypoint_gt)):
             kpgt_i = keypoint_gt[bi]
@@ -175,14 +181,19 @@ class Experiment(object):
         # TODO: IMPROVEMENT decrease threshold_dis gradually, or not change
         # TODO: COMPATIBILITY use relative distance for threshold_dis
         matches_pred, matches_gt = match_locate(locate_pred, keypoint_gt, locate_index, threshold_dis=3)
+        # TODO: TEST not tested
         locate_pred = [lpp[mat] if len(mat) > 0 else torch.LongTensor(0)
                        for mat, lpp in zip(matches_pred, locate_pred)]
         ori_keypoint_gt = copy.deepcopy(keypoint_gt)
+        # TODO: TEST not tested
         keypoint_gt = [kpgt[mat] if len(mat) > 0 else torch.FloatTensor(0)
                        for mat, kpgt in zip(matches_gt, keypoint_gt)]
         del matches_pred, matches_gt
 
-        acc_locate = accuracy_locate(locate_pred, keypoint_gt, locate_index, num_gt_per_part[locate_index], norm=float(OUT_RES)/10)
+        if num_gt_per_part[locate_index] > 0:
+            acc_locate = accuracy_locate(locate_pred, keypoint_gt, locate_index, num_gt_per_part[locate_index], norm=float(OUT_RES)/10)
+        else:
+            acc_locate = None
 
         if self.hparams["model"]["reg_use_gt"]:
             keypoint_gt = ori_keypoint_gt
@@ -231,7 +242,7 @@ class Experiment(object):
 
             split = pose_mgr.all_split
             keypoint_pred_cat = keypoint_pred_cat_var.data.cpu()
-            keypoint_pred_cat_info = pose_mgr.all_keypoints_info
+            keypoint_pred_cat_info = pose_mgr.all_keypoints_info.cpu()
             keypoint_pred = [torch.cat((keypoint_pred_cat[start:end],
                                         keypoint_pred_cat_info[start:end]
                                         .contiguous().view(end-start, self.num_parts, 1)),
@@ -240,9 +251,9 @@ class Experiment(object):
 
             acc_pose, _ = accuracy_multi(keypoint_pred, keypoint_gt, norm=float(OUT_RES)/10, num_parts=self.num_parts)
         else:
-            loss_pose = -1.
+            loss_pose = None
             loss = coeff_loc * loss_locate
-            acc_pose = -1.
+            acc_pose = None
             keypoint_pred = [torch.LongTensor(0) for i in range(len(img))]        
 
         # TODO: STRUCTURE dynamic metrics

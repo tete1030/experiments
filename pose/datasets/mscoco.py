@@ -172,6 +172,8 @@ class COCOPose(data.Dataset):
             keypoints = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
 
         # keypoints: #person * #joints * 3
+        keypoints_tf_inp = transform(keypoints.reshape((-1, 3))[...,:2], center, scale, [self.inp_res, self.inp_res], rot=rotate)
+        keypoints_tf_inp = np.c_[keypoints_tf_inp, keypoints.reshape((-1, 3))[:, 2]].reshape(keypoints.shape)
         keypoints_tf = transform(keypoints.reshape((-1, 3))[...,:2], center, scale, [self.out_res, self.out_res], rot=rotate)
         keypoints_tf = np.c_[keypoints_tf, keypoints.reshape((-1, 3))[:, 2]].reshape(keypoints.shape)
         
@@ -210,7 +212,8 @@ class COCOPose(data.Dataset):
 
         extra = {"index": index, "center": torch.from_numpy(center), "scale": scale, 
                  "keypoints": torch.from_numpy(keypoints) if keypoints.shape[0] >= 0 else None,
-                 "keypoints_tf": torch.from_numpy(keypoints_tf) if keypoints.shape[0] >= 0 else None}
+                 "keypoints_tf": torch.from_numpy(keypoints_tf) if keypoints.shape[0] >= 0 else None,
+                 "keypoints_tf_inp": torch.from_numpy(keypoints_tf_inp) if keypoints.shape[0] >= 0 else None}
 
         if len(draw_parts) > 0:
             return torch.from_numpy(img), \
@@ -234,7 +237,8 @@ class COCOPose(data.Dataset):
             "center": collate_fn([sample["center"] for sample in transposed[3]]),
             "scale": collate_fn([sample["scale"] for sample in transposed[3]]),
             "keypoints": [sample["keypoints"] for sample in transposed[3]],
-            "keypoints_tf": [sample["keypoints_tf"] for sample in transposed[3]]
+            "keypoints_tf": [sample["keypoints_tf"] for sample in transposed[3]],
+            "keypoints_tf_inp": [sample["keypoints_tf_inp"] for sample in transposed[3]]
         }
         return result + [extra_result]
 
