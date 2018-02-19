@@ -66,9 +66,6 @@ class PoseManager(object):
         self.all_keypoints_var = None
         self.all_keypoints_info = None
 
-        self.draw_batch_ids = None
-        self.draw_person_mask = None
-        self.draw_part_ids = None
         self.draw_rows_map = None
         self.draw_cols_map = None
         self.draw_rows_temp = None
@@ -78,9 +75,10 @@ class PoseManager(object):
         self.batch_ids = None
         self.person_cat_ids = None
         self.person_ids = None
+        self.person_mask = None
         self.part_ids = None
-        self.keypoints_flat_x = None
-        self.keypoints_flat_y = None
+        # self.keypoints_flat_x = None
+        # self.keypoints_flat_y = None
 
     def init_with_locate(self, locate):
         self.init(locate, True)
@@ -139,34 +137,32 @@ class PoseManager(object):
         # cat_ids, part_ids: #valid_part
         cat_ids, part_ids = torch.nonzero(keypoints_info > 0).t()
         batch_ids = batch_all_ids[cat_ids]
-        draw_batch_ids = batch_ids.view(-1, 1).repeat(1, self.temp_length)
         person_ids = person_all_ids[cat_ids]
         max_person_id = person_ids.max()
-        draw_person_mask = [(person_ids == i).view(-1, 1).repeat(1, self.temp_length)
-                            for i in range(max_person_id)]
-        part_ids = part_ids.contiguous()
-        draw_part_ids = part_ids.view(-1, 1).repeat(1, self.temp_length)
+        person_mask = [(person_ids == i)
+                       for i in range(max_person_id)]
+        part_ids = part_ids
         person_cat_ids = person_ids_split2cat[batch_ids, person_ids]
 
         # Filter and flatten result
         # keypoints_flat: #valid_part x 2
         keypoints_flat = keypoints_cat[cat_ids, part_ids]
-        keypoints_flat_x = keypoints_flat[:, 0].contiguous()
-        keypoints_flat_y = keypoints_flat[:, 1].contiguous()
+        keypoints_flat_x = keypoints_flat[:, 0]
+        keypoints_flat_y = keypoints_flat[:, 1]
 
-        # loc ~ (X, Y)
-        # loc: 2 x temp_height x temp_width
         cols, rows = np.meshgrid(
                 np.arange(-3*self.sigma-1, 3*self.sigma+2, dtype=np.int64),
                 np.arange(-3*self.sigma-1, 3*self.sigma+2, dtype=np.int64), indexing="xy")
-        cols = torch.from_numpy(cols).cuda(async=True).view(1, -1).expand(batch_ids.size(0), -1)
-        rows = torch.from_numpy(rows).cuda(async=True).view(1, -1).expand(batch_ids.size(0), -1)
-        draw_cols_map = cols + keypoints_flat_x.view(-1, 1).expand(-1, self.temp_length)
-        draw_rows_map = rows + keypoints_flat_y.view(-1, 1).expand(-1, self.temp_length)
+        cols = torch.from_numpy(cols).cuda(async=True).view(-1, 1).expand(-1, batch_ids.size(0))
+        rows = torch.from_numpy(rows).cuda(async=True).view(-1, 1).expand(-1, batch_ids.size(0))
+        draw_cols_map = cols + keypoints_flat_x
+        draw_rows_map = rows + keypoints_flat_y
         draw_cols_temp = cols + 3*self.sigma + 1
         draw_rows_temp = rows + 3*self.sigma + 1
         draw_insider = ((draw_cols_map >= 0) & (draw_cols_map < self.out_size[1]) & \
                         (draw_rows_map >= 0) & (draw_rows_map < self.out_size[0]))
+        assert self.temp_length % 2 == 1
+        self.temp_middle = (self.temp_length + 1) / 2 - 1
 
         self.cur_batch_size = num_batch
 
@@ -176,9 +172,6 @@ class PoseManager(object):
         # self.all_keypoints_info: #all_person x #part
         self.all_keypoints_info = keypoints_info
 
-        self.draw_batch_ids = draw_batch_ids
-        self.draw_person_mask = draw_person_mask
-        self.draw_part_ids = draw_part_ids
         self.draw_rows_map = draw_rows_map
         self.draw_cols_map = draw_cols_map
         self.draw_rows_temp = draw_rows_temp
@@ -187,17 +180,20 @@ class PoseManager(object):
 
         self.batch_ids = batch_ids
         self.person_ids = person_ids
+        self.person_mask = person_mask
         self.person_cat_ids = person_cat_ids
         self.part_ids = part_ids
-        self.keypoints_flat_x = keypoints_flat[:, 0]
-        self.keypoints_flat_y = keypoints_flat[:, 1]
+        # self.keypoints_flat_x = keypoints_flat[:, 0]
+        # self.keypoints_flat_y = keypoints_flat[:, 1]
 
         self.filter_valid_point()
 
     @profile
     def filter_valid_point(self):
-        insider = ((self.keypoints_flat_x >= 0) & (self.keypoints_flat_x < self.out_size[1]) & \
-                   (self.keypoints_flat_y >= 0) & (self.keypoints_flat_y < self.out_size[0]))
+        x = self.draw_cols_map[self.temp_middle]
+        y = self.draw_rows_map[self.temp_middle]
+        insider = ((x >= 0) & (x < self.out_size[1]) & \
+                   (y >= 0) & (y < self.out_size[0]))
         outsider = ~insider
         insider = torch.nonzero(insider)
         outsider = torch.nonzero(outsider)
@@ -216,32 +212,28 @@ class PoseManager(object):
             self.person_ids = self.person_ids[insider]
             self.person_cat_ids = self.person_cat_ids[insider]
             self.part_ids = self.part_ids[insider]
-            self.keypoints_flat_x = self.keypoints_flat_x[insider]
-            self.keypoints_flat_y = self.keypoints_flat_y[insider]
+            self.person_mask = [pm[insider] for pm in self.person_mask]
+            # self.keypoints_flat_x = self.keypoints_flat_x[insider]
+            # self.keypoints_flat_y = self.keypoints_flat_y[insider]
 
-            self.draw_batch_ids = self.draw_batch_ids[insider]
-            self.draw_person_mask = [pm[insider] for pm in self.draw_person_mask]
-            self.draw_rows_map = self.draw_rows_map[insider]
-            self.draw_cols_map = self.draw_cols_map[insider]
-            self.draw_rows_temp = self.draw_rows_temp[insider]
-            self.draw_cols_temp = self.draw_cols_temp[insider]
-            self.draw_part_ids = self.draw_part_ids[insider]
-            self.draw_insider = self.draw_insider[insider]
+            self.draw_rows_map = self.draw_rows_map[:, insider]
+            self.draw_cols_map = self.draw_cols_map[:, insider]
+            self.draw_rows_temp = self.draw_rows_temp[:, insider]
+            self.draw_cols_temp = self.draw_cols_temp[:, insider]
+            self.draw_insider = self.draw_insider[:, insider]
         else:
             self.batch_ids = torch.LongTensor(0).cuda(async=True)
             self.person_ids = torch.LongTensor(0).cuda(async=True)
             self.person_cat_ids = torch.LongTensor(0).cuda(async=True)
             self.part_ids = torch.LongTensor(0).cuda(async=True)
-            self.keypoints_flat_x = torch.LongTensor(0).cuda(async=True)
-            self.keypoints_flat_y = torch.LongTensor(0).cuda(async=True)
+            self.person_mask = [torch.ByteTensor(0).cuda(async=True) for pm in self.draw_person_mask]
+            # self.keypoints_flat_x = torch.LongTensor(0).cuda(async=True)
+            # self.keypoints_flat_y = torch.LongTensor(0).cuda(async=True)
 
-            self.draw_batch_ids = torch.LongTensor(0).cuda(async=True)
-            self.draw_person_mask = [torch.ByteTensor(0).cuda(async=True) for pm in self.draw_person_mask]
             self.draw_rows_map = torch.LongTensor(0).cuda(async=True)
             self.draw_cols_map = torch.LongTensor(0).cuda(async=True)
             self.draw_rows_temp = torch.LongTensor(0).cuda(async=True)
             self.draw_cols_temp = torch.LongTensor(0).cuda(async=True)
-            self.draw_part_ids = torch.LongTensor(0).cuda(async=True)
             self.draw_insider = torch.ByteTensor(0).cuda(async=True)
 
     @profile
@@ -257,8 +249,8 @@ class PoseManager(object):
 
         batch_ids = self.batch_ids
         part_ids = self.part_ids
-        rows = (self.keypoints_flat_y / factor).long()
-        cols = (self.keypoints_flat_x / factor).long()
+        rows = (self.draw_rows_map[self.temp_middle] / factor).long()
+        cols = (self.draw_cols_map[self.temp_middle] / factor).long()
 
         movement_x = move_field[batch_ids,
                                 part_ids,
@@ -268,14 +260,14 @@ class PoseManager(object):
                                 part_ids + self.num_parts,
                                 rows,
                                 cols].long()
-        self.keypoints_flat_x += movement_x.data
-        self.keypoints_flat_y += movement_y.data
+        # self.keypoints_flat_x += movement_x.data
+        # self.keypoints_flat_y += movement_y.data
 
-        self.draw_rows_map += movement_y.data.view(-1, 1).expand(-1, self.temp_length)
-        self.draw_cols_map += movement_x.data.view(-1, 1).expand(-1, self.temp_length)
+        self.draw_rows_map += movement_y.data
+        self.draw_cols_map += movement_x.data
         self.draw_insider = ((self.draw_cols_map >= 0) & (self.draw_cols_map < self.out_size[1]) & \
                              (self.draw_rows_map >= 0) & (self.draw_rows_map < self.out_size[0]))
-
+        
         selector_x = torch.LongTensor([0]).cuda(async=True).expand(len(self.batch_ids))
         selector_y = torch.LongTensor([1]).cuda(async=True).expand(len(self.batch_ids))
 
@@ -297,20 +289,16 @@ class PoseManager(object):
         if len(self.batch_ids) == 0:
             return self.map[:self.cur_batch_size].clone()
 
-        # batch_ids, person_ids, part_ids: #all_parts
-        # keypoints_flat: #all_parts x 2 x temp_length
-        batch_ids = self.draw_batch_ids
-        person_mask = self.draw_person_mask
-        part_ids = self.draw_part_ids
+        batch_ids = self.batch_ids.expand(self.temp_length, -1)
+        person_mask = [pm.expand(self.temp_length, -1) for pm in self.person_mask]
+        part_ids = self.part_ids.expand(self.temp_length, -1)
 
         map_cols = self.draw_cols_map
         map_rows = self.draw_rows_map
         temp_cols = self.draw_cols_temp
         temp_rows = self.draw_rows_temp
-
-        # insider: #all_parts x temp_size
         insider = self.draw_insider
-
+        
         # select points inside
         batch_ids = batch_ids[insider]
         part_ids = part_ids[insider]

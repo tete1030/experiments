@@ -89,9 +89,16 @@ def main(args):
         if os.path.isfile(resume_full):
             hparams_cp_file = os.path.join(config.resume, 'hparams.yaml')
             if os.path.isfile(hparams_cp_file):
-                # TODO: FIXME
-                resume_hparams = YAML().load(open(hparams_cp_file, 'r'))
-                assert resume_hparams == exp.hparams, "hparams from config and from checkpoint are not equal"
+                resume_hparams = YAML(typ='safe').load(open(hparams_cp_file, 'r'))
+                if resume_hparams != exp.hparams:
+                    print("Warning: hparams from config and from checkpoint are not equal")
+                    print("In config:")
+                    YAML(typ='safe').dump(exp.hparams, sys.stdout)
+                    print("In checkpoint:")
+                    YAML(typ='safe').dump(resume_hparams, sys.stdout)
+                    ans = raw_input("Continue (y|n)? ")
+                    if ans != "y":
+                        sys.exit(0)
             print("=> loading checkpoint '{}'".format(resume_full))
             checkpoint = torch.load(resume_full)
             exp.hparams['start_epoch'] = checkpoint['epoch']
@@ -107,7 +114,7 @@ def main(args):
             print("=> no checkpoint found at '{}'".format(config.resume))
             sys.exit(1)
     else:
-        YAML().dump(exp.hparams, open(hparams_cp_file, 'w'))
+        YAML(typ='safe').dump(exp.hparams, open(hparams_cp_file, 'w'))
 
     if logger is None:
         logger = Logger(log_file, title=title)
@@ -439,12 +446,12 @@ def get_args():
     return argp.parse_args()
 
 def init_config(conf_name):
-    conf = YAML().load(open('experiments/config.yaml', 'r'))
+    conf = YAML(typ='safe').load(open('experiments/config.yaml', 'r'))
     conf_data = conf[conf_name]
     config.__dict__.update(conf_data.items())
     
 def get_hparams(exp_name, hp_file='experiments/hparams.yaml'):
-    return YAML().load(open(hp_file, 'r'))[exp_name]
+    return YAML(typ='safe').load(open(hp_file, 'r'))[exp_name]
 
 if __name__ == '__main__':
     args = get_args()

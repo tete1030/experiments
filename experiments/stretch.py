@@ -58,7 +58,6 @@ class Experiment(object):
     """
 
     def __init__(self, hparams):
-        # TODO: STRUCTURE put hparams into yaml
         self.hparams = hparams
         self.num_parts = datasets.mscoco.NUM_PARTS
         # TODO: EFFICIENCY DataParallel usage
