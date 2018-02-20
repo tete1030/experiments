@@ -238,7 +238,7 @@ def accuracy_multi(pred, gt, norm, num_parts, threshold=0.5):
         if len(gt_i) > 0:
             mask_labeled = (gt_i[:, :, 2] > 0)
             pred_i = pred_i[:, :, :2].float()
-            gt_i = gt_i[:, :, :2]
+            gt_i = gt_i[:, :, :2].float()
             mask_TP = ((((pred_i - gt_i) ** 2).sum(dim=-1) / (float(norm) ** 2)) <= threshold ** 2)
             mask_TP = mask_TP & mask_labeled
             counter_TP += mask_TP.float().sum(dim=0)

@@ -78,8 +78,7 @@ class SimpHourglass(nn.Module):
         else:
             self.low2 = Conv(low_dim, low_dim, 3, bn=bn)
         self.low3 = Conv(low_dim, inp_dim, 3)
-        # TODO: COMPATIBILITY Change to new module
-        self.up2 = nn.UpsamplingNearest2d(scale_factor=2)
+        self.up2 = nn.Upsample(scale_factor=2, mode="nearest")
 
     def forward(self, x):
         up1  = self.up1(x)

@@ -3,7 +3,7 @@ default: &DEFAULT
     debug: false
     profile: false
     hyperdash: null
-    skip_val: 5
+    skip_val: 1
     fast_pass: 0
     handle_sig: true
     evaluate: false
@@ -35,4 +35,3 @@ fast: &FAST
 resume: &RESUME
     <<: *DEFAULT
     resume: 'checkpoint/{exp}/{id}'
-

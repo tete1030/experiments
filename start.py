@@ -118,13 +118,7 @@ def main(args):
 
     if logger is None:
         logger = Logger(log_file, title=title)
-        # TODO: STRUCTURE dynamic metrics
-        # logger.set_names(['Epoch', 'LR', 'Train Loss', 'Val Loss', 'Train Acc', 'Val Acc'])
-        logger.set_names(['Epoch', 'LR',
-                          'Train Locate Loss', 'Train Pose Loss',
-                          'Val Locate Loss', 'Val Pose Loss',
-                          'Train Locate Acc', 'Train Pose Acc',
-                          'Val Locate Acc', 'Val Pose Acc'])
+        logger.set_names(['Epoch', 'LR', 'Train Loss', 'Val Loss', 'Train Acc', 'Val Acc'])
 
     # Data loading code
     train_loader = torch.utils.data.DataLoader(
@@ -157,8 +151,7 @@ def main(args):
         print('\nEpoch: %d | LR: %.8f' % (epoch + 1, exp.hparams['learning_rate']))
 
         # train for one epoch
-        # TODO: STRUCTURE dynamic metrics
-        train_loss, train_loss_locate, train_loss_pose, train_acc_locate, train_acc_pose = train(train_loader, exp, epoch)
+        train_loss, train_acc = train(train_loader, exp, epoch)
 
         if config.sigint_triggered:
             break
@@ -166,26 +159,22 @@ def main(args):
         # evaluate on validation set
         if config.skip_val > 0 and (epoch + 1) % config.skip_val == 0:
             print("Validation:")
-            # TODO: STRUCTURE dynamic metrics
-            valid_loss, valid_loss_locate, valid_loss_pose, valid_acc_locate, valid_acc_pose, predictions = validate(val_loader, exp, epoch)
+            valid_loss, valid_acc, predictions = validate(val_loader, exp, epoch)
             # remember best acc and save checkpoint
-            is_best = valid_acc_pose > best_acc
-            best_acc = max(valid_acc_pose, best_acc)
+            is_best = valid_acc > best_acc
+            best_acc = max(valid_acc, best_acc)
         else:
             print("Skip validation")
-            valid_loss, valid_loss_locate, valid_loss_pose, valid_acc_locate, valid_acc_pose, predictions = 0., 0., 0., 0., 0., None
+            valid_loss, valid_acc, predictions = 0., 0., None
             is_best = False
 
         if config.sigint_triggered:
             break
 
         # append logger file
-        # TODO: STRUCTURE dynamic metrics
         logger.append([epoch + 1, exp.hparams['learning_rate'],
-                       train_loss_locate, train_loss_pose,
-                       valid_loss_locate, valid_loss_pose,
-                       train_acc_locate, train_acc_pose,
-                       valid_acc_locate, valid_acc_pose])
+                       train_loss, valid_loss,
+                       train_acc, valid_acc])
 
         cp_filename = 'checkpoint_{}.pth.tar'.format(epoch + 1)
         checkpoint_dict = {
@@ -208,23 +197,15 @@ def main(args):
         config.hyperdash.end()
 
     logger.close()
-    # TODO: STRUCTURE dynamic metrics
-    logger.plot(['Train Locate Loss', 'Train Pose Loss',
-                 'Val Locate Loss', 'Val Pose Loss',
-                 'Train Locate Acc', 'Train Pose Acc',
-                 'Val Locate Acc', 'Val Pose Acc'])
+    logger.plot(['Train Loss', 'Val Loss',
+                 'Train Acc', 'Val Acc'])
     savefig(os.path.join(config.checkpoint, 'log.eps'))
 
 def train(train_loader, exp, epoch):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
-    # acces = AverageMeter()
-    # TODO: STRUCTURE dynamic metrics
-    losses_locate = AverageMeter()
-    acces_locate = AverageMeter()
-    losses_pose = AverageMeter()
-    acces_pose = AverageMeter()
+    acces = AverageMeter()
 
     # switch to train mode
     exp.model.train()
@@ -238,9 +219,7 @@ def train(train_loader, exp, epoch):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        # TODO: STRUCTURE dynamic metrics
-        # loss, loss_locate, loss_pose, acc_locate, acc_pose, extras["index"], keypoint_pred_match
-        loss, loss_locate, loss_pose, acc_locate, acc_pose, _, _ = exp.process(batch, True)
+        loss, acc, _, _ = exp.process(batch, True)
 
         exp.optimizer.zero_grad()
         loss.backward()
@@ -248,65 +227,29 @@ def train(train_loader, exp, epoch):
 
         batch_size = batch[0].size(0)
         # measure accuracy and record loss
-        losses.update(loss.data[0], batch_size)
-        # TODO: STRUCTURE dynamic metrics
-        losses_locate.update(loss_locate.data[0], batch_size)
-        if loss_pose is not None:
-            losses_pose.update(loss_pose.data[0], batch_size)
-        if acc_locate is not None:
-            acces_locate.update(acc_locate, batch_size)
-        if acc_pose is not None:
-            acces_pose.update(acc_pose, batch_size)
+        if loss is not None:
+            losses.update(loss.data[0], batch_size)
+        if acc is not None:
+            acces.update(acc, batch_size)
 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
-        # TODO: STRUCTURE dynamic metrics
-        # loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s | Loss: {loss:.4f} | Acc: {acc:7.4f} | A.Loss: {avgloss:.4f} | A.Acc: {avgacc:7.4f}'.format(
-        #           epoch=epoch + 1,
-        #           batch=i + 1,
-        #           size_width=len(str(len(train_loader))),
-        #           size=len(train_loader),
-        #           data=data_time.val,
-        #           bt=batch_time.val,
-        #           total=time.time() - start_time,
-        #           loss=losses.val,
-        #           acc=acces.val,
-        #           avgloss=losses.avg,
-        #           avgacc=acces.avg
-        #           )
-        loginfo = ('{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n' + \
-                       '\tLoss: {loss:.4f} | LossL: {loss_locate:.4f} | LossP: {loss_pose:.4f} | AccL: {acc_locate:7.4f} | AccP: {acc_pose:7.4f}\n' + \
-                       '\tLos_: {loss_avg:.4f} | Los_L: {loss_locate_avg:.4f} | Los_P: {loss_pose_avg:.4f} | Ac_L: {acc_locate_avg:7.4f} | Ac_P: {acc_pose_avg:7.4f}').format(
-            epoch=epoch + 1,
-            batch=i + 1,
-            size_width=len(str(len(train_loader))),
-            size=len(train_loader),
-            data=data_time.val,
-            bt=batch_time.val,
-            total=time.time() - start_time,
-            loss=losses.val,
-            loss_locate=losses_locate.val,
-            # may not be updated
-            loss_pose=loss_pose.data[0] if loss_pose is not None else -1.,
-            acc_locate=acc_locate if acc_locate is not None else -1.,
-            acc_pose=acc_pose if acc_pose is not None else -1.,
-            loss_avg=losses.avg,
-            loss_locate_avg=losses_locate.avg,
-            loss_pose_avg=losses_pose.avg,
-            acc_locate_avg=acces_locate.avg,
-            acc_pose_avg=acces_pose.avg
-        )
+        loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s | Loss: {loss:.4f} | Acc: {acc:7.4f} | Los_: {avgloss:.4f} | Ac_: {avgacc:7.4f}'.format(
+                  epoch=epoch + 1,
+                  batch=i + 1,
+                  size_width=len(str(len(train_loader))),
+                  size=len(train_loader),
+                  data=data_time.val,
+                  bt=batch_time.val,
+                  total=time.time() - start_time,
+                  loss=loss.data[0] if loss is not None else -1.,
+                  acc=acc if acc is not None else -1.,
+                  avgloss=losses.avg,
+                  avgacc=acces.avg
+                  )
         print(loginfo)
-
-        if config.hyperdash:
-            config.hyperdash.metric("acc", acces.val, log=False)
-            config.hyperdash.metric("loss", losses.val, log=False)
-            if i > 10:
-                # initial accuracy is inaccurate
-                config.hyperdash.metric("acc_avg", acces.avg, log=False)
-                config.hyperdash.metric("loss_avg", losses.avg, log=False)
 
         if config.sigint_triggered:
             break
@@ -314,20 +257,14 @@ def train(train_loader, exp, epoch):
         if config.fast_pass > 0 and (i+1) >= config.fast_pass:
             print("Fast Pass!")
             break
-    
-    # TODO: STRUCTURE dynamic metrics
-    return losses.avg, losses_locate.avg, losses_pose.avg, acces_locate.avg, acces_pose.avg
+
+    return losses.avg, acces.avg
 
 def validate(val_loader, exp, epoch):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
-    # acces = AverageMeter()
-    # TODO: STRUCTURE dynamic metrics
-    losses_locate = AverageMeter()
-    acces_locate = AverageMeter()
-    losses_pose = AverageMeter()
-    acces_pose = AverageMeter()
+    acces = AverageMeter()
 
     predictions = None
 
@@ -342,9 +279,7 @@ def validate(val_loader, exp, epoch):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        # loss, acc, index, pred = exp.process(batch, False)
-        # TODO: STRUCTURE dynamic metrics
-        loss, loss_locate, loss_pose, acc_locate, acc_pose, index, pred = exp.process(batch, False)
+        loss, acc, index, pred = exp.process(batch, False)
 
         if index is None:
             index = list(range(data_counter, data_counter+len(index)))
@@ -364,67 +299,30 @@ def validate(val_loader, exp, epoch):
 
         batch_size = batch[0].size(0)
         # measure accuracy and record loss
-        losses.update(loss.data[0], batch[0].size(0))
-        # acces.update(acc, batch[0].size(0))
-        # TODO: STRUCTURE dynamic metrics
-        losses_locate.update(loss_locate.data[0], batch_size)
-        if loss_pose is not None:
-            losses_pose.update(loss_pose.data[0], batch_size)
-        if acc_locate is not None:
-            acces_locate.update(acc_locate, batch_size)
-        if acc_pose is not None:
-            acces_pose.update(acc_pose, batch_size)
+        if loss is not None:
+            losses.update(loss.data[0], batch_size)
+        if acc is not None:
+            acces.update(acc, batch_size)
 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
         data_counter += len(index)
-
-        if config.hyperdash:
-            config.hyperdash.metric("acc_val", acces.val, log=False)
-            config.hyperdash.metric("loss_val", losses.val, log=False)
-            if i > 10:
-                # initial accuracy is inaccurate
-                config.hyperdash.metric("acc_val_avg", acces.avg, log=False)
-                config.hyperdash.metric("loss_val_avg", losses.avg, log=False)
         
-        # loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s | Loss: {loss:.4f} | Acc: {acc:7.4f} | A.Loss: {avgloss:.4f} | A.Acc: {avgacc:7.4f}'.format(
-        #           epoch=epoch + 1,
-        #           batch=i + 1,
-        #           size_width=len(str(len(val_loader))),
-        #           size=len(val_loader),
-        #           data=data_time.val,
-        #           bt=batch_time.avg,
-        #           total=time.time() - start_time,
-        #           loss=losses.val,
-        #           acc=acces.val,
-        #           avgloss=losses.avg,
-        #           avgacc=acces.avg
-        #           )
-        # TODO: STRUCTURE dynamic metrics
-        loginfo = ('{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n' + \
-                       '\tLoss: {loss:.4f} | LossL: {loss_locate:.4f} | LossP: {loss_pose:.4f} | AccL: {acc_locate:7.4f} | AccP: {acc_pose:7.4f}\n' + \
-                       '\tLos_: {loss_avg:.4f} | Los_L: {loss_locate_avg:.4f} | Los_P: {loss_pose_avg:.4f} | Ac_L: {acc_locate_avg:7.4f} | Ac_P: {acc_pose_avg:7.4f}').format(
-            epoch=epoch + 1,
-            batch=i + 1,
-            size_width=len(str(len(val_loader))),
-            size=len(val_loader),
-            data=data_time.val,
-            bt=batch_time.val,
-            total=time.time() - start_time,
-            loss=losses.val,
-            loss_locate=losses_locate.val,
-            # may not be updated
-            loss_pose=loss_pose.data[0] if loss_pose is not None else -1.,
-            acc_locate=acc_locate if acc_locate is not None else -1.,
-            acc_pose=acc_pose if acc_pose is not None else -1.,
-            loss_avg=losses.avg,
-            loss_locate_avg=losses_locate.avg,
-            loss_pose_avg=losses_pose.avg,
-            acc_locate_avg=acces_locate.avg,
-            acc_pose_avg=acces_pose.avg
-        )
+        loginfo = '{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s | Loss: {loss:.4f} | Acc: {acc:7.4f} | Los_: {avgloss:.4f} | Ac_: {avgacc:7.4f}'.format(
+                  epoch=epoch + 1,
+                  batch=i + 1,
+                  size_width=len(str(len(val_loader))),
+                  size=len(val_loader),
+                  data=data_time.val,
+                  bt=batch_time.avg,
+                  total=time.time() - start_time,
+                  loss=loss.data[0] if loss is not None else -1.,
+                  acc=acc if acc is not None else -1.,
+                  avgloss=losses.avg,
+                  avgacc=acces.avg
+                  )
         print(loginfo)
 
         if config.sigint_triggered:
@@ -434,8 +332,7 @@ def validate(val_loader, exp, epoch):
             print("Fast Pass!")
             break
 
-    # TODO: STRUCTURE dynamic metrics
-    return losses.avg, losses_locate.avg, losses_pose.avg, acces_locate.avg, acces_pose.avg, predictions
+    return losses.avg, acces.avg, predictions
 
 def get_args():
     argp = argparse.ArgumentParser()

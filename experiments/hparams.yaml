@@ -41,23 +41,30 @@ pair:
     dataset:
         <<: *DATASET_MPII
 
+locate:
+    <<: *DEFAULT
+    id: 0
+    name: locate
+    learning_rate: 5.e-4
+    train_batch: 32
+    test_batch: 32
+    model:
+        part_locate: 0
+        hg_dim: 256
+        bn: true
+
 stretch:
     <<: *DEFAULT
     id: 0
     name: stretch
-    learning_rate: 2.e-4
+    learning_rate: 5.e-4
+    train_batch: 32
+    test_batch: 32
     model:
         part_locate: 0
-        loc_hg_dim: 256
-        loc_bn: false
-        reg_hg_dim: 256
-        reg_bn: false
+        hg_dim: 256
+        bn: true
         max_person: 30
-        co_loc: 100
-        co_reg: 0.01
         reg_stack: 3
-        reg_use_gt: true
         reg_init_noise: 0.05
         reg_mid_noise: 0.05
-    # dataset:
-    #     <<: *DATASET_COCO

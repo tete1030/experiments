@@ -222,7 +222,7 @@ class COCOPose(data.Dataset):
                 extra
         else:
             return torch.from_numpy(img), \
-                None, \
+                torch.FloatTensor(0), \
                 torch.from_numpy(mask_noncrowd), \
                 extra
     
@@ -230,7 +230,7 @@ class COCOPose(data.Dataset):
     def collate_function(cls, batch):
         transposed = zip(*batch)
         collate_fn = data.dataloader.default_collate
-        result = [collate_fn(samples)
+        result = [collate_fn(samples) if len(samples[0]) > 0 else None
             for samples in transposed[:3]]
         extra_result = {
             "index": collate_fn([sample["index"] for sample in transposed[3]]),

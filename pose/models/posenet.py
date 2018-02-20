@@ -9,7 +9,7 @@ try:
 except NameError:
     profile = lambda func: func
 
-__all__ = ["PoseManager", "PoseMapParser", "PoseNet", "PoseMapLoss", "PoseDisLoss"]
+__all__ = ["PoseManager", "PoseMapParser", "PosePre", "PoseNet", "PoseMapLoss", "PoseDisLoss"]
 
 class Merge(nn.Module):
     def __init__(self, x_dim, y_dim):
@@ -55,6 +55,8 @@ class PoseManager(object):
         self.keypoints_temp = torch.from_numpy(keypoints_temp * embedding_temp)
         self.embedding_temp = torch.from_numpy(embedding_temp)
         self.temp_length = temp_size * temp_size
+        assert self.temp_length % 2 == 1
+        self.temp_middle = (self.temp_length + 1) / 2 - 1
 
         if self.cuda:
             self.map = self.map.cuda(async=True)
@@ -101,14 +103,14 @@ class PoseManager(object):
         split = torch.cumsum(num_person_list, dim=0).tolist()
 
         # keypoints_cat: #all_person x #part x 3 or #all_person x 2
-        keypoints_cat = torch.cat(keypoints, dim=0).long()
+        keypoints_cat = torch.cat(keypoints, dim=0).float()
         assert len(keypoints_cat) > 0
 
         if is_locate:
             keypoints_cat = keypoints_cat[:, :2].view(-1, 1, 2).repeat(1, self.num_parts, 1)
             keypoints_info = torch.LongTensor(keypoints_cat.size(0), self.num_parts).fill_(1)
         else:
-            keypoints_info = keypoints_cat[:, :, 2]
+            keypoints_info = keypoints_cat[:, :, 2].long()
             keypoints_cat = keypoints_cat[:, :, :2]
 
         if self.cuda:
@@ -151,18 +153,23 @@ class PoseManager(object):
         keypoints_flat_y = keypoints_flat[:, 1]
 
         cols, rows = np.meshgrid(
-                np.arange(-3*self.sigma-1, 3*self.sigma+2, dtype=np.int64),
-                np.arange(-3*self.sigma-1, 3*self.sigma+2, dtype=np.int64), indexing="xy")
-        cols = torch.from_numpy(cols).cuda(async=True).view(-1, 1).expand(-1, batch_ids.size(0))
-        rows = torch.from_numpy(rows).cuda(async=True).view(-1, 1).expand(-1, batch_ids.size(0))
+                np.arange(-3*self.sigma-1, 3*self.sigma+2, dtype=np.float32),
+                np.arange(-3*self.sigma-1, 3*self.sigma+2, dtype=np.float32), indexing="xy")
+
+        cols = torch.from_numpy(cols).float()
+        rows = torch.from_numpy(rows).float()
+        if self.cuda:
+            cols = cols.cuda(async=True)
+            rows = rows.cuda(async=True)
+        cols = cols.view(-1, 1).expand(-1, batch_ids.size(0))
+        rows = rows.view(-1, 1).expand(-1, batch_ids.size(0))
+
         draw_cols_map = cols + keypoints_flat_x
         draw_rows_map = rows + keypoints_flat_y
-        draw_cols_temp = cols + 3*self.sigma + 1
-        draw_rows_temp = rows + 3*self.sigma + 1
+        draw_cols_temp = cols.long() + 3*self.sigma + 1
+        draw_rows_temp = rows.long() + 3*self.sigma + 1
         draw_insider = ((draw_cols_map >= 0) & (draw_cols_map < self.out_size[1]) & \
                         (draw_rows_map >= 0) & (draw_rows_map < self.out_size[0]))
-        assert self.temp_length % 2 == 1
-        self.temp_middle = (self.temp_length + 1) / 2 - 1
 
         self.cur_batch_size = num_batch
 
@@ -183,17 +190,12 @@ class PoseManager(object):
         self.person_mask = person_mask
         self.person_cat_ids = person_cat_ids
         self.part_ids = part_ids
-        # self.keypoints_flat_x = keypoints_flat[:, 0]
-        # self.keypoints_flat_y = keypoints_flat[:, 1]
 
         self.filter_valid_point()
 
     @profile
     def filter_valid_point(self):
-        x = self.draw_cols_map[self.temp_middle]
-        y = self.draw_rows_map[self.temp_middle]
-        insider = ((x >= 0) & (x < self.out_size[1]) & \
-                   (y >= 0) & (y < self.out_size[0]))
+        insider = self.draw_insider[self.temp_middle]
         outsider = ~insider
         insider = torch.nonzero(insider)
         outsider = torch.nonzero(outsider)
@@ -213,8 +215,6 @@ class PoseManager(object):
             self.person_cat_ids = self.person_cat_ids[insider]
             self.part_ids = self.part_ids[insider]
             self.person_mask = [pm[insider] for pm in self.person_mask]
-            # self.keypoints_flat_x = self.keypoints_flat_x[insider]
-            # self.keypoints_flat_y = self.keypoints_flat_y[insider]
 
             self.draw_rows_map = self.draw_rows_map[:, insider]
             self.draw_cols_map = self.draw_cols_map[:, insider]
@@ -226,12 +226,10 @@ class PoseManager(object):
             self.person_ids = torch.LongTensor(0).cuda(async=True)
             self.person_cat_ids = torch.LongTensor(0).cuda(async=True)
             self.part_ids = torch.LongTensor(0).cuda(async=True)
-            self.person_mask = [torch.ByteTensor(0).cuda(async=True) for pm in self.draw_person_mask]
-            # self.keypoints_flat_x = torch.LongTensor(0).cuda(async=True)
-            # self.keypoints_flat_y = torch.LongTensor(0).cuda(async=True)
+            self.person_mask = [torch.ByteTensor(0).cuda(async=True) for pm in self.person_mask]
 
-            self.draw_rows_map = torch.LongTensor(0).cuda(async=True)
-            self.draw_cols_map = torch.LongTensor(0).cuda(async=True)
+            self.draw_rows_map = torch.FloatTensor(0).cuda(async=True)
+            self.draw_cols_map = torch.FloatTensor(0).cuda(async=True)
             self.draw_rows_temp = torch.LongTensor(0).cuda(async=True)
             self.draw_cols_temp = torch.LongTensor(0).cuda(async=True)
             self.draw_insider = torch.ByteTensor(0).cuda(async=True)
@@ -249,19 +247,17 @@ class PoseManager(object):
 
         batch_ids = self.batch_ids
         part_ids = self.part_ids
-        rows = (self.draw_rows_map[self.temp_middle] / factor).long()
-        cols = (self.draw_cols_map[self.temp_middle] / factor).long()
+        rows = self.draw_rows_map[self.temp_middle].long() / int(factor)
+        cols = self.draw_cols_map[self.temp_middle].long() / int(factor)
 
         movement_x = move_field[batch_ids,
                                 part_ids,
                                 rows,
-                                cols].long()
+                                cols]
         movement_y = move_field[batch_ids,
                                 part_ids + self.num_parts,
                                 rows,
-                                cols].long()
-        # self.keypoints_flat_x += movement_x.data
-        # self.keypoints_flat_y += movement_y.data
+                                cols]
 
         self.draw_rows_map += movement_y.data
         self.draw_cols_map += movement_x.data
@@ -284,7 +280,7 @@ class PoseManager(object):
         self.map.zero_()
 
         if self.cur_batch_size == 0:
-            return autograd.Variable(torch.FloatTensor(0).cuda(async=True))
+            return torch.FloatTensor(0).cuda(async=True)
 
         if len(self.batch_ids) == 0:
             return self.map[:self.cur_batch_size].clone()
@@ -302,8 +298,8 @@ class PoseManager(object):
         # select points inside
         batch_ids = batch_ids[insider]
         part_ids = part_ids[insider]
-        map_rows = map_rows[insider]
-        map_cols = map_cols[insider]
+        map_rows = map_rows[insider].long()
+        map_cols = map_cols[insider].long()
         temp_rows = temp_rows[insider]
         temp_cols = temp_cols[insider]
         person_mask = [mask_pi[insider] for mask_pi in person_mask]
@@ -439,7 +435,7 @@ class PoseDisLoss(nn.Module):
         assert kp_pred.dim() == 3
         assert kp_pred.size() == kp_gt.size()
         loss = ((kp_pred.float() - kp_gt.float()) ** 2).sum(dim=-1) * masks.float()
-        loss = loss.mean()
+        loss = (loss.sum() / masks.float().sum()).sqrt()
 
         return loss
 
