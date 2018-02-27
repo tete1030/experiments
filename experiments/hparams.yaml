@@ -32,18 +32,19 @@ hg:
 
 locate:
     <<: *DEFAULT
-    id: 6
+    id: 0
     name: locate
     learning_rate: 2.e-4
     train_batch: 32
     test_batch: 32
     em_valid_int: 200
     model:
-        part_locate: 0
         hg_dim: 256
         bn: false
         match_threshold_factor: 2
         eval_threshold_factor: 5
+    dataset:
+        label_sigma: 5
 
 stretch:
     <<: *DEFAULT

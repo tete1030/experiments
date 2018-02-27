@@ -20,7 +20,7 @@ class Merge(nn.Module):
         return self.conv(x)
 
 class PoseManager(object):
-    def __init__(self, batch_size, num_parts, out_size, max_num_people, cuda=True, sigma=1):
+    def __init__(self, batch_size, num_parts, out_size, max_num_people, cuda=True, sigma=1, filter_inside=True, gen_embedding=True):
         """Generate Pose Map and Embedding Map
 
         Arguments:
@@ -41,9 +41,15 @@ class PoseManager(object):
         self.max_num_people = max_num_people
         self.cuda = cuda
         self.sigma = sigma
+        self.filter_inside = filter_inside
+        self.gen_embedding = gen_embedding
 
-        self.map = torch.zeros(
-            batch_size, num_parts*2, *out_size)
+        if self.gen_embedding:
+            self.map = torch.zeros(
+                batch_size, num_parts*2, *out_size)
+        else:
+            self.map = torch.zeros(
+                batch_size, num_parts, *out_size)
         temp_size = 6*sigma + 3
         x = np.arange(0, temp_size, 1, np.float32)
         y = x[:, np.newaxis]
@@ -79,8 +85,6 @@ class PoseManager(object):
         self.person_ids = None
         self.person_mask = None
         self.part_ids = None
-        # self.keypoints_flat_x = None
-        # self.keypoints_flat_y = None
 
     def init_with_locate(self, locate):
         self.init(locate, True)
@@ -191,7 +195,8 @@ class PoseManager(object):
         self.person_cat_ids = person_cat_ids
         self.part_ids = part_ids
 
-        self.filter_valid_point()
+        if self.filter_inside:
+            self.filter_valid_point()
 
     @profile
     def filter_valid_point(self):
@@ -273,7 +278,8 @@ class PoseManager(object):
         self.all_keypoints_var[self.person_cat_ids,
                                self.part_ids,
                                selector_y] += movement_y
-        self.filter_valid_point()
+        if self.filter_inside:
+            self.filter_valid_point()
 
     @profile
     def generate(self):
@@ -304,14 +310,17 @@ class PoseManager(object):
         temp_cols = temp_cols[insider]
         person_mask = [mask_pi[insider] for mask_pi in person_mask]
 
-        # embeddings: #batch x max_num_people
-        embeddings = []
-        for i in range(self.cur_batch_size):
-            emb = np.arange(1, self.max_num_people+1)
-            np.random.shuffle(emb)
-            embeddings.append(emb)
-        # embeddings: max_num_people x #batch
-        embeddings = torch.from_numpy(np.array(embeddings, dtype=np.float32).T).contiguous().cuda(async=True)
+        if self.gen_embedding:
+            # embeddings: #batch x max_num_people
+            embeddings = []
+            for i in range(self.cur_batch_size):
+                emb = np.arange(1, self.max_num_people+1)
+                np.random.shuffle(emb)
+                embeddings.append(emb)
+            # embeddings: max_num_people x #batch
+            embeddings = torch.from_numpy(np.array(embeddings, dtype=np.float32).T).contiguous()
+            if self.cuda:
+                embeddings = embeddings.cuda(async=True)
 
         for i, mask_pi in enumerate(person_mask):
             # mask_pi: #all_parts x temp_size
@@ -335,8 +344,9 @@ class PoseManager(object):
                 self.map[batch_ids_masked, part_ids_masked, map_rows_masked, map_cols_masked] = \
                     self.keypoints_temp[temp_rows_masked, temp_cols_masked]
 
-                self.map[batch_ids_masked, part_ids_masked+self.num_parts, map_rows_masked, map_cols_masked] = \
-                    self.embedding_temp[temp_rows_masked, temp_cols_masked] * embeddings[i][batch_ids_masked]
+                if self.gen_embedding:
+                    self.map[batch_ids_masked, part_ids_masked+self.num_parts, map_rows_masked, map_cols_masked] = \
+                        self.embedding_temp[temp_rows_masked, temp_cols_masked] * embeddings[i][batch_ids_masked]
 
         return self.map[:self.cur_batch_size].clone()
 

@@ -85,7 +85,7 @@ class Experiment(object):
                                                single_person=False,
                                                inp_res=INP_RES,
                                                out_res=OUT_RES,
-                                               generate_map=[self.hparams["model"]["part_locate"]])
+                                               generate_map=False)
 
         self.val_dataset = datasets.COCOPose("data/mscoco/images",
                                              self.coco,
@@ -95,14 +95,45 @@ class Experiment(object):
                                              single_person=False,
                                              inp_res=INP_RES,
                                              out_res=OUT_RES,
-                                             generate_map=[self.hparams["model"]["part_locate"]])
+                                             generate_map=False)
 
-        self.train_collate_fn = datasets.COCOPose.collate_function
-        self.test_collate_fn = datasets.COCOPose.collate_function
+        self.train_collate_fn = self.collate_function
+        self.test_collate_fn = self.collate_function
+
+        self.pose_mgr = models.PoseManager(max(self.hparams["train_batch"], self.hparams["test_batch"]), 1, (OUT_RES, OUT_RES), 30,
+                                           cuda=False, sigma=int(self.hparams["dataset"]["label_sigma"]), filter_inside=False, gen_embedding=False)
 
         self.train_drop_last = True
 
         self.posemap_parser = models.PoseMapParser(cuda=True, threshold=0.05)
+
+    def collate_function(self, batch):
+        result = datasets.COCOPose.collate_function(batch)
+        keypoints = result[3]["keypoints_tf"]
+        locates = list()
+        for i, kp in enumerate(keypoints):
+            locate = list()
+            for j, person in enumerate(kp):
+                labeled_part_indices = torch.nonzero(person[:, 2] > 0)
+                if len(labeled_part_indices) > 0:
+                    mean_pos = person[labeled_part_indices[:, 0]][:, :2].mean(dim=0)
+                    if (mean_pos >= -2 * int(self.hparams["dataset"]["label_sigma"])).all() and \
+                        (mean_pos < (OUT_RES + 2 * int(self.hparams["dataset"]["label_sigma"]))).all():
+                        locate.append(mean_pos)
+            if len(locate) > 0:
+                locates.append(torch.stack(locate, 0).float())
+            else:
+                locates.append(torch.FloatTensor(0))
+        self.pose_mgr.init_with_locate(locates)
+        locate_map = self.pose_mgr.generate()
+        # DataLoader doesn't support data with zero size
+        for i in range(len(locates)):
+            if len(locates[i]) == 0:
+                locates[i] = None
+        result[1] = locate_map
+        result[3]["locate"] = locates
+
+        return result
 
     def epoch(self, epoch):
         self.hparams["learning_rate"] = adjust_learning_rate(
@@ -151,8 +182,6 @@ class Experiment(object):
 
     @profile
     def process(self, batch, train, detail=None):
-        locate_index = self.hparams["model"]["part_locate"]
-
         model_loc = self.model
         criterion_mse = self.criterion
 
@@ -162,23 +191,29 @@ class Experiment(object):
         img_var = torch.autograd.Variable(img.cuda(async=True), volatile=volatile)
         locate_map_gt_var = torch.autograd.Variable(locate_map_gt.cuda(async=True), volatile=volatile)
         mask_var = torch.autograd.Variable(mask.cuda(async=True), volatile=volatile)
-        keypoint_gt = extra["keypoints_tf_inp"]
-
-        # locate_gt: #batch x [#batch_i_valid_person x 2]
-        locate_gt = []
-        num_gt = 0
-        for kpgt in keypoint_gt:
-            index_labeled = torch.nonzero(kpgt[:, locate_index, 2] > 0)
-            if len(index_labeled) > 0:
-                locate_bi = kpgt[index_labeled[:, 0]][:, locate_index, :2]
-                index_inside = torch.nonzero(((locate_bi >= 0) & (locate_bi < INP_RES)).sum(dim=-1) == 2)
-                if len(index_inside) > 0:
-                    locate_gt.append(locate_bi[index_inside[:, 0]])
-                    num_gt += len(index_inside)
+        if "locate" in extra:
+            locate_gt = extra["locate"]
+            for i in range(len(locate_gt)):
+                if locate_gt[i] is None:
+                    locate_gt[i] = torch.FloatTensor(0)
+        else:
+            keypoint_gt = extra["keypoints_tf"]
+            locate_index = self.hparams["model"]["part_locate"]
+            # locate_gt: #batch x [#batch_i_valid_person x 2]
+            locate_gt = []
+            num_gt = 0
+            for kpgt in keypoint_gt:
+                index_labeled = torch.nonzero(kpgt[:, locate_index, 2] > 0)
+                if len(index_labeled) > 0:
+                    locate_bi = kpgt[index_labeled[:, 0]][:, locate_index, :2]
+                    index_inside = torch.nonzero(((locate_bi >= 0) & (locate_bi < INP_RES)).sum(dim=-1) == 2)
+                    if len(index_inside) > 0:
+                        locate_gt.append(locate_bi[index_inside[:, 0]])
+                        num_gt += len(index_inside)
+                    else:
+                        locate_gt.append(torch.FloatTensor(0))
                 else:
                     locate_gt.append(torch.FloatTensor(0))
-            else:
-                locate_gt.append(torch.FloatTensor(0))
 
         # Locate nose
         locate_map_pred_var, _ = model_loc(img_var)
@@ -188,7 +223,7 @@ class Experiment(object):
 
         # Parse locate_map_pred_var, convert it into ground truth keypoints format
         # locate_pred: #batch x [#batch_i_person, 2]
-        locate_pred = self.posemap_parser.parse(locate_map_pred_var, mask_var, factor=FACTOR)
+        locate_pred = self.posemap_parser.parse(locate_map_pred_var, mask_var, factor=1)
 
         # Match locating point with person in ground truth keypoints
         # match_*: #batch x #batch_i_match_index
