@@ -193,9 +193,9 @@ class Experiment(object):
         # Match locating point with person in ground truth keypoints
         # match_*: #batch x #batch_i_match_index
         # TODO: IMPROVEMENT decrease threshold_dis gradually, or not change
-        match_pred, match_gt = match_locate(locate_pred, locate_gt, threshold_abandon=float(INP_RES)/20)
+        match_pred, match_gt = match_locate(locate_pred, locate_gt, threshold_abandon=OUT_RES/float(self.hparams["model"]["match_threshold_factor"]))
 
-        precision, recall = PR_locate(locate_pred, locate_gt, match_pred, match_gt, norm=float(INP_RES)/10)
+        precision, recall = PR_locate(locate_pred, locate_gt, match_pred, match_gt, threshold=OUT_RES/float(self.hparams["model"]["eval_threshold_factor"]))
 
         if ("summary" in detail and detail["summary"]):
             self.summary_image(img, locate_map_pred_var.data.cpu(), locate_map_gt, mask, "locate/" + ("train" if train else "val"), detail["epoch"] + 1)

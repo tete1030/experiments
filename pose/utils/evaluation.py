@@ -201,7 +201,7 @@ def match_locate(pred, gt, threshold_abandon=3):
         matches_gt.append(samp_match_gt)
     return matches_pred, matches_gt
 
-def PR_locate(pred, gt, match_pred, match_gt, norm, threshold=0.5):
+def PR_locate(pred, gt, match_pred, match_gt, threshold=0.5):
     counter_GT = 0
     counter_P = 0
     counter_TP = 0
@@ -216,7 +216,7 @@ def PR_locate(pred, gt, match_pred, match_gt, norm, threshold=0.5):
         if len(match_pred_i) > 0:
             pred_i = pred_i[match_pred_i].float()
             gt_i = gt_i[match_gt_i].float()
-            mask_TP = ((((pred_i - gt_i) ** 2).sum(dim=-1) / (float(norm) ** 2)) <= threshold ** 2)
+            mask_TP = (((pred_i - gt_i) ** 2).sum(dim=-1) <= float(threshold) ** 2)
             counter_TP += mask_TP.sum()
     precision = float(counter_TP) / float(counter_P) if counter_P > 0 else None
     recall = float(counter_TP) / float(counter_GT) if counter_GT > 0 else None

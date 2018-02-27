@@ -42,6 +42,8 @@ locate:
         part_locate: 0
         hg_dim: 256
         bn: false
+        match_threshold_factor: 2
+        eval_threshold_factor: 5
 
 stretch:
     <<: *DEFAULT
