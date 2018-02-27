@@ -5,7 +5,7 @@ from torch.utils.data.dataloader import default_collate
 import pose.models as models
 import pose.datasets as datasets
 from pose.utils.transforms import fliplr_chwimg, fliplr_map
-from pose.utils.evaluation import match_locate, accuracy_multi, accuracy_locate
+from pose.utils.evaluation import PR_multi
 import pose.utils.config as config
 from pose.utils.misc import adjust_learning_rate
 
@@ -129,9 +129,12 @@ class Experiment(object):
         # if label_sigma_decay > 0:
         #     self.train_dataset.label_sigma *= label_sigma_decay
         #     self.val_dataset.label_sigma *= label_sigma_decayn
+    def summary_histogram(self, n_iter):
+        for name, param in self.model.named_parameters():
+            config.tb_writer.add_histogram("stretch." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
 
     @profile
-    def process(self, batch, train):
+    def process(self, batch, train, detail=None):
         locate_index = self.hparams["model"]["part_locate"]
         num_regress_stack = self.hparams["model"]["reg_stack"]
         reg_init_noise = self.hparams["model"]["reg_init_noise"]
@@ -180,20 +183,26 @@ class Experiment(object):
             pose_mgr = self.train_pose_mgr if train else self.test_pose_mgr
             pose_mgr.init_with_locate(locate_init)
 
-            merge = model_pre(img_var)
+            merge_img = model_pre(img_var)
+            if detail["summary"]:
+                posemap_path = list()
             for i in range(num_regress_stack):
-                posemap = torch.autograd.Variable(pose_mgr.generate(), volatile=volatile)
-                move_field, merge = model_reg(posemap, merge)
+                posemap = pose_mgr.generate()
+                if detail["summary"]:
+                    posemap_path.append(posemap)
+                posemap_var = torch.autograd.Variable(posemap, volatile=volatile)
+                move_field, _ = model_reg(posemap_var, merge_img)
                 pose_mgr.move_keypoints(move_field, factor=FACTOR)
                 # TODO: IMPROVEMENT add noise perturb to keypoints to make model robust
-
+            if detail["summary"]:
+                posemap_path.append(posemap)
             # keypoint_gt_cat: #all_match_person x #part x 3
             keypoint_gt_cat = torch.cat(keypoint_gt, dim=0)
             keypoint_gt_cat_mask = torch.autograd.Variable((keypoint_gt_cat[:, :, 2] >= 1).cuda(), requires_grad=False)
             keypoint_gt_cat_var = torch.autograd.Variable(keypoint_gt_cat[:, :, :2].cuda(), requires_grad=False)
 
             keypoint_pred_cat_var = pose_mgr.all_keypoints_var
-            loss_pose = criterion_dis(keypoint_pred_cat_var, keypoint_gt_cat_var, keypoint_gt_cat_mask)
+            loss = criterion_dis(keypoint_pred_cat_var, keypoint_gt_cat_var, keypoint_gt_cat_mask)
 
             split = pose_mgr.all_split
             keypoint_pred_cat = keypoint_pred_cat_var.data.cpu()
@@ -204,10 +213,18 @@ class Experiment(object):
                                        dim=2) if end > start else torch.FloatTensor(0)
                              for start, end in zip([0] + split[:-1], split)]
 
-            acc_pose, _ = accuracy_multi(keypoint_pred, keypoint_gt, norm=float(OUT_RES)/10, num_parts=self.num_parts)
+            precision, recall, _, _ = PR_multi(keypoint_pred, keypoint_gt, norm=float(OUT_RES)/10, num_parts=self.num_parts)
         else:
-            loss_pose = None
-            acc_pose = None
+            loss = None
+            precision = None
+            recall = None
             keypoint_pred = [torch.FloatTensor(0) for i in range(len(img))]
 
-        return loss_pose, acc_pose, extra["index"], keypoint_pred
+        result= {"loss": loss,
+                 "acc": recall,
+                 "recall": recall,
+                 "prec": precision,
+                 "index": extra["index"],
+                 "pred": keypoint_pred}
+
+        return result

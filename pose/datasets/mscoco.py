@@ -99,7 +99,7 @@ class COCOPose(data.Dataset):
             print('    Std:  %.4f, %.4f, %.4f' % \
                     (meanstd['std'][0], meanstd['std'][1], meanstd['std'][2]))
         assert type(meanstd['mean']) is np.ndarray
-        return meanstd['mean'], meanstd['std']
+        return meanstd['mean'].astype(np.float32)/255, meanstd['std'].astype(np.float32)/255
 
     def _draw_label(self, points, target_map):
         # Generate ground truth
@@ -210,10 +210,14 @@ class COCOPose(data.Dataset):
         mask_crowd = (mask_crowd > 0.5)
         mask_noncrowd = (~mask_crowd).astype(np.uint8)
 
-        extra = {"index": index, "center": torch.from_numpy(center), "scale": scale, 
-                 "keypoints": torch.from_numpy(keypoints) if keypoints.shape[0] >= 0 else None,
-                 "keypoints_tf": torch.from_numpy(keypoints_tf) if keypoints.shape[0] >= 0 else None,
-                 "keypoints_tf_inp": torch.from_numpy(keypoints_tf_inp) if keypoints.shape[0] >= 0 else None}
+        extra = {
+            "index": index,
+            "center": torch.from_numpy(center),
+            "scale": scale,
+            "keypoints": torch.from_numpy(keypoints) if keypoints.shape[0] >= 0 else None,
+            "keypoints_tf": torch.from_numpy(keypoints_tf) if keypoints.shape[0] >= 0 else None,
+            "keypoints_tf_inp": torch.from_numpy(keypoints_tf_inp) if keypoints.shape[0] >= 0 else None
+        }
 
         if len(draw_parts) > 0:
             return torch.from_numpy(img), \

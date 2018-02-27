@@ -383,30 +383,35 @@ class PoseMapParser():
             self.pool = self.pool.cuda()
         self.threshold = threshold
 
-    def is_local_max(self, det):
+    def is_local_max(self, det, mask):
         # suppose det is a tensor
         maxm = self.pool(det)
         maxm = torch.eq(maxm, det).float()
+        if mask is not None:
+            maxm *= mask[:, None, :, :].float()
         det = det * maxm
         return det >= self.threshold
 
-    def parse(self, det, factor):
+    def parse(self, det, mask, factor):
         """from detection map to keypoints
-        
+
         Arguments:
             det {Tensor/Variable} -- detection map: #batch x 1 x h/factor x w/factor
+            mask {Tensor/Variable} -- mask: #batch x h/factor x w/factor
             factor {int} -- factor from map position to coordination
         """
 
-        det_lm = self.is_local_max(det)
-        det_ids = det_lm.nonzero() * factor
+        det_lm = self.is_local_max(det, mask)
+        det_ids = det_lm.nonzero()
+        
         if len(det_ids) == 0:
             return [torch.LongTensor(0) for i in range(det.size(0))]
-        if isinstance(det_ids, autograd.Variable):
+        if isinstance(det_ids, torch.autograd.Variable):
             det_ids = det_ids.data
         if det_ids.is_cuda:
             det_ids = det_ids.cpu()
-        det_pos = det_ids[:, [3, 2]]
+        
+        det_pos = det_ids[:, [3, 2]] * factor
         det_bid = [torch.nonzero(det_ids[:, 0] == i) for i in range(det.size(0))]
         return [det_pos[dbid[:, 0]] if len(dbid) > 0 else torch.LongTensor(0)
                 for dbid in det_bid]

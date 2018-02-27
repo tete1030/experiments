@@ -3,18 +3,17 @@ checkpoint
 dev
 *.pth.tar
 data/mpii/images
-!data/mpii/mean.pth.tar
 *debug*
 *.idea/*
-data/mscoco/coco
-data/mscoco/keypoint
+data/mscoco/images
+runs
 
 __pycache__/
 *.py[cod]
 *$py.class
 
 # vim swp
-.*.swp
+*.swp
 
 # C extensions
 *.so

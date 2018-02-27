@@ -5,10 +5,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from random import randint
 from sklearn.linear_model import LinearRegression
-from munkres import Munkres
 
 from .misc import *
 from .transforms import transform, transform_preds
+from munkres import Munkres
 
 __all__ = ['accuracy', 'AverageMeter']
 
@@ -134,13 +134,13 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
-def match_locate(pred_locate, gt, locate_index, threshold_dis=3):
+def match_locate(pred, gt, threshold_abandon=3):
     """Match locate map result with ground truth keypoints
     
     Arguments:
-        pred_locate {list of Tensors} -- #batch x [#person x 2]
-        gt {list of Tensors} -- #batch x [#person x #part x 3]
-        locate_index {int} -- the index of part used for locating
+        pred {list of Tensors} -- #batch x [#person x 2]
+        gt {list of Tensors} -- #batch x [#person x 2]
+        threshold_abandon {float} -- threshold distance of abandon
     
     Solution:
         A - for each pred locate point, find ground truth person, ignore remaining locate point
@@ -151,42 +151,41 @@ def match_locate(pred_locate, gt, locate_index, threshold_dis=3):
     mk = Munkres()
     matches_pred = []
     matches_gt = []
-    for pred_locate_i, gt_i in zip(pred_locate, gt):
-        index_gt_labeled = torch.nonzero(gt_i[:, locate_index, 2] > 0)
-        if len(index_gt_labeled) == 0 or len(pred_locate_i) == 0:
+    for pred_i, gt_i in zip(pred, gt):
+        if len(gt_i) == 0 or len(pred_i) == 0:
             matches_pred.append(torch.LongTensor(0))
             matches_gt.append(torch.LongTensor(0))
             continue
 
-        index_gt_labeled = index_gt_labeled[:, 0]
-        gt_locate_i = gt_i[index_gt_labeled][:, locate_index, :2].float().contiguous()
-        pred_locate_i = pred_locate_i.float()
+        gt_i = gt_i.float()
+        pred_i = pred_i.float()
         
-        if gt_locate_i.size(0) > pred_locate_i.size(0):
+        if gt_i.size(0) > pred_i.size(0):
             rc_order = 'pred_gt'
-            locate_max = gt_locate_i
-            locate_min = pred_locate_i
-            size_max = gt_locate_i.size(0)
-            size_min = pred_locate_i.size(0)
+            locate_max = gt_i
+            locate_min = pred_i
+            size_max = gt_i.size(0)
+            size_min = pred_i.size(0)
         else:
             rc_order = 'gt_pred'
-            locate_max = pred_locate_i
-            locate_min = gt_locate_i
-            size_max = pred_locate_i.size(0)
-            size_min = gt_locate_i.size(0)
+            locate_max = pred_i
+            locate_min = gt_i
+            size_max = pred_i.size(0)
+            size_min = gt_i.size(0)
 
         locate_min_mat = locate_min.view(-1, 1, 2).repeat(1, size_max, 1)
         locate_max_mat = locate_max.view(1, -1, 2).repeat(size_min, 1, 1)
         diff = ((locate_max_mat - locate_min_mat) ** 2).sum(dim=2)
-        diff[diff > threshold_dis**2] = 1e10
+        diff[diff > threshold_abandon**2] = 1e10
         if size_min < size_max:
             diff = torch.cat([diff, torch.Tensor(size_max - size_min, size_max).float().fill_(1e10)], dim=0)
+        diff = diff.tolist()
 
         pairs = mk.compute(diff)
         samp_match_pred = []
         samp_match_gt = []
         for row, col in pairs:
-            if row >= size_min or diff[row, col] > threshold_dis**2:
+            if diff[row][col] > threshold_abandon**2:
                 continue
             if rc_order == 'pred_gt':
                 samp_match_pred.append(row)
@@ -195,33 +194,40 @@ def match_locate(pred_locate, gt, locate_index, threshold_dis=3):
                 samp_match_pred.append(col)
                 samp_match_gt.append(row)
         samp_match_pred = torch.LongTensor(samp_match_pred)
-        samp_match_gt = index_gt_labeled[torch.LongTensor(samp_match_gt)]
+        samp_match_gt = torch.LongTensor(samp_match_gt)
         # Sort by ground truth indecies for convenience
         # samp_match = samp_match[samp_match[:, 1].sort()[1]]
         matches_pred.append(samp_match_pred)
         matches_gt.append(samp_match_gt)
     return matches_pred, matches_gt
 
-def accuracy_locate(locate_pred, gt, locate_index, num_gt, norm, threshold=0.5):
-    num_TP = 0
-    for ib in range(len(locate_pred)):
-        pred_i = locate_pred[ib]
+def PR_locate(pred, gt, match_pred, match_gt, norm, threshold=0.5):
+    counter_GT = 0
+    counter_P = 0
+    counter_TP = 0
+    for ib in range(len(pred)):
+        pred_i = pred[ib]
         gt_i = gt[ib]
-        if len(gt_i) > 0:
-            mask_labeled = (gt_i[:, locate_index, 2] > 0)
-            pred_i = pred_i.float()
-            gt_i = gt_i[:, locate_index, :2]
+        counter_P += len(pred_i)
+        counter_GT += len(gt_i)
+        match_pred_i = match_pred[ib]
+        match_gt_i = match_gt[ib]
+        assert len(match_pred_i) == len(match_gt_i)
+        if len(match_pred_i) > 0:
+            pred_i = pred_i[match_pred_i].float()
+            gt_i = gt_i[match_gt_i].float()
             mask_TP = ((((pred_i - gt_i) ** 2).sum(dim=-1) / (float(norm) ** 2)) <= threshold ** 2)
-            mask_TP = mask_TP & mask_labeled
-            num_TP += mask_TP.sum()
-    return float(num_TP) / float(num_gt)
+            counter_TP += mask_TP.sum()
+    precision = float(counter_TP) / float(counter_P) if counter_P > 0 else None
+    recall = float(counter_TP) / float(counter_GT) if counter_GT > 0 else None
+    return precision, recall
 
-def accuracy_multi(pred, gt, norm, num_parts, threshold=0.5):
+def PR_multi(pred, gt, norm, num_parts, threshold=0.5):
     """Calculate accuracy of multi-person predictions
     
     Arguments:
         pred {list of Tensors} -- #batch x [#batch_i_person x #part x 3]
-        gt_all {list of Tensors} -- #batch x [#batch_i_person x #part x 3]
+        gt {list of Tensors} -- #batch x [#batch_i_person x #part x 3]
         norm {int} -- normalize distance to 1
         num_parts {int} -- number of parts
     
@@ -229,25 +235,27 @@ def accuracy_multi(pred, gt, norm, num_parts, threshold=0.5):
         threshold {float} -- threshold for distance (default: {0.5})
     """
     
-    counter_all = torch.zeros(num_parts).float()
+    counter_GT = torch.zeros(num_parts).float()
     counter_TP = torch.zeros(num_parts).float()
+    counter_P = torch.zeros(num_parts).float()
 
     for ib in range(len(pred)):
         pred_i = pred[ib]
         gt_i = gt[ib]
+        assert len(gt_i) == len(pred_i)
         if len(gt_i) > 0:
-            mask_labeled = (gt_i[:, :, 2] > 0)
+            mask_GT = (gt_i[:, :, 2] > 0)
+            mask_P = (pred_i[:, :, 2] > 0)
             pred_i = pred_i[:, :, :2].float()
             gt_i = gt_i[:, :, :2].float()
-            mask_TP = ((((pred_i - gt_i) ** 2).sum(dim=-1) / (float(norm) ** 2)) <= threshold ** 2)
-            mask_TP = mask_TP & mask_labeled
+            mask_thres = ((((pred_i - gt_i) ** 2).sum(dim=-1) / (float(norm) ** 2)) <= threshold ** 2)
+            mask_TP = mask_GT & mask_P & mask_thres
             counter_TP += mask_TP.float().sum(dim=0)
-            counter_all += mask_labeled.float().sum(dim=0)
+            counter_P += mask_P.float().sum(dim=0)
+            counter_GT += mask_GT.float().sum(dim=0)
 
-    accs = (counter_TP / counter_all)
-    # TODO: more elegant way to process NAN number show in final
-    mask_labeled_all = (counter_all > 0)
-    # TODO: temporary assert
-    assert mask_labeled_all.sum() > 0
-    final = accs[mask_labeled_all].mean()
-    return final, accs
+    precision = (counter_TP / counter_P)
+    recall = (counter_TP / counter_GT)
+    final_precision = counter_TP.sum() / counter_P.sum()
+    final_recall = counter_TP.sum() / counter_GT.sum()
+    return final_precision, final_recall, precision, recall

@@ -29,7 +29,6 @@ class MPII(data.Dataset):
                  train, single_person,
                  inp_res=256, out_res=64,
                  label_sigma=1, scale_factor=0.25, rot_factor=30):
-        assert single_person == False
         self.img_folder = img_folder    # root image folders
         self.is_train = train           # training set or test set
         self.inp_res = inp_res
@@ -63,38 +62,127 @@ class MPII(data.Dataset):
             print("Warning: not using mean_std")
             return np.array([0.]*3), np.array([1.]*3)
 
-        if os.path.isfile(self.meanstd_file):
-            meanstd = torch.load(self.meanstd_file)
+        if os.path.isfile(meanstd_file):
+            meanstd = torch.load(meanstd_file)
         else:
             print("Creating mean_std...")
-            mean = torch.zeros(3)
-            std = torch.zeros(3)
-            for index in self.train:
+            mean = np.zeros(3)
+            std = np.zeros(3)
+            if self.single_person:
+                img_ids = set(np.array(self.train)[:, 0].tolist())
+            else:
+                img_ids = self.train
+
+            for index in img_ids:
                 img = self._load_image(index, bgr=False)
                 mean += img.reshape((-1, 3)).mean(0)
                 std += img.reshape((-1, 3)).std(0)
-            mean /= len(self.train)
-            std /= len(self.train)
+            mean /= len(img_ids)
+            std /= len(img_ids)
             meanstd = {
                 'mean': mean,
                 'std': std,
                 }
-            torch.save(meanstd, self.meanstd_file)
+            torch.save(meanstd, meanstd_file)
         if self.is_train:
             print('    Mean: %.4f, %.4f, %.4f' % \
                     (meanstd['mean'][0], meanstd['mean'][1], meanstd['mean'][2]))
             print('    Std:  %.4f, %.4f, %.4f' % \
                     (meanstd['std'][0], meanstd['std'][1], meanstd['std'][2]))
         assert type(meanstd['mean']) is np.ndarray  
-        return meanstd['mean'], meanstd['std']
+        return meanstd['mean'].astype(np.float32)/255, meanstd['std'].astype(np.float32)/255
  
     def _draw_label(self, points, target_map):
         # Generate ground truth
         for ijoint in range(points.shape[0]):
             if points[ijoint, 2] > 0:
                 self.heatmap_gen(points[ijoint, :2], ijoint, target_map)
+    
+    def _get_item_single(self, index):
+        sf = self.scale_factor
+        rf = self.rot_factor
 
-    def __getitem__(self, index):
+        if self.is_train:
+            img_index, person_index = self.train[index]
+        else:
+            img_index, person_index = self.valid[index]
+
+        ann = self.mpii["annolist"][img_index]["annorect"][person_index]
+
+        # =====
+        # Image
+
+        img_bgr = self._load_image(img_index, bgr=True)
+
+        img_size = np.array(list(img_bgr.shape[:2][::-1]), dtype=np.float32) # W, H
+
+        center = np.array(ann["objpos"], dtype=np.float32)
+        scale = ann["scale"]
+        rotate = 0
+        flip = False
+
+        # Image augmentation
+        if self.is_train:
+            scale = scale * ((np.random.randn(1) * sf) + 1).clip(1-sf, 1+sf)[0]
+            rotate = (np.random.randn(1) * rf).clip(-2*rf, 2*rf)[0] \
+                    if np.random.rand() <= 0.6 else 0
+
+            center += np.random.randint(-40 * scale, 40 * scale, size=2)
+
+            # Flip
+            if np.random.rand() <= 0.5:
+                flip = True
+                img_bgr = cv2.flip(img_bgr, 1)
+                center[0] = img_size[0] - center[0]
+
+        # Prepare image and groundtruth map
+        img_transform_mat = get_transform(center, scale, [self.inp_res, self.inp_res], rot=rotate)
+        img_bgr = cv2.warpAffine(img_bgr, img_transform_mat[:2], dsize=(self.inp_res, self.inp_res), flags=cv2.INTER_LINEAR)
+
+        img = img_bgr[..., ::-1].astype(np.float32) / 255
+
+        if self.is_train:
+            # Color distort
+            img = (img * (np.random.rand(3) * 0.4 + 0.8)).clip(0, 1).astype(np.float32) 
+
+        # Color normalize
+        img -= self.mean
+
+        img = img.transpose(2, 0, 1)
+
+        # =====
+        # Keypoint Map
+
+        keypoints = np.zeros((NUM_PARTS, 3), dtype=np.float32)
+
+        if len(ann["annopoints"]) > 0:
+            for ijoint, point in ann["annopoints"].items():
+                keypoints[int(ijoint)] = np.array([point[0], point[1], 2 if point[2] is None else (point[2]+1)])
+
+        if flip:
+            keypoints = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
+
+        # keypoints: #person * #joints * 3
+        keypoints_tf = transform(keypoints.reshape((-1, 3))[...,:2], center, scale, [self.out_res, self.out_res], rot=rotate)
+        keypoints_tf = np.c_[keypoints_tf, keypoints.reshape((-1, 3))[:, 2]].reshape(keypoints.shape)
+        
+        target_map = np.zeros((NUM_PARTS, self.out_res, self.out_res), dtype=np.float32)
+
+        self._draw_label(keypoints_tf, target_map)
+
+        extra = {
+            'index': index,
+            'center': torch.from_numpy(center),
+            'scale': scale, 
+            'keypoints': torch.from_numpy(keypoints) if keypoints.shape[0] > 1 else None,
+            'keypoints_tf': torch.from_numpy(keypoints_tf) if keypoints.shape[0] > 1 else None
+        }
+
+        return torch.from_numpy(img), \
+            torch.from_numpy(target_map), \
+            extra
+
+    def _get_item_multi(self, index):
         sf = self.scale_factor
         rf = self.rot_factor
 
@@ -155,7 +243,7 @@ class MPII(data.Dataset):
         for ann in anns:
             if len(ann["annopoints"]) > 0:
                 for ijoint, point in ann["annopoints"].items():
-                    keypoints[num_person, ijoint] = np.array([point[0], point[1], 2 if point[2] is None else (point[2]+1)])
+                    keypoints[num_person, int(ijoint)] = np.array([point[0], point[1], 2 if point[2] is None else (point[2]+1)])
                 num_person += 1
         keypoints = keypoints[:num_person]
         
@@ -171,14 +259,38 @@ class MPII(data.Dataset):
         for iperson, points in enumerate(keypoints_tf):
             self._draw_label(points, target_map)
 
-        extra = {'index': index, 'center': torch.from_numpy(center), 'scale': scale, 
-                 'keypoints': torch.from_numpy(keypoints) if keypoints.shape[0] > 1 else None,
-                 'keypoints_tf': torch.from_numpy(keypoints_tf) if keypoints.shape[0] > 1 else None}
+        extra = {
+            'index': index,
+            'center': torch.from_numpy(center),
+            'scale': scale, 
+            'keypoints': torch.from_numpy(keypoints) if keypoints.shape[0] > 1 else None,
+            'keypoints_tf': torch.from_numpy(keypoints_tf) if keypoints.shape[0] > 1 else None
+        }
 
         return torch.from_numpy(img), \
             torch.from_numpy(target_map), \
-            None, \
             extra
+
+    def __getitem__(self, index):
+        if self.single_person:
+            return self._get_item_single(index)
+        else:
+            return self._get_item_multi(index)
+
+    @classmethod
+    def collate_function(cls, batch):
+        transposed = zip(*batch)
+        collate_fn = data.dataloader.default_collate
+        result = [collate_fn(samples) if len(samples[0]) > 0 else None
+            for samples in transposed[:2]]
+        extra_result = {
+            "index": collate_fn([sample["index"] for sample in transposed[2]]),
+            "center": collate_fn([sample["center"] for sample in transposed[2]]),
+            "scale": collate_fn([sample["scale"] for sample in transposed[2]]),
+            "keypoints": [sample["keypoints"] for sample in transposed[2]],
+            "keypoints_tf": [sample["keypoints_tf"] for sample in transposed[2]]
+        }
+        return result + [extra_result]
 
     def __len__(self):
         if self.is_train:

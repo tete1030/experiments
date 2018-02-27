@@ -1,13 +1,15 @@
 from __future__ import print_function, absolute_import
 import torch
 from torch.utils.data.dataloader import default_collate
+import torchvision.utils as vutils
 
 import pose.models as models
 import pose.datasets as datasets
-from pose.utils.transforms import fliplr_chwimg, fliplr_map
-from pose.utils.evaluation import match_locate, accuracy_multi, accuracy_locate
+from pose.utils.evaluation import match_locate, PR_locate
 import pose.utils.config as config
 from pose.utils.misc import adjust_learning_rate
+
+import cv2
 
 from pycocotools.coco import COCO
 
@@ -65,6 +67,7 @@ class Experiment(object):
             models.PoseNet(inp_dim=3, out_dim=1,
                            hg_dim=self.hparams["model"]["hg_dim"],
                            bn=self.hparams["model"]["bn"]).cuda())
+
         self.criterion = models.PoseMapLoss().cuda()
 
         self.optimizer = torch.optim.Adam(list(self.model.parameters()),
@@ -97,7 +100,9 @@ class Experiment(object):
         self.train_collate_fn = datasets.COCOPose.collate_function
         self.test_collate_fn = datasets.COCOPose.collate_function
 
-        self.posemap_parser = models.PoseMapParser(cuda=True, threshold=0.5)
+        self.train_drop_last = True
+
+        self.posemap_parser = models.PoseMapParser(cuda=True, threshold=0.05)
 
     def epoch(self, epoch):
         self.hparams["learning_rate"] = adjust_learning_rate(
@@ -112,8 +117,40 @@ class Experiment(object):
         #     self.train_dataset.label_sigma *= label_sigma_decay
         #     self.val_dataset.label_sigma *= label_sigma_decayn
 
+    def summary_image(self, img, pred, gt, mask, title, step):
+        tb_num = 6
+        tb_img = img[:tb_num].numpy() + self.train_dataset.mean[None, :, None, None]
+        tb_gt = gt[:tb_num].numpy()
+        tb_pred = pred[:tb_num].numpy()
+        tb_mask = (~mask[:tb_num]).numpy()
+        show_img = np.zeros((tb_num * 2, 3, INP_RES, INP_RES))
+        for iimg in range(tb_num):
+            cur_img = (tb_img[iimg][::-1].transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8)
+            cur_gt = tb_gt[iimg].transpose(1, 2, 0) + tb_mask[iimg][:, :, None]
+            cur_gt = cv2.applyColorMap(
+                cv2.resize(
+                    (cur_gt * 255).clip(0, 255).astype(np.uint8),
+                    (INP_RES, INP_RES)),
+                cv2.COLORMAP_HOT)
+            cur_gt = cv2.addWeighted(cur_img, 1, cur_gt, 0.5, 0).transpose(2, 0, 1)[::-1].astype(np.float32) / 255
+            show_img[iimg] = cur_gt
+            cur_pred = cv2.applyColorMap(
+                cv2.resize(
+                    (tb_pred[iimg].transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8),
+                    (INP_RES, INP_RES)),
+                cv2.COLORMAP_HOT)
+            cur_pred = cv2.addWeighted(cur_img, 1, cur_pred, 0.5, 0).transpose(2, 0, 1)[::-1].astype(np.float32) / 255
+            show_img[tb_num + iimg] = cur_pred
+
+        show_img = vutils.make_grid(torch.from_numpy(show_img), nrow=tb_num, range=(0, 1))
+        config.tb_writer.add_image(title, show_img, step)
+
+    def summary_histogram(self, n_iter):
+        for name, param in self.model.named_parameters():
+            config.tb_writer.add_histogram("locate." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
+
     @profile
-    def process(self, batch, train):
+    def process(self, batch, train, detail=None):
         locate_index = self.hparams["model"]["part_locate"]
 
         model_loc = self.model
@@ -127,42 +164,49 @@ class Experiment(object):
         mask_var = torch.autograd.Variable(mask.cuda(async=True), volatile=volatile)
         keypoint_gt = extra["keypoints_tf_inp"]
 
-        num_gt_per_part = []
-        for bi in range(len(keypoint_gt)):
-            kpgt_i = keypoint_gt[bi]
-            outsider_ids = torch.nonzero(((kpgt_i < 0) | (kpgt_i >= INP_RES))[:, :, :2].sum(dim=-1))
-            if len(outsider_ids) > 0:
-                keypoint_gt[bi][outsider_ids[:, 0],
-                                outsider_ids[:, 1],
-                                torch.LongTensor([2]).expand(outsider_ids.size(0))] = 0
-            num_gt_per_part.append((kpgt_i[:, :, 2] > 0).long().sum(dim=0))
-        num_gt_per_part = torch.stack(num_gt_per_part, dim=0).sum(dim=0)
+        # locate_gt: #batch x [#batch_i_valid_person x 2]
+        locate_gt = []
+        num_gt = 0
+        for kpgt in keypoint_gt:
+            index_labeled = torch.nonzero(kpgt[:, locate_index, 2] > 0)
+            if len(index_labeled) > 0:
+                locate_bi = kpgt[index_labeled[:, 0]][:, locate_index, :2]
+                index_inside = torch.nonzero(((locate_bi >= 0) & (locate_bi < INP_RES)).sum(dim=-1) == 2)
+                if len(index_inside) > 0:
+                    locate_gt.append(locate_bi[index_inside[:, 0]])
+                    num_gt += len(index_inside)
+                else:
+                    locate_gt.append(torch.FloatTensor(0))
+            else:
+                locate_gt.append(torch.FloatTensor(0))
 
         # Locate nose
-        locate_map_pred, _ = model_loc(img_var)
+        locate_map_pred_var, _ = model_loc(img_var)
 
         # Locating Loss
-        loss_locate = criterion_mse(locate_map_pred, locate_map_gt_var, mask_var)
+        loss = criterion_mse(locate_map_pred_var, locate_map_gt_var, mask_var)
 
-        # Parse locate_map_pred, convert it into ground truth keypoints format
+        # Parse locate_map_pred_var, convert it into ground truth keypoints format
         # locate_pred: #batch x [#batch_i_person, 2]
-        locate_pred = self.posemap_parser.parse(locate_map_pred, factor=FACTOR)
+        locate_pred = self.posemap_parser.parse(locate_map_pred_var, mask_var, factor=FACTOR)
 
         # Match locating point with person in ground truth keypoints
-        # matches_*: #match x #match_i_*
+        # match_*: #batch x #batch_i_match_index
         # TODO: IMPROVEMENT decrease threshold_dis gradually, or not change
-        # TODO: COMPATIBILITY use relative distance for threshold_dis
-        matches_pred, matches_gt = match_locate(locate_pred, keypoint_gt, locate_index, threshold_dis=3)
+        match_pred, match_gt = match_locate(locate_pred, locate_gt, threshold_abandon=float(INP_RES)/20)
 
-        locate_pred = [lpp[mat] if len(mat) > 0 else torch.LongTensor(0)
-                       for mat, lpp in zip(matches_pred, locate_pred)]
+        precision, recall = PR_locate(locate_pred, locate_gt, match_pred, match_gt, norm=float(INP_RES)/10)
 
-        keypoint_gt = [kpgt[mat] if len(mat) > 0 else torch.FloatTensor(0)
-                       for mat, kpgt in zip(matches_gt, keypoint_gt)]
+        if ("summary" in detail and detail["summary"]):
+            self.summary_image(img, locate_map_pred_var.data.cpu(), locate_map_gt, mask, "locate/" + ("train" if train else "val"), detail["epoch"] + 1)
 
-        if num_gt_per_part[locate_index] > 0:
-            acc_locate = accuracy_locate(locate_pred, keypoint_gt, locate_index, num_gt_per_part[locate_index], norm=float(OUT_RES)/10)
-        else:
-            acc_locate = None
+        result = {
+            "loss": loss,
+            "acc": recall,
+            "recall": recall,
+            "prec": precision,
+            "index": extra["index"],
+            "pred": locate_pred
+        }
 
-        return loss_locate, acc_locate, extra["index"], locate_pred
+        return result
