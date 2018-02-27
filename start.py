@@ -269,9 +269,9 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
         batch_time.update(time.time() - end)
         end = time.time()
 
-        loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n" + 
-                      "\tLoss: {loss:.4f} | Acc: {acc:7.4f} | Prec: {prec:7.4f}\n" + 
-                      "\tLos_: {avgloss:.4f} | Ac_: {avgacc:7.4f} | Pre_: {avgprec:7.4f}").format(
+        loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n" +
+                   "\tLoss: {loss:.4f} | Acc: {acc:7.4f} | Prec: {prec:7.4f}\n" +
+                   "\tLos_: {avgloss:.4f} | Ac_: {avgacc:7.4f} | Pre_: {avgprec:7.4f}").format(
             epoch=epoch + 1,
             batch=i + 1,
             size_width=len(str(iter_length)),
@@ -382,8 +382,8 @@ def validate(val_loader, exp, epoch, store_pred=True):
         data_counter += len(index)
         
         loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n" + 
-                      "\tLoss: {loss:.4f} | Acc: {acc:7.4f} | Prec: {prec:7.4f}\n" + 
-                      "\tLos_: {avgloss:.4f} | Ac_: {avgacc:7.4f} | Pre_: {avgprec:7.4f}").format(
+                   "\tLoss: {loss:.4f} | Acc: {acc:7.4f} | Prec: {prec:7.4f}\n" +
+                   "\tLos_: {avgloss:.4f} | Ac_: {avgacc:7.4f} | Pre_: {avgprec:7.4f}").format(
             epoch=epoch + 1,
             batch=i + 1,
             size_width=len(str(iter_length)),

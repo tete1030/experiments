@@ -1,18 +1,15 @@
 from __future__ import print_function, absolute_import
 
 import os
-import numpy as np
 import json
-import random
-import math
 import cv2
+import numpy as np
 
 import torch
 import torch.utils.data as data
 
-from pose.utils.osutils import *
-from pose.utils.imutils import *
-from pose.utils.transforms import *
+from pose.utils.imutils import HeatmapGenerator
+from pose.utils.transforms import get_transform, transform, fliplr_pts
 
 FLIP_INDEX = [5, 4, 3, 2, 1, 0, 6, 7, 8, 9, 15, 14, 13, 12, 11, 10]
 
@@ -22,7 +19,7 @@ PART_LABELS = ['ank_r', 'kne_r', 'hip_r', 'hip_l', 'kne_l', 'ank_l',
 
 NUM_PARTS = 16
 
-EVAL_INDEX= [0, 1, 2, 3, 4, 5, 10, 11, 14, 15]
+EVAL_INDEX = [0, 1, 2, 3, 4, 5, 10, 11, 14, 15]
 
 class MPII(data.Dataset):
     def __init__(self, img_folder, anno_file, split_file, meanstd_file,
@@ -91,13 +88,13 @@ class MPII(data.Dataset):
                     (meanstd['std'][0], meanstd['std'][1], meanstd['std'][2]))
         assert type(meanstd['mean']) is np.ndarray  
         return meanstd['mean'].astype(np.float32)/255, meanstd['std'].astype(np.float32)/255
- 
+
     def _draw_label(self, points, target_map):
         # Generate ground truth
         for ijoint in range(points.shape[0]):
             if points[ijoint, 2] > 0:
                 self.heatmap_gen(points[ijoint, :2], ijoint, target_map)
-    
+
     def _get_item_single(self, index):
         sf = self.scale_factor
         rf = self.rot_factor

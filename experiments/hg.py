@@ -8,6 +8,7 @@ import pose.utils.config as config
 from pose.utils.misc import adjust_learning_rate
 import cv2
 import numpy as np
+import torchvision.utils as vutils
 
 INP_RES=256
 OUT_RES=64
