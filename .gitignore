@@ -7,6 +7,8 @@ data/mpii/images
 *.idea/*
 data/mscoco/images
 runs
+.vscode
+sftp-config.json
 
 __pycache__/
 *.py[cod]
