@@ -110,16 +110,17 @@ class Experiment(object):
     def collate_function(self, batch):
         result = datasets.COCOPose.collate_function(batch)
         keypoints = result[3]["keypoints_tf"]
+        label_sigma = int(self.hparams["dataset"]["label_sigma"])
         locates = list()
         for i, kp in enumerate(keypoints):
             locate = list()
             for j, person in enumerate(kp):
-                labeled_part_indices = torch.nonzero(person[:, 2] > 0)
+                labeled_part_indices = torch.nonzero((person[:, 2] > 0) &
+                                                     ((person[:, :2] >= -label_sigma).sum(dim=-1) == 2) &
+                                                     ((person[:, :2] < (OUT_RES + label_sigma)).sum(dim=-1) == 2))
                 if len(labeled_part_indices) > 0:
                     mean_pos = person[labeled_part_indices[:, 0]][:, :2].mean(dim=0)
-                    if (mean_pos >= -2 * int(self.hparams["dataset"]["label_sigma"])).all() and \
-                        (mean_pos < (OUT_RES + 2 * int(self.hparams["dataset"]["label_sigma"]))).all():
-                        locate.append(mean_pos)
+                    locate.append(mean_pos)
             if len(locate) > 0:
                 locates.append(torch.stack(locate, 0).float())
             else:
