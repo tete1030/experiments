@@ -41,6 +41,7 @@ locate:
     model:
         hg_dim: 256
         bn: false
+        parse_threshold: 0.1
         match_threshold_factor: 2
         eval_threshold_factor: 5
     dataset:

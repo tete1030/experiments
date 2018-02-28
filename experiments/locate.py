@@ -105,7 +105,7 @@ class Experiment(object):
 
         self.train_drop_last = True
 
-        self.posemap_parser = models.PoseMapParser(cuda=True, threshold=0.05)
+        self.posemap_parser = models.PoseMapParser(cuda=True, threshold=self.hparams["model"]["parse_threshold"])
 
     def collate_function(self, batch):
         result = datasets.COCOPose.collate_function(batch)
