@@ -30,7 +30,11 @@ fast: &FAST
     <<: *DEFAULT
     workers: 0
     skip_val: 1
-    fast_pass: true
+    fast_pass: 1
+
+fastresume:
+    <<: *FAST
+    resume: 'checkpoint/{exp}/{id}'
 
 resume: &RESUME
     <<: *DEFAULT

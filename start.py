@@ -252,7 +252,7 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
             "iter_len": iter_length,
             "summary": False
         }
-        if i == iter_length - 1:
+        if (i == iter_length - 1) or (config.fast_pass > 0 and i == config.fast_pass - 1):
             detail["summary"] = True
 
         result = exp.process(batch, True, detail=detail)
