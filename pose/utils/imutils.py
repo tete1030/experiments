@@ -58,29 +58,44 @@ def gaussian(shape=(7,7),sigma=1):
 class HeatmapGenerator():
     def __init__(self, output_res, sigma):
         self.output_res = output_res
-        self.sigma = sigma
-        size = 6*sigma + 3
+        if sigma is not None:
+            self.sigma = float(sigma)
+            self.sigma3 = int(np.around(3 * self.sigma))
+            self.g = self._gen_temp(self.sigma, self.sigma3)
+
+    @classmethod
+    def _gen_temp(cls, sigma, sigma3, normalize=False):
+        size = 2 * sigma3 + 3
         x = np.arange(0, size, 1, np.float32)
         y = x[:, np.newaxis]
-        x0, y0 = 3*sigma + 1, 3*sigma + 1
-        self.g = np.exp(- ((x - x0) ** 2 + (y - y0) ** 2) / (2 * sigma ** 2))
+        x0, y0 = sigma3 + 1, sigma3 + 1
+        sigma = float(sigma)
+        return np.exp(- ((x - x0) ** 2 + (y - y0) ** 2) / (2 * sigma ** 2)) / (sigma if normalize else 1)
 
-    def __call__(self, pt, index, out):
-        sigma = self.sigma
+    def __call__(self, pt, index, out, sigma=None):
+        if sigma is None:
+            sigma = self.sigma
+            sigma3 = self.sigma3
+            g = self.g
+        else:
+            sigma = float(sigma)
+            sigma3 = int(np.around(3 * sigma))
+            g = self._gen_temp(sigma, sigma3, normalize=True)
+
         x, y = int(pt[0]), int(pt[1])
-        if x < (-3*sigma - 1) or y < (-3*sigma - 1) or \
-                x >= (self.output_res + 3*sigma + 1) or y >= (self.output_res + 3*sigma + 1):
+        if x < (-sigma3 - 1) or y < (-sigma3 - 1) or \
+                x >= (self.output_res + sigma3 + 1) or y >= (self.output_res + sigma3 + 1):
             #print('not in', x, y)
             return
-        ul = int(x - 3*sigma - 1), int(y - 3*sigma - 1)
-        br = int(x + 3*sigma + 2), int(y + 3*sigma + 2)
+        ul = int(x - sigma3 - 1), int(y - sigma3 - 1)
+        br = int(x + sigma3 + 2), int(y + sigma3 + 2)
 
         c,d = max(0, -ul[0]), min(br[0], self.output_res) - ul[0]
         a,b = max(0, -ul[1]), min(br[1], self.output_res) - ul[1]
 
         cc,dd = max(0, ul[0]), min(br[0], self.output_res)
         aa,bb = max(0, ul[1]), min(br[1], self.output_res)
-        out[index][aa:bb,cc:dd] = np.maximum(out[index][aa:bb,cc:dd], self.g[a:b,c:d])
+        out[index][aa:bb,cc:dd] = np.maximum(out[index][aa:bb,cc:dd], g[a:b,c:d])
 
 def draw_labelmap(img, pt, sigma, type='Gaussian'):
     # Draw a 2D gaussian 

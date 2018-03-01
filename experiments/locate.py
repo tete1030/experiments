@@ -85,7 +85,8 @@ class Experiment(object):
                                                single_person=False,
                                                inp_res=INP_RES,
                                                out_res=OUT_RES,
-                                               generate_map=False)
+                                               enable_locate=True,
+                                               generate_map="locate")
 
         self.val_dataset = datasets.COCOPose("data/mscoco/images",
                                              self.coco,
@@ -95,10 +96,11 @@ class Experiment(object):
                                              single_person=False,
                                              inp_res=INP_RES,
                                              out_res=OUT_RES,
-                                             generate_map=False)
+                                             enable_locate=True,
+                                             generate_map="locate")
 
-        self.train_collate_fn = self.collate_function
-        self.test_collate_fn = self.collate_function
+        self.train_collate_fn = datasets.COCOPose.collate_function
+        self.test_collate_fn = datasets.COCOPose.collate_function
 
         self.pose_mgr = models.PoseManager(max(self.hparams["train_batch"], self.hparams["test_batch"]), 1, (OUT_RES, OUT_RES), 30,
                                            cuda=False, sigma=int(self.hparams["dataset"]["label_sigma"]), filter_inside=False, gen_embedding=False)
@@ -106,35 +108,6 @@ class Experiment(object):
         self.train_drop_last = True
 
         self.posemap_parser = models.PoseMapParser(cuda=True, threshold=self.hparams["model"]["parse_threshold"])
-
-    def collate_function(self, batch):
-        result = datasets.COCOPose.collate_function(batch)
-        keypoints = result[3]["keypoints_tf"]
-        label_sigma = int(self.hparams["dataset"]["label_sigma"])
-        locates = list()
-        for i, kp in enumerate(keypoints):
-            locate = list()
-            for j, person in enumerate(kp):
-                labeled_part_indices = torch.nonzero((person[:, 2] > 0) &
-                                                     ((person[:, :2] >= -label_sigma).sum(dim=-1) == 2) &
-                                                     ((person[:, :2] < (OUT_RES + label_sigma)).sum(dim=-1) == 2))
-                if len(labeled_part_indices) > 0:
-                    mean_pos = person[labeled_part_indices[:, 0]][:, :2].mean(dim=0)
-                    locate.append(mean_pos)
-            if len(locate) > 0:
-                locates.append(torch.stack(locate, 0).float())
-            else:
-                locates.append(torch.FloatTensor(0))
-        self.pose_mgr.init_with_locate(locates)
-        locate_map = self.pose_mgr.generate()
-        # DataLoader doesn't support data with zero size
-        for i in range(len(locates)):
-            if len(locates[i]) == 0:
-                locates[i] = None
-        result[1] = locate_map
-        result[3]["locate"] = locates
-
-        return result
 
     def epoch(self, epoch):
         self.hparams["learning_rate"] = adjust_learning_rate(
