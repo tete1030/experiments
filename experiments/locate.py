@@ -149,7 +149,7 @@ class Experiment(object):
         #     self.train_dataset.label_sigma *= label_sigma_decay
         #     self.val_dataset.label_sigma *= label_sigma_decayn
 
-    def summary_image(self, img, pred, gt, mask, title, step):
+    def summary_image(self, img, pred, gt, pred_point, gt_point, match_pred, match_gt, indices_TP, point_factor, mask, title, step):
         tb_num = 6
         tb_img = img[:tb_num].numpy() + self.train_dataset.mean[None, :, None, None]
         tb_gt = gt[:tb_num].numpy()
@@ -166,12 +166,36 @@ class Experiment(object):
                 cv2.COLORMAP_HOT)
             cur_gt = cv2.addWeighted(cur_img, 1, cur_gt, 0.5, 0).transpose(2, 0, 1)[::-1].astype(np.float32) / 255
             show_img[iimg] = cur_gt
+            
             cur_pred = cv2.applyColorMap(
                 cv2.resize(
                     (tb_pred[iimg].transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8),
                     (INP_RES, INP_RES)),
                 cv2.COLORMAP_HOT)
-            cur_pred = cv2.addWeighted(cur_img, 1, cur_pred, 0.5, 0).transpose(2, 0, 1)[::-1].astype(np.float32) / 255
+            cur_pred = cv2.addWeighted(cur_img, 1, cur_pred, 0.5, 0)
+            # Draw points 
+            cur_pred_point = pred_point[iimg]
+            cur_gt_point = gt_point[iimg]
+            cur_match_pred = match_pred[iimg]
+            cur_match_gt = match_gt[iimg]
+            cur_indices_TP = indices_TP[iimg]
+            for ipoint, point in enumerate(cur_pred_point):
+                pred_pt = (int(point[0] * point_factor), int(point[1] * point_factor))
+                if ipoint in cur_match_pred:
+                    gt_pt = cur_gt_point[cur_match_gt[cur_match_pred.tolist().index(ipoint)]]
+                    gt_pt = (int(gt_pt[0] * point_factor), int(gt_pt[1] * point_factor))
+                    cv2.line(cur_pred, pred_pt, gt_pt, (95, 162, 44), thickness=2)
+                if ipoint in cur_indices_TP:
+                    color = (95, 162, 44)
+                else:
+                    color = (0, 0, 255)
+                cv2.circle(cur_pred, pred_pt, 5, color, thickness=-1)
+            for point in cur_gt_point:
+                gt_pt = (int(point[0] * point_factor), int(point[1] * point_factor))
+                color = (255, 0, 0)
+                cv2.circle(cur_pred, gt_pt, 5, color, thickness=-1)
+
+            cur_pred = cur_pred.transpose(2, 0, 1)[::-1].astype(np.float32) / 255
             show_img[tb_num + iimg] = cur_pred
 
         show_img = vutils.make_grid(torch.from_numpy(show_img), nrow=tb_num, range=(0, 1))
@@ -231,10 +255,21 @@ class Experiment(object):
         # TODO: IMPROVEMENT decrease threshold_dis gradually, or not change
         match_pred, match_gt = match_locate(locate_pred, locate_gt, threshold_abandon=OUT_RES/float(self.hparams["model"]["match_threshold_factor"]))
 
-        precision, recall = PR_locate(locate_pred, locate_gt, match_pred, match_gt, threshold=OUT_RES/float(self.hparams["model"]["eval_threshold_factor"]))
+        precision, recall, indices_TP = PR_locate(locate_pred, locate_gt, match_pred, match_gt, threshold=OUT_RES/float(self.hparams["model"]["eval_threshold_factor"]))
 
         if ("summary" in detail and detail["summary"]):
-            self.summary_image(img, locate_map_pred_var.data.cpu(), locate_map_gt, mask, "locate/" + ("train" if train else "val"), detail["epoch"] + 1)
+            self.summary_image(img=img,
+                               pred=locate_map_pred_var.data.cpu(),
+                               gt=locate_map_gt,
+                               pred_point=locate_pred,
+                               gt_point=locate_gt,
+                               match_pred=match_pred,
+                               match_gt=match_gt,
+                               indices_TP=indices_TP,
+                               point_factor=4,
+                               mask=mask,
+                               title="locate/" + ("train" if train else "val"),
+                               step=detail["epoch"] + 1)
 
         result = {
             "loss": loss,

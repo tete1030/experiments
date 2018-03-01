@@ -8,7 +8,7 @@ from sklearn.linear_model import LinearRegression
 
 from .misc import *
 from .transforms import transform, transform_preds
-from munkres import Munkres
+import munkres
 
 __all__ = ['accuracy', 'AverageMeter']
 
@@ -148,7 +148,7 @@ def match_locate(pred, gt, threshold_abandon=3):
         C - Hungarian Algorithm
     """
 
-    mk = Munkres()
+    mk = munkres.Munkres()
     matches_pred = []
     matches_gt = []
     for pred_i, gt_i in zip(pred, gt):
@@ -205,6 +205,7 @@ def PR_locate(pred, gt, match_pred, match_gt, threshold=0.5):
     counter_GT = 0
     counter_P = 0
     counter_TP = 0
+    indices_TP = list()
     for ib in range(len(pred)):
         pred_i = pred[ib]
         gt_i = gt[ib]
@@ -217,10 +218,18 @@ def PR_locate(pred, gt, match_pred, match_gt, threshold=0.5):
             pred_i = pred_i[match_pred_i].float()
             gt_i = gt_i[match_gt_i].float()
             mask_TP = (((pred_i - gt_i) ** 2).sum(dim=-1) <= float(threshold) ** 2)
-            counter_TP += mask_TP.sum()
+            index_TP_match = mask_TP.nonzero()
+            if len(index_TP_match) > 0:
+                indices_TP.append(match_pred_i[index_TP_match[:, 0]])
+            else:
+                indices_TP.append(torch.LongTensor(0))
+            counter_TP += mask_TP.int().sum()
+        else:
+            indices_TP.append(torch.LongTensor(0))
+
     precision = float(counter_TP) / float(counter_P) if counter_P > 0 else None
     recall = float(counter_TP) / float(counter_GT) if counter_GT > 0 else None
-    return precision, recall
+    return precision, recall, indices_TP
 
 def PR_multi(pred, gt, norm, num_parts, threshold=0.5):
     """Calculate accuracy of multi-person predictions
