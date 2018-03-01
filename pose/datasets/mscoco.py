@@ -112,7 +112,7 @@ class COCOPose(data.Dataset):
                     self.heatmap_gen(points[ijoint, :2], ijoint, target_map)
         elif point_type == "point":
             assert not np.isclose(sigma, 0)
-            self.heatmap_gen(points, 0, target_map, sigma=sigma)
+            self.heatmap_gen(points, 0, target_map, sigma=sigma, normalize_factor=0)
         else:
             raise RuntimeError("Wrong point_type")
 
@@ -232,7 +232,7 @@ class COCOPose(data.Dataset):
         elif self.generate_map == "locate":
             target_map = np.zeros((1, self.out_res, self.out_res), dtype=np.float32)
             for lmean, lstd in zip(locate_mean, locate_std):
-                self._draw_label(lmean, target_map, point_type="point", sigma=float(lstd)/3 if lstd is not None else 1)
+                self._draw_label(lmean, target_map, point_type="point", sigma=np.sqrt(float(lstd)/3) if lstd is not None else 1)
         # =====
         # Mask: used to mask off crowds
 

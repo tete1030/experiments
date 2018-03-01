@@ -32,7 +32,7 @@ hg:
 
 locate:
     <<: *DEFAULT
-    id: 2
+    id: 5
     name: locate
     learning_rate: 2.e-4
     train_batch: 32

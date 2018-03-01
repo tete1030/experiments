@@ -61,18 +61,18 @@ class HeatmapGenerator():
         if sigma is not None:
             self.sigma = float(sigma)
             self.sigma3 = int(np.around(3 * self.sigma))
-            self.g = self._gen_temp(self.sigma, self.sigma3)
+            self.g = self._gen_temp(self.sigma, self.sigma3, 0)
 
     @classmethod
-    def _gen_temp(cls, sigma, sigma3, normalize=False):
+    def _gen_temp(cls, sigma, sigma3, normalize_factor):
         size = 2 * sigma3 + 3
         x = np.arange(0, size, 1, np.float32)
         y = x[:, np.newaxis]
         x0, y0 = sigma3 + 1, sigma3 + 1
         sigma = float(sigma)
-        return np.exp(- ((x - x0) ** 2 + (y - y0) ** 2) / (2 * sigma ** 2)) / (sigma if normalize else 1)
+        return np.exp(- ((x - x0) ** 2 + (y - y0) ** 2) / (2 * sigma ** 2)) / (sigma * float(normalize_factor) if normalize_factor > 0 else 1)
 
-    def __call__(self, pt, index, out, sigma=None):
+    def __call__(self, pt, index, out, sigma=None, normalize_factor=0):
         if sigma is None:
             sigma = self.sigma
             sigma3 = self.sigma3
@@ -80,7 +80,7 @@ class HeatmapGenerator():
         else:
             sigma = float(sigma)
             sigma3 = int(np.around(3 * sigma))
-            g = self._gen_temp(sigma, sigma3, normalize=True)
+            g = self._gen_temp(sigma, sigma3, normalize_factor)
 
         x, y = int(pt[0]), int(pt[1])
         if x < (-sigma3 - 1) or y < (-sigma3 - 1) or \
