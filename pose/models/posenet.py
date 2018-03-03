@@ -95,7 +95,7 @@ class PoseManager(object):
     @profile
     def init(self, keypoints, is_locate):
         """Init flat keypoints
-        
+
         Arguments:
             keypoints {list} -- #batch x [#batch_i_person x #part x 3] or #batch x [#batch_i_person x 2]
         """
@@ -242,7 +242,7 @@ class PoseManager(object):
     @profile
     def move_keypoints(self, move_field, factor=1):
         """Move keypoints along vectors in move_field
-        
+
         Arguments:
             move_field {Tensor} -- #batch x #parts x h x w
             factor {int} -- ratio of keypoints to move_field
@@ -268,7 +268,7 @@ class PoseManager(object):
         self.draw_cols_map += movement_x.data
         self.draw_insider = ((self.draw_cols_map >= 0) & (self.draw_cols_map < self.out_size[1]) & \
                              (self.draw_rows_map >= 0) & (self.draw_rows_map < self.out_size[0]))
-        
+
         selector_x = torch.LongTensor([0]).cuda(async=True).expand(len(self.batch_ids))
         selector_y = torch.LongTensor([1]).cuda(async=True).expand(len(self.batch_ids))
 
@@ -300,7 +300,7 @@ class PoseManager(object):
         temp_cols = self.draw_cols_temp
         temp_rows = self.draw_rows_temp
         insider = self.draw_insider
-        
+
         # select points inside
         batch_ids = batch_ids[insider]
         part_ids = part_ids[insider]
@@ -330,7 +330,7 @@ class PoseManager(object):
 
             mask_modify = self.map[batch_ids, part_ids, map_rows, map_cols]\
                 .lt(self.keypoints_temp[temp_rows, temp_cols])
-            
+
             mask = mask_modify & mask_pi
 
             batch_ids_masked = batch_ids[mask]
@@ -349,6 +349,17 @@ class PoseManager(object):
                         self.embedding_temp[temp_rows_masked, temp_cols_masked] * embeddings[i][batch_ids_masked]
 
         return self.map[:self.cur_batch_size].clone()
+
+    def get_split_keypoints(self):
+        split = self.all_split
+        keypoint_cat = self.all_keypoints_var.data.cpu()
+        keypoint_cat_info = self.all_keypoints_info.cpu()
+        keypoint = [torch.cat((keypoint_cat[start:end],
+                                    keypoint_cat_info[start:end]
+                                    .contiguous().float().view(end-start, self.num_parts, 1)),
+                                    dim=2) if end > start else torch.FloatTensor(0)
+                            for start, end in zip([0] + split[:-1], split)]
+        return keypoint
 
 class PosePre(nn.Module):
     def __init__(self, img_dim, hg_dim, bn=False):
@@ -413,14 +424,14 @@ class PoseMapParser():
 
         det_lm = self.is_local_max(det, mask)
         det_ids = det_lm.nonzero()
-        
+
         if len(det_ids) == 0:
             return [torch.LongTensor(0) for i in range(det.size(0))]
         if isinstance(det_ids, torch.autograd.Variable):
             det_ids = det_ids.data
         if det_ids.is_cuda:
             det_ids = det_ids.cpu()
-        
+
         det_pos = det_ids[:, [3, 2]] * factor
         det_bid = [torch.nonzero(det_ids[:, 0] == i) for i in range(det.size(0))]
         return [det_pos[dbid[:, 0]] if len(dbid) > 0 else torch.LongTensor(0)

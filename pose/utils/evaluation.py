@@ -201,7 +201,7 @@ def match_locate(pred, gt, threshold_abandon=3):
         matches_gt.append(samp_match_gt)
     return matches_pred, matches_gt
 
-def PR_locate(pred, gt, match_pred, match_gt, threshold=0.5):
+def PR_locate(pred, gt, match_pred, match_gt, threshold):
     counter_GT = 0
     counter_P = 0
     counter_TP = 0
@@ -231,22 +231,23 @@ def PR_locate(pred, gt, match_pred, match_gt, threshold=0.5):
     recall = float(counter_TP) / float(counter_GT) if counter_GT > 0 else None
     return precision, recall, indices_TP
 
-def PR_multi(pred, gt, norm, num_parts, threshold=0.5):
+def PR_multi(pred, gt, num_parts, threshold):
     """Calculate accuracy of multi-person predictions
-    
+
     Arguments:
         pred {list of Tensors} -- #batch x [#batch_i_person x #part x 3]
         gt {list of Tensors} -- #batch x [#batch_i_person x #part x 3]
         norm {int} -- normalize distance to 1
         num_parts {int} -- number of parts
-    
+
     Keyword Arguments:
         threshold {float} -- threshold for distance (default: {0.5})
     """
-    
+
     counter_GT = torch.zeros(num_parts).float()
     counter_TP = torch.zeros(num_parts).float()
     counter_P = torch.zeros(num_parts).float()
+    indices_TP = list()
 
     for ib in range(len(pred)):
         pred_i = pred[ib]
@@ -257,14 +258,21 @@ def PR_multi(pred, gt, norm, num_parts, threshold=0.5):
             mask_P = (pred_i[:, :, 2] > 0)
             pred_i = pred_i[:, :, :2].float()
             gt_i = gt_i[:, :, :2].float()
-            mask_thres = ((((pred_i - gt_i) ** 2).sum(dim=-1) / (float(norm) ** 2)) <= threshold ** 2)
+            mask_thres = ((((pred_i - gt_i) ** 2).sum(dim=-1)) <= float(threshold) ** 2)
             mask_TP = mask_GT & mask_P & mask_thres
+            index_TP = mask_TP.nonzero()
+            if len(index_TP) > 0:
+                indices_TP.append([(idx_pair[0], idx_pair[1]) for idx_pair in index_TP])
+            else:
+                indices_TP.append([])
             counter_TP += mask_TP.float().sum(dim=0)
             counter_P += mask_P.float().sum(dim=0)
             counter_GT += mask_GT.float().sum(dim=0)
+        else:
+            indices_TP.append((torch.LongTensor(0), torch.LongTensor(0)))
 
     precision = (counter_TP / counter_P)
     recall = (counter_TP / counter_GT)
     final_precision = counter_TP.sum() / counter_P.sum()
     final_recall = counter_TP.sum() / counter_GT.sum()
-    return final_precision, final_recall, precision, recall
+    return final_precision, final_recall, precision, recall, indices_TP

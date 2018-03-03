@@ -5,6 +5,7 @@ import numpy as np
 import json
 import math
 import cv2
+import copy
 
 import torch
 import torch.utils.data as data
@@ -26,10 +27,9 @@ NUM_PARTS = 17
 class COCOPose(data.Dataset):
     def __init__(self, img_folder, anno, split_file, meanstd_file,
                  train, single_person,
-                 # TODO: IMPROVEMENT out_res
                  inp_res=256, out_res=64,
                  label_sigma=1, scale_factor=0.25, rot_factor=30,
-                 enable_keypoints_inp=False, enable_locate=False,
+                 keypoint_res=0, locate_res=0,
                  locate_min_sigma=0.5, generate_map=True):
         assert not single_person
         assert isinstance(generate_map, (bool, list)) or generate_map == "locate"
@@ -42,8 +42,8 @@ class COCOPose(data.Dataset):
         self.rot_factor = rot_factor
         self.single_person = single_person
         self.heatmap_gen = HeatmapGenerator(self.out_res, self.label_sigma)
-        self.enable_keypoints_inp = enable_keypoints_inp
-        self.enable_locate = enable_locate or (generate_map == "locate")
+        self.keypoint_res = keypoint_res
+        self.locate_res = locate_res
         self.locate_min_sigma = locate_min_sigma
         self.generate_map = generate_map
 
@@ -119,6 +119,7 @@ class COCOPose(data.Dataset):
     def _compute_locate_mean_std(self, keypoints):
         locate_mean = list()
         locate_std = list()
+        locate_in_kp = list()
         for iperson, points in enumerate(keypoints):
             labeled_mask = (points[:, 2] > 0)
             labeled_points = points[labeled_mask.nonzero()]
@@ -138,11 +139,16 @@ class COCOPose(data.Dataset):
                     mean = labeled_points.mean(axis=0)
                     locate_mean.append(mean)
                     locate_std.append(std)
+                    locate_in_kp.append(iperson)
+            else:
+                raise AssertionError("A person has no label")
         if len(locate_mean) > 0:
             locate_mean = np.stack(locate_mean, axis=0)
+            locate_in_kp = np.array(locate_in_kp, dtype=np.int64)
         else:
-            locate_mean = np.zeros((0, 2))
-        return locate_mean, locate_std
+            locate_mean = np.zeros((0, 2), dtype=np.float32)
+            locate_in_kp = np.zeros((0,), dtype=np.int64)
+        return locate_mean, locate_std, locate_in_kp
 
     def __getitem__(self, index):
         sf = float(self.scale_factor)
@@ -209,14 +215,21 @@ class COCOPose(data.Dataset):
             keypoints = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
 
         # keypoints: #person * #joints * 3
-        if self.enable_keypoints_inp:
-            keypoints_tf_inp = transform(keypoints.reshape((-1, 3))[...,:2], center, scale, [self.inp_res, self.inp_res], rot=rotate)
-            keypoints_tf_inp = np.c_[keypoints_tf_inp, keypoints.reshape((-1, 3))[:, 2]].reshape(keypoints.shape)
         keypoints_tf = transform(keypoints.reshape((-1, 3))[...,:2], center, scale, [self.out_res, self.out_res], rot=rotate)
         keypoints_tf = np.c_[keypoints_tf, keypoints.reshape((-1, 3))[:, 2]].reshape(keypoints.shape)
-        if self.enable_locate:
-            locate_mean, locate_std = self._compute_locate_mean_std(keypoints_tf)
-        
+
+        keypoints_tf_ret = keypoints_tf.copy()
+        if self.keypoint_res > 0:
+            assert keypoints_tf_ret.dtype == np.float32
+            keypoints_tf_ret[:, :, :2] = keypoints_tf_ret[:, :, :2] * (float(self.keypoint_res) / self.out_res)
+
+        locate_mean, locate_std, locate_in_kp = self._compute_locate_mean_std(keypoints_tf)
+        locate_mean_ret, locate_std_ret = copy.deepcopy(locate_mean), copy.deepcopy(locate_std)
+        if self.locate_res > 0:
+            assert locate_mean_ret.dtype == np.float32
+            locate_mean_ret = locate_mean_ret * (float(self.locate_res) / self.out_res)
+            locate_std_ret = [(lsr * (float(self.locate_res) / self.out_res)) if lsr is not None else None for lsr in locate_std_ret]
+
         if self.generate_map == True:
             draw_parts = list(range(NUM_PARTS))
         elif type(self.generate_map) is list:
@@ -249,7 +262,7 @@ class COCOPose(data.Dataset):
 
         mask_transform_mat = get_transform(center, scale, [self.out_res, self.out_res], rot=rotate)
         mask_crowd = cv2.warpAffine((mask_crowd*255).clip(0, 255).astype(np.uint8), mask_transform_mat[:2], dsize=(self.out_res, self.out_res), flags=cv2.INTER_LINEAR).astype(np.float32) / 255
-        
+
         mask_crowd = (mask_crowd > 0.5)
         mask_noncrowd = (~mask_crowd).astype(np.uint8)
 
@@ -258,14 +271,13 @@ class COCOPose(data.Dataset):
             "center": torch.from_numpy(center),
             "scale": scale,
             "keypoints": torch.from_numpy(keypoints) if keypoints.shape[0] > 0 else None,
-            "keypoints_tf": torch.from_numpy(keypoints_tf) if keypoints.shape[0] > 0 else None
+            "keypoints_tf": torch.from_numpy(keypoints_tf_ret) if keypoints.shape[0] > 0 else None
         }
 
-        if self.enable_keypoints_inp:
-            extra["keypoints_tf_inp"] = torch.from_numpy(keypoints_tf_inp) if keypoints.shape[0] > 0 else None
-        if self.enable_locate:
-            extra["locate"] = torch.from_numpy(locate_mean) if locate_mean.shape[0] > 0 else None
-            extra["locate_std"] = locate_std if len(locate_std) > 0 else None
+        if self.locate_res > 0:
+            extra["locate"] = torch.from_numpy(locate_mean_ret) if locate_mean_ret.shape[0] > 0 else None
+            extra["locate_std"] = locate_std_ret if len(locate_std_ret) > 0 else None
+            extra["locate_in_kp"] = torch.from_numpy(locate_in_kp).long() if locate_in_kp.shape[0] > 0 else None
 
         if target_map is not None:
             return torch.from_numpy(img), \
@@ -277,7 +289,7 @@ class COCOPose(data.Dataset):
                 torch.FloatTensor(0), \
                 torch.from_numpy(mask_noncrowd), \
                 extra
-    
+
     @classmethod
     def collate_function(cls, batch):
         transposed = zip(*batch)
@@ -286,7 +298,7 @@ class COCOPose(data.Dataset):
             for samples in transposed[:3]]
         all_keys = transposed[3][0].keys()
         extra_result = dict()
-        not_collate_keys = ["keypoints", "keypoints_tf", "keypoints_tf_inp", "locate", "locate_std"]
+        not_collate_keys = ["keypoints", "keypoints_tf", "locate", "locate_std", "locate_in_kp"]
         for k in all_keys:
             if k in not_collate_keys:
                 extra_result[k] = [sample[k] for sample in transposed[3]]

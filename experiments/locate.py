@@ -85,7 +85,7 @@ class Experiment(object):
                                                single_person=False,
                                                inp_res=INP_RES,
                                                out_res=OUT_RES,
-                                               enable_locate=True,
+                                               locate_res=OUT_RES,
                                                generate_map="locate")
 
         self.val_dataset = datasets.COCOPose("data/mscoco/images",
@@ -96,7 +96,7 @@ class Experiment(object):
                                              single_person=False,
                                              inp_res=INP_RES,
                                              out_res=OUT_RES,
-                                             enable_locate=True,
+                                             locate_res=OUT_RES,
                                              generate_map="locate")
 
         self.train_collate_fn = datasets.COCOPose.collate_function
@@ -123,6 +123,10 @@ class Experiment(object):
         #     self.val_dataset.label_sigma *= label_sigma_decayn
 
     def summary_image(self, img, pred, gt, pred_point, gt_point, match_pred, match_gt, indices_TP, point_factor, mask, title, step):
+        TP_COLOR = (95, 162, 44)
+        FP_COLOR = (0, 0, 255)
+        CP_COLOR = (255, 0, 0)
+
         tb_num = 6
         tb_img = img[:tb_num].numpy() + self.train_dataset.mean[None, :, None, None]
         tb_gt = gt[:tb_num].numpy()
@@ -139,14 +143,14 @@ class Experiment(object):
                 cv2.COLORMAP_HOT)
             cur_gt = cv2.addWeighted(cur_img, 1, cur_gt, 0.5, 0).transpose(2, 0, 1)[::-1].astype(np.float32) / 255
             show_img[iimg] = cur_gt
-            
+
             cur_pred = cv2.applyColorMap(
                 cv2.resize(
                     (tb_pred[iimg].transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8),
                     (INP_RES, INP_RES)),
                 cv2.COLORMAP_HOT)
             cur_pred = cv2.addWeighted(cur_img, 1, cur_pred, 0.5, 0)
-            # Draw points 
+            # Draw points
             cur_pred_point = pred_point[iimg]
             cur_gt_point = gt_point[iimg]
             cur_match_pred = match_pred[iimg]
@@ -157,15 +161,15 @@ class Experiment(object):
                 if ipoint in cur_match_pred:
                     gt_pt = cur_gt_point[cur_match_gt[cur_match_pred.tolist().index(ipoint)]]
                     gt_pt = (int(gt_pt[0] * point_factor), int(gt_pt[1] * point_factor))
-                    cv2.line(cur_pred, pred_pt, gt_pt, (95, 162, 44), thickness=2)
+                    cv2.line(cur_pred, pred_pt, gt_pt, TP_COLOR, thickness=2)
                 if ipoint in cur_indices_TP:
-                    color = (95, 162, 44)
+                    color = TP_COLOR
                 else:
-                    color = (0, 0, 255)
+                    color = FP_COLOR
                 cv2.circle(cur_pred, pred_pt, 5, color, thickness=-1)
             for point in cur_gt_point:
                 gt_pt = (int(point[0] * point_factor), int(point[1] * point_factor))
-                color = (255, 0, 0)
+                color = CP_COLOR
                 cv2.circle(cur_pred, gt_pt, 5, color, thickness=-1)
 
             cur_pred = cur_pred.transpose(2, 0, 1)[::-1].astype(np.float32) / 255
@@ -189,29 +193,11 @@ class Experiment(object):
         img_var = torch.autograd.Variable(img.cuda(async=True), volatile=volatile)
         locate_map_gt_var = torch.autograd.Variable(locate_map_gt.cuda(async=True), volatile=volatile)
         mask_var = torch.autograd.Variable(mask.cuda(async=True), volatile=volatile)
-        if "locate" in extra:
-            locate_gt = extra["locate"]
-            for i in range(len(locate_gt)):
-                if locate_gt[i] is None:
-                    locate_gt[i] = torch.FloatTensor(0)
-        else:
-            keypoint_gt = extra["keypoints_tf"]
-            locate_index = self.hparams["model"]["part_locate"]
-            # locate_gt: #batch x [#batch_i_valid_person x 2]
-            locate_gt = []
-            num_gt = 0
-            for kpgt in keypoint_gt:
-                index_labeled = torch.nonzero(kpgt[:, locate_index, 2] > 0)
-                if len(index_labeled) > 0:
-                    locate_bi = kpgt[index_labeled[:, 0]][:, locate_index, :2]
-                    index_inside = torch.nonzero(((locate_bi >= 0) & (locate_bi < INP_RES)).sum(dim=-1) == 2)
-                    if len(index_inside) > 0:
-                        locate_gt.append(locate_bi[index_inside[:, 0]])
-                        num_gt += len(index_inside)
-                    else:
-                        locate_gt.append(torch.FloatTensor(0))
-                else:
-                    locate_gt.append(torch.FloatTensor(0))
+
+        locate_gt = extra["locate"]
+        for i in range(len(locate_gt)):
+            if locate_gt[i] is None:
+                locate_gt[i] = torch.FloatTensor(0)
 
         # Locate nose
         locate_map_pred_var, _ = model_loc(img_var)
@@ -225,12 +211,11 @@ class Experiment(object):
 
         # Match locating point with person in ground truth keypoints
         # match_*: #batch x #batch_i_match_index
-        # TODO: IMPROVEMENT decrease threshold_dis gradually, or not change
         match_pred, match_gt = match_locate(locate_pred, locate_gt, threshold_abandon=OUT_RES/float(self.hparams["model"]["match_threshold_factor"]))
 
         precision, recall, indices_TP = PR_locate(locate_pred, locate_gt, match_pred, match_gt, threshold=OUT_RES/float(self.hparams["model"]["eval_threshold_factor"]))
 
-        if ("summary" in detail and detail["summary"]):
+        if detail["summary"]:
             self.summary_image(img=img,
                                pred=locate_map_pred_var.data.cpu(),
                                gt=locate_map_gt,

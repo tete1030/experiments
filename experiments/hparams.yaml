@@ -56,10 +56,11 @@ stretch:
     test_batch: 20
     em_valid_int: 200
     model:
-        part_locate: 0
         hg_dim: 256
-        bn: true
+        bn: false
         max_person: 30
-        reg_stack: 3
-        reg_init_noise: 0.05
-        reg_mid_noise: 0.05
+        stack: 3
+        init_noise_factor: 5
+        mid_noise_factor: 5
+        use_outsider: true
+        eval_threshold_factor: 20
