@@ -36,18 +36,10 @@ class Experiment(object):
         self.hparams = hparams
         self.num_parts = datasets.mscoco.NUM_PARTS
 
-        self.model = torch.nn.ModuleList([
-            torch.nn.DataParallel(
-                models.PosePre(img_dim=3,
-                               hg_dim=self.hparams["model"]["hg_dim"],
-                               bn=self.hparams["model"]["bn"]).cuda()
-            ),
-            torch.nn.DataParallel(
-                models.PoseNet(inp_dim=1, out_dim=self.num_parts,
-                               hg_dim=self.hparams["model"]["hg_dim"],
-                               bn=self.hparams["model"]["bn"]).cuda()
-            )
-        ])
+        self.model = torch.nn.DataParallel(
+            models.PoseNet(inp_dim=1, merge_inp_dim=3, out_dim=self.num_parts,
+                            hg_dim=self.hparams["model"]["hg_dim"],
+                            bn=self.hparams["model"]["bn"]).cuda())
 
         self.criterion = models.PoseMapLoss().cuda()
 
@@ -166,8 +158,7 @@ class Experiment(object):
 
     @profile
     def process(self, batch, train, detail=None):
-        model_imgpre = self.model[0]
-        model_hg = self.model[1]
+        model_hg = self.model
         criterion_mse = self.criterion
 
         img = batch["img"]
@@ -212,8 +203,7 @@ class Experiment(object):
                 kp_bi = torch.FloatTensor(0)
             keypoint_gt[bi] = kp_bi
 
-        merge_img = model_imgpre(img_var)
-        keypoint_map_pred_var, _ = model_hg(locate_map_var, merge_img)
+        keypoint_map_pred_var = model_hg(inp=locate_map_var, merge_inp=img_var, merge=True, free_merge=True)
 
         loss = criterion_mse(keypoint_map_pred_var, keypoint_map_gt_var, mask_var)
 

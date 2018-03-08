@@ -9,7 +9,7 @@ try:
 except NameError:
     profile = lambda func: func
 
-__all__ = ["PoseManager", "PoseMapParser", "PosePre", "PoseNet", "PoseMapLoss", "PoseDisLoss"]
+__all__ = ["PoseManager", "PoseMapParser", "PoseNet", "PoseMapLoss", "PoseDisLoss"]
 
 class Merge(nn.Module):
     def __init__(self, x_dim, y_dim):
@@ -361,21 +361,6 @@ class PoseManager(object):
                             for start, end in zip([0] + split[:-1], split)]
         return keypoint
 
-class PosePre(nn.Module):
-    def __init__(self, img_dim, hg_dim, bn=False):
-        super(PosePre, self).__init__()
-        self.pre = nn.Sequential(
-            Conv(img_dim, 64, 7, 2, bn=bn),
-            Conv(64, 128, bn=bn),
-            Pool(2, 2),
-            Conv(128, 128, bn=bn),
-            Conv(128, hg_dim, bn=bn)
-        )
-
-    def forward(self, imgs):
-        x = self.pre(imgs)
-        return x
-
 class PoseHGModule(nn.Module):
     def __init__(self, inp_dim, out_dim, merge, bn=False, increase=128):
         super(PoseHGModule, self).__init__()
@@ -471,14 +456,49 @@ class PoseDisLoss(nn.Module):
 
         return loss
 
+class PosePre(nn.Module):
+    def __init__(self, img_dim, hg_dim, bn=False):
+        super(PosePre, self).__init__()
+        self.pre = nn.Sequential(
+            Conv(img_dim, 64, 7, 2, bn=bn),
+            Conv(64, 128, bn=bn),
+            Pool(2, 2),
+            Conv(128, 128, bn=bn),
+            Conv(128, hg_dim, bn=bn)
+        )
+
+    def forward(self, imgs):
+        x = self.pre(imgs)
+        return x
+
 class PoseNet(nn.Module):
-    def __init__(self, inp_dim, out_dim, hg_dim=256, bn=False):
+    def __init__(self, inp_dim, out_dim, hg_dim=256, merge_inp_dim=0, bn=False):
         super(PoseNet, self).__init__()
         self.pre = PosePre(img_dim=inp_dim, hg_dim=hg_dim, bn=bn)
+        if merge_inp_dim > 0:
+            self.merge_pre = PosePre(img_dim=merge_inp_dim, hg_dim=hg_dim, bn=bn)
+            self.merge_data = None
         self.hgmod = PoseHGModule(inp_dim=hg_dim, out_dim=out_dim, merge=True, bn=bn)
 
-    def forward(self, x, merge=None):
-        if merge is not None:
-            return self.hgmod(self.pre(x) + merge)
+    def forward(self, inp=None, merge_inp=None, merge=False, free_merge=False):
+        assert inp is not None or merge_inp is not None or free_merge
+        assert not (inp is None and merge)
+        # Indicating data not properly freed
+        assert merge_inp is not None and self.merge_data is not None
+
+        if merge_inp is not None:
+            self.merge_data = self.merge_pre(merge_inp)
+
+        if inp is not None:
+            if merge:
+                assert self.merge_data is not None
+                ret = self.hgmod(self.pre(inp) + self.merge_data)
+            else:
+                ret = self.hgmod(self.pre(inp))
         else:
-            return self.hgmod(self.pre(x))
+            ret = None
+
+        if free_merge:
+            self.merge_data = None
+
+        return ret

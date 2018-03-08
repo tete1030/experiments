@@ -64,15 +64,10 @@ class Experiment(object):
         self.hparams = hparams
         self.num_parts = datasets.mscoco.NUM_PARTS
 
-        self.model = torch.nn.ModuleList([
-            torch.nn.DataParallel(
-                models.PosePre(img_dim=3,
-                               hg_dim=self.hparams["model"]["hg_dim"],
-                               bn=self.hparams["model"]["bn"]).cuda()),
-            torch.nn.DataParallel(
-                models.PoseNet(inp_dim=self.num_parts*2, out_dim=self.num_parts*2,
-                               hg_dim=self.hparams["model"]["hg_dim"],
-                               bn=self.hparams["model"]["bn"]).cuda())])
+        self.model = torch.nn.DataParallel(
+            models.PoseNet(inp_dim=self.num_parts*2, merge_inp_dim=3, out_dim=self.num_parts*2,
+                           hg_dim=self.hparams["model"]["hg_dim"],
+                           bn=self.hparams["model"]["bn"]).cuda())
 
         self.criterion = models.PoseDisLoss().cuda()
 
@@ -264,8 +259,7 @@ class Experiment(object):
         mid_noise_factor = self.hparams["model"]["mid_noise_factor"]
         use_outsider = self.hparams["model"]["use_outsider"]
 
-        model_imgpre = self.model[0]
-        model_reg = self.model[1]
+        model_reg = self.model
         criterion_dis = self.criterion
 
         img = batch["img"]
@@ -329,17 +323,18 @@ class Experiment(object):
             if detail["summary"]:
                 keypoint_pred_list.append(locate_init)
 
-            merge_img = model_imgpre(img_var)
+            model_reg(merge_inp=img_var)
 
             for i in range(num_stack):
                 posemap = pose_mgr.generate()
                 posemap_var = torch.autograd.Variable(posemap, volatile=volatile)
-                move_field, _ = model_reg(posemap_var, merge_img)
+                move_field, _ = model_reg(inp=posemap_var, merge=True, free_merge=(i >= num_stack - 1))
                 pose_mgr.move_keypoints(move_field, factor=FACTOR)
                 if detail["summary"]:
                     move_field_list.append(move_field.data.cpu())
                     keypoint_pred_list.append(pose_mgr.get_split_keypoints())
                 # TODO: IMPROVEMENT add noise perturb to keypoints to make model robust
+
             # keypoint_gt_cat: #all_match_person x #part x 3
             keypoint_gt_cat = torch.cat(keypoint_gt, dim=0)
             keypoint_gt_cat_mask = torch.autograd.Variable((keypoint_gt_cat[:, :, 2] > 0).cuda(), requires_grad=False)
