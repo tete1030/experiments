@@ -432,18 +432,24 @@ class PoseMapParser():
         if det_ids.is_cuda:
             det_ids = det_ids.cpu()
 
-        det_pos = det_ids[:, [3, 2]] * factor
         det_bid = [torch.nonzero(det_ids[:, 0] == i) for i in range(det.size(0))]
-        return [det_pos[dbid[:, 0]] if len(dbid) > 0 else torch.LongTensor(0)
-                for dbid in det_bid]
+        det_pid = det_ids[:, 1]
+        det_pos = det_ids[:, [3, 2]] * factor
+
+        if det.size(1) == 1:
+            return [det_pos[dbid[:, 0]] if len(dbid) > 0 else torch.LongTensor(0)
+                    for dbid in det_bid]
+        else:
+            return [(det_pid[dbid[:, 0]], det_pos[dbid[:, 0]]) if len(dbid) > 0 else torch.LongTensor(0)
+                    for dbid in det_bid]
 
 class PoseMapLoss(nn.Module):
     def __init__(self):
         super(PoseMapLoss, self).__init__()
 
-    def forward(self, pred, gt, masks):
+    def forward(self, pred, gt, mask):
         assert pred.size() == gt.size()
-        l = ((pred - gt)**2) * masks[:, None, :, :].expand_as(pred).float()
+        l = ((pred - gt)**2) * mask[:, None, :, :].expand_as(pred).float()
         l = l.mean()
         return l
 

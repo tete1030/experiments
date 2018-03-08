@@ -64,3 +64,16 @@ stretch:
         mid_noise_factor: 5
         use_outsider: true
         eval_threshold_factor: 20
+
+back:
+    <<: *DEFAULT
+    id: 0
+    name: back
+    learning_rate: 5.e-4
+    train_batch: 10
+    test_batch: 10
+    em_valid_int: 200
+    model:
+        hg_dim: 256
+        bn: false
+        parse_threshold: 0.1
