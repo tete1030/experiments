@@ -83,10 +83,10 @@ class Experiment(object):
                                                "data/mscoco/mean_std.pth",
                                                train=True,
                                                single_person=False,
-                                               inp_res=INP_RES,
-                                               out_res=OUT_RES,
+                                               img_res=INP_RES,
+                                               locmap_res=OUT_RES,
                                                locate_res=OUT_RES,
-                                               generate_map="locate")
+                                               mask_res=OUT_RES)
 
         self.val_dataset = datasets.COCOPose("data/mscoco/images",
                                              self.coco,
@@ -94,10 +94,10 @@ class Experiment(object):
                                              "data/mscoco/mean_std.pth",
                                              train=False,
                                              single_person=False,
-                                             inp_res=INP_RES,
-                                             out_res=OUT_RES,
+                                             img_res=INP_RES,
+                                             locmap_res=OUT_RES,
                                              locate_res=OUT_RES,
-                                             generate_map="locate")
+                                             mask_res=OUT_RES)
 
         self.train_collate_fn = datasets.COCOPose.collate_function
         self.test_collate_fn = datasets.COCOPose.collate_function
@@ -187,14 +187,17 @@ class Experiment(object):
         model_loc = self.model
         criterion_mse = self.criterion
 
-        img, locate_map_gt, mask, extra = batch
+        img = batch["img"]
+        locate_map_gt = batch["locate_map"]
+        mask = batch["mask"]
+        locate_gt = batch["locate"]
+
         volatile = not train
 
         img_var = torch.autograd.Variable(img.cuda(async=True), volatile=volatile)
         locate_map_gt_var = torch.autograd.Variable(locate_map_gt.cuda(async=True), volatile=volatile)
         mask_var = torch.autograd.Variable(mask.cuda(async=True), volatile=volatile)
 
-        locate_gt = extra["locate"]
         for i in range(len(locate_gt)):
             if locate_gt[i] is None:
                 locate_gt[i] = torch.FloatTensor(0)
@@ -234,7 +237,7 @@ class Experiment(object):
             "acc": recall,
             "recall": recall,
             "prec": precision,
-            "index": extra["index"],
+            "index": batch["index"],
             "pred": locate_pred
         }
 

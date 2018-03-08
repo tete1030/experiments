@@ -169,7 +169,7 @@ def main(args):
 
     for epoch in range(exp.hparams['start_epoch'], exp.hparams['epochs']):
         exp.epoch(epoch)
-        
+
         print('\nEpoch: %d | LR: %.8f' % (epoch + 1, exp.hparams['learning_rate']))
 
         # train for one epoch
@@ -178,15 +178,16 @@ def main(args):
         if config.sigint_triggered:
             break
 
-        exp.summary_histogram(len(train_loader) * (epoch + 1))
+        cur_step = len(train_loader) * (epoch + 1)
+        exp.summary_histogram(cur_step)
 
         # evaluate on validation set
         if config.skip_val > 0 and (epoch + 1) % config.skip_val == 0:
             print("Validation:")
-            valid_loss, valid_acc, valid_prec, predictions = validate(val_loader, exp, epoch)
-            config.tb_writer.add_scalars(config.exp_name + "/loss", {"valid": valid_loss}, len(train_loader) * (epoch + 1))
-            config.tb_writer.add_scalars(config.exp_name + "/acc", {"valid": valid_acc}, len(train_loader) * (epoch + 1))
-            config.tb_writer.add_scalars(config.exp_name + "/prec", {"valid": valid_prec}, len(train_loader) * (epoch + 1))
+            valid_loss, valid_acc, valid_prec, predictions = validate(val_loader, exp, epoch, cur_step)
+            config.tb_writer.add_scalars(config.exp_name + "/loss", {"valid": valid_loss}, cur_step)
+            config.tb_writer.add_scalars(config.exp_name + "/acc", {"valid": valid_acc}, cur_step)
+            config.tb_writer.add_scalars(config.exp_name + "/prec", {"valid": valid_prec}, cur_step)
             # remember best acc and save checkpoint
             is_best = valid_acc > best_acc
             best_acc = max(valid_acc, best_acc)
@@ -243,16 +244,23 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
     iter_length = len(train_loader)
 
     for i, batch in enumerate(train_loader):
+        em_valid = False
+        if em_valid_int > 0 and (i+1) % em_valid_int == 0 and iter_length - (i+1) >= max(em_valid_int/2, 1):
+            em_valid = True
+
         # measure data loading time
         data_time.update(time.time() - end)
+
+        cur_step = iter_length * epoch + i
 
         detail = {
             "epoch": epoch,
             "iter": i,
             "iter_len": iter_length,
+            "step": cur_step,
             "summary": False
         }
-        if (i == iter_length - 1) or (config.fast_pass > 0 and i == config.fast_pass - 1):
+        if em_valid or (i == iter_length - 1) or (config.fast_pass > 0 and i == config.fast_pass - 1):
             detail["summary"] = True
 
         result = exp.process(batch, True, detail=detail)
@@ -260,22 +268,23 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
         acc = result["acc"]
         prec = result["prec"]
 
-        exp.optimizer.zero_grad()
-        loss.backward()
-        exp.optimizer.step()
+        if "step_process" in exp.__dict__ and exp.step_process is not True:
+            exp.optimizer.zero_grad()
+            loss.backward()
+            exp.optimizer.step()
 
-        batch_size = batch[0].size(0)
+        batch_size = batch["img"].size(0)
         loss = loss.data[0] if loss is not None else None
         # measure accuracy and record loss
         if loss is not None:
             losses.update(loss, batch_size)
-            config.tb_writer.add_scalars(config.exp_name + "/loss", {"train": loss}, iter_length * epoch + i)
+            config.tb_writer.add_scalars(config.exp_name + "/loss", {"train": loss}, cur_step)
         if acc is not None:
             acces.update(acc, batch_size)
-            config.tb_writer.add_scalars(config.exp_name + "/acc", {"train": acc}, iter_length * epoch + i)
+            config.tb_writer.add_scalars(config.exp_name + "/acc", {"train": acc}, cur_step)
         if prec is not None:
             preces.update(prec, batch_size)
-            config.tb_writer.add_scalars(config.exp_name + "/prec", {"train": prec}, iter_length * epoch + i)
+            config.tb_writer.add_scalars(config.exp_name + "/prec", {"train": prec}, cur_step)
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -302,18 +311,17 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
 
         if config.sigint_triggered:
             break
-        
-        if em_valid_int > 0 and (i+1) % em_valid_int == 0 and iter_length - (i+1) >= max(em_valid_int/2, 1):
+
+        if em_valid:
             print("\nEmbeded Validation:")
-            valid_loss, valid_acc, valid_prec, predictions = validate(val_loader, exp, epoch, store_pred=False)
-            config.tb_writer.add_scalars(config.exp_name + "/loss", {"valid": valid_loss}, iter_length * epoch + i + 1)
-            config.tb_writer.add_scalars(config.exp_name + "/acc", {"valid": valid_acc}, iter_length * epoch + i + 1)
-            config.tb_writer.add_scalars(config.exp_name + "/prec", {"valid": valid_prec}, iter_length * epoch + i + 1)
-            # exp.summary_histogram(iter_length * epoch + i + 1)
+            valid_loss, valid_acc, valid_prec, _ = validate(val_loader, exp, epoch, cur_step + 1, store_pred=True)
+            config.tb_writer.add_scalars(config.exp_name + "/loss", {"valid": valid_loss}, cur_step + 1)
+            config.tb_writer.add_scalars(config.exp_name + "/acc", {"valid": valid_acc}, cur_step + 1)
+            config.tb_writer.add_scalars(config.exp_name + "/prec", {"valid": valid_prec}, cur_step + 1)
             print("")
             exp.model.train()
             end = time.time()
-        
+
         if config.sigint_triggered:
             break
 
@@ -323,7 +331,7 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
 
     return losses.avg, acces.avg, preces.avg
 
-def validate(val_loader, exp, epoch, store_pred=True):
+def validate(val_loader, exp, epoch, cur_step, store_pred=True):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -343,12 +351,13 @@ def validate(val_loader, exp, epoch, store_pred=True):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        batch_size = batch[0].size(0)
+        batch_size = batch["img"].size(0)
 
         detail = {
             "epoch": epoch,
             "iter": i,
             "iter_len": iter_length,
+            "step": cur_step,
             "summary": False
         }
         if i == 0:
@@ -392,8 +401,8 @@ def validate(val_loader, exp, epoch, store_pred=True):
         end = time.time()
 
         data_counter += len(index)
-        
-        loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n" + 
+
+        loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n" +
                    "\tLoss: {loss:.4f} | Acc: {acc:7.4f} | Prec: {prec:7.4f}\n" +
                    "\tLos_: {avgloss:.4f} | Ac_: {avgacc:7.4f} | Pre_: {avgprec:7.4f}").format(
             epoch=epoch + 1,
@@ -434,7 +443,7 @@ def init_config(conf_name):
         conf = YAML(typ='safe').load(f)
     conf_data = conf[conf_name]
     config.__dict__.update(conf_data.items())
-    
+
 def get_hparams(exp_name, hp_file='experiments/hparams.yaml'):
     with open(hp_file, 'r') as f:
         return YAML(typ='safe').load(f)[exp_name]

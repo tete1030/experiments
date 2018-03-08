@@ -89,11 +89,10 @@ class Experiment(object):
                                                "data/mscoco/mean_std.pth",
                                                train=True,
                                                single_person=False,
-                                               inp_res=INP_RES,
-                                               out_res=OUT_RES,
+                                               img_res=INP_RES,
+                                               mask_res=INP_RES,
                                                keypoint_res=INP_RES,
-                                               locate_res=INP_RES,
-                                               generate_map=False)
+                                               locate_res=INP_RES)
 
         self.val_dataset = datasets.COCOPose("data/mscoco/images",
                                              self.coco,
@@ -101,11 +100,10 @@ class Experiment(object):
                                              "data/mscoco/mean_std.pth",
                                              train=False,
                                              single_person=False,
-                                             inp_res=INP_RES,
-                                             out_res=OUT_RES,
+                                             img_res=INP_RES,
+                                             mask_res=INP_RES,
                                              keypoint_res=INP_RES,
-                                             locate_res=INP_RES,
-                                             generate_map=False)
+                                             locate_res=INP_RES)
 
         self.train_pose_mgr = models.PoseManager(self.hparams["train_batch"],
                                                  self.num_parts,
@@ -270,22 +268,25 @@ class Experiment(object):
         model_reg = self.model[1]
         criterion_dis = self.criterion
 
-        img, _, mask, extra = batch
+        img = batch["img"]
+        keypoint_gt = batch["keypoint"]
+        locate_gt = batch["locate"]
+        mask = batch["mask"]
+        locate_std_gt = batch["locate_std"]
+        locate_in_kp = batch["locate_in_kp"]
+
         volatile = not train
 
         img_var = torch.autograd.Variable(img.cuda(async=True), volatile=volatile)
-        mask_var = torch.autograd.Variable(mask.cuda(async=True), volatile=volatile)
-        keypoint_gt = extra["keypoints_tf"]
-        locate_gt = extra["locate"]
+
         for i in range(len(locate_gt)):
             if locate_gt[i] is None:
                 locate_gt[i] = torch.FloatTensor(0)
-        locate_std_gt = extra["locate_std"]
+
         for i in range(len(locate_std_gt)):
             if locate_std_gt[i] is not None:
                 lsg_i = [float(std) if std is not None else (1.*FACTOR) for std in locate_std_gt[i]]
                 locate_std_gt[i] = torch.FloatTensor(lsg_i)
-        locate_in_kp = extra["locate_in_kp"]
 
         # Filter keypoints with locate
         # Change visible attribute of outsider to 0
@@ -371,7 +372,7 @@ class Experiment(object):
                  "acc": recall,
                  "recall": recall,
                  "prec": precision,
-                 "index": extra["index"],
+                 "index": batch["index"],
                  "pred": keypoint_pred}
 
         return result

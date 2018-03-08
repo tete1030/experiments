@@ -72,7 +72,7 @@ class HeatmapGenerator():
         sigma = float(sigma)
         return np.exp(- ((x - x0) ** 2 + (y - y0) ** 2) / (2 * sigma ** 2)) / (sigma * float(normalize_factor) if normalize_factor > 0 else 1)
 
-    def __call__(self, pt, index, out, sigma=None, normalize_factor=0):
+    def __call__(self, pt, index, out, sigma=None, normalize_factor=0, out_res=0):
         if sigma is None:
             sigma = self.sigma
             sigma3 = self.sigma3
@@ -82,19 +82,22 @@ class HeatmapGenerator():
             sigma3 = int(np.around(3 * sigma))
             g = self._gen_temp(sigma, sigma3, normalize_factor)
 
+        if out_res == 0:
+            out_res = self.output_res
+
         x, y = int(pt[0]), int(pt[1])
         if x < (-sigma3 - 1) or y < (-sigma3 - 1) or \
-                x >= (self.output_res + sigma3 + 1) or y >= (self.output_res + sigma3 + 1):
+                x >= (out_res + sigma3 + 1) or y >= (out_res + sigma3 + 1):
             #print('not in', x, y)
             return
         ul = int(x - sigma3 - 1), int(y - sigma3 - 1)
         br = int(x + sigma3 + 2), int(y + sigma3 + 2)
 
-        c,d = max(0, -ul[0]), min(br[0], self.output_res) - ul[0]
-        a,b = max(0, -ul[1]), min(br[1], self.output_res) - ul[1]
+        c,d = max(0, -ul[0]), min(br[0], out_res) - ul[0]
+        a,b = max(0, -ul[1]), min(br[1], out_res) - ul[1]
 
-        cc,dd = max(0, ul[0]), min(br[0], self.output_res)
-        aa,bb = max(0, ul[1]), min(br[1], self.output_res)
+        cc,dd = max(0, ul[0]), min(br[0], out_res)
+        aa,bb = max(0, ul[1]), min(br[1], out_res)
         out[index][aa:bb,cc:dd] = np.maximum(out[index][aa:bb,cc:dd], g[a:b,c:d])
 
 def draw_labelmap(img, pt, sigma, type='Gaussian'):

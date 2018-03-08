@@ -27,25 +27,30 @@ NUM_PARTS = 17
 class COCOPose(data.Dataset):
     def __init__(self, img_folder, anno, split_file, meanstd_file,
                  train, single_person,
-                 inp_res=256, out_res=64,
-                 label_sigma=1, scale_factor=0.25, rot_factor=30,
+                 img_res=256, kpmap_res=0, locmap_res=0, mask_res=0,
+                 kpmap_select=None, kpmap_sigma=1, locmap_min_sigma=0.5,
                  keypoint_res=0, locate_res=0,
-                 locate_min_sigma=0.5, generate_map=True):
+                 scale_factor=0.25, rot_factor=30, random_selection=False):
         assert not single_person
-        assert isinstance(generate_map, (bool, list)) or generate_map == "locate"
         self.img_folder = img_folder    # root image folders
         self.is_train = train           # training set or test set
-        self.inp_res = inp_res
-        self.out_res = out_res
-        self.label_sigma = label_sigma
-        self.scale_factor = scale_factor
-        self.rot_factor = rot_factor
         self.single_person = single_person
-        self.heatmap_gen = HeatmapGenerator(self.out_res, self.label_sigma)
+        self.img_res = img_res
+        self.kpmap_res = kpmap_res
+        self.locmap_res = locmap_res
+        self.mask_res = mask_res
+        self.kpmap_select = kpmap_select
+        self.kpmap_sigma = kpmap_sigma
+        self.locmap_min_sigma = locmap_min_sigma
         self.keypoint_res = keypoint_res
         self.locate_res = locate_res
-        self.locate_min_sigma = locate_min_sigma
-        self.generate_map = generate_map
+        self.scale_factor = scale_factor
+        self.rot_factor = rot_factor
+        self.random_selection = random_selection
+        if self.random_selection:
+            assert not self.single_person
+
+        self.heatmap_gen = HeatmapGenerator(self.kpmap_res, self.kpmap_sigma)
 
         # create train/val split
         if isinstance(anno, COCO):
@@ -103,7 +108,7 @@ class COCOPose(data.Dataset):
         assert type(meanstd['mean']) is np.ndarray
         return meanstd['mean'].astype(np.float32)/255, meanstd['std'].astype(np.float32)/255
 
-    def _draw_label(self, points, target_map, point_type="person", sigma=None):
+    def _draw_label(self, points, target_map, point_type="person", sigma=None, out_res=None):
         # Generate ground truth
         if point_type == "person":
             assert sigma is None
@@ -112,7 +117,7 @@ class COCOPose(data.Dataset):
                     self.heatmap_gen(points[ijoint, :2], ijoint, target_map)
         elif point_type == "point":
             assert not np.isclose(sigma, 0)
-            self.heatmap_gen(points, 0, target_map, sigma=sigma, normalize_factor=0)
+            self.heatmap_gen(points, 0, target_map, sigma=sigma, out_res=out_res, normalize_factor=0)
         else:
             raise RuntimeError("Wrong point_type")
 
@@ -128,12 +133,12 @@ class COCOPose(data.Dataset):
                 mean = labeled_points.mean(axis=0)
                 if labeled_points.shape[0] > 1:
                     std = np.sqrt(((labeled_points - mean) ** 2).sum(axis=1)).mean()
-                    if std < self.locate_min_sigma:
-                        std = self.locate_min_sigma
+                    if std < self.locmap_min_sigma:
+                        std = self.locmap_min_sigma
                 else:
                     std = None
-                inside_mask = ((labeled_points[:, 0] >= 0) & (labeled_points[:, 0] < self.out_res) &
-                               (labeled_points[:, 1] >= 0) & (labeled_points[:, 1] < self.out_res))
+                inside_mask = ((labeled_points[:, 0] >= 0) & (labeled_points[:, 0] < self.kpmap_res) &
+                               (labeled_points[:, 1] >= 0) & (labeled_points[:, 1] < self.kpmap_res))
                 labeled_points = labeled_points[inside_mask.nonzero()]
                 if labeled_points.shape[0] > 0:
                     mean = labeled_points.mean(axis=0)
@@ -186,8 +191,8 @@ class COCOPose(data.Dataset):
                 center[0] = img_size[0] - center[0]
 
         # Prepare image and groundtruth map
-        img_transform_mat = get_transform(center, scale, [self.inp_res, self.inp_res], rot=rotate)
-        img_bgr = cv2.warpAffine(img_bgr, img_transform_mat[:2], dsize=(self.inp_res, self.inp_res), flags=cv2.INTER_LINEAR)
+        img_transform_mat = get_transform(center, scale, [self.img_res, self.img_res], rot=rotate)
+        img_bgr = cv2.warpAffine(img_bgr, img_transform_mat[:2], dsize=(self.img_res, self.img_res), flags=cv2.INTER_LINEAR)
 
         img = img_bgr[..., ::-1].astype(np.float32) / 255
 
@@ -211,100 +216,114 @@ class COCOPose(data.Dataset):
                               if ann["num_keypoints"] > 0], dtype=np.float32) \
                 .reshape((-1, NUM_PARTS, 3))
 
+        if self.random_selection:
+            person_indices = np.arange(keypoints.shape[0])
+            np.random.shuffle(person_indices)
+            keypoints = keypoints[person_indices[:np.random.randint(low=1, high=person_indices.shape[0]+1)]]
+
         if flip:
             keypoints = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
 
         # keypoints: #person * #joints * 3
-        keypoints_tf = transform(keypoints.reshape((-1, 3))[...,:2], center, scale, [self.out_res, self.out_res], rot=rotate)
+        keypoints_tf = transform(keypoints.reshape((-1, 3))[...,:2], center, scale, [self.kpmap_res, self.kpmap_res], rot=rotate)
         keypoints_tf = np.c_[keypoints_tf, keypoints.reshape((-1, 3))[:, 2]].reshape(keypoints.shape)
 
         keypoints_tf_ret = keypoints_tf.copy()
-        if self.keypoint_res > 0:
+        if self.keypoint_res > 0 and self.keypoint_res != self.kpmap_res:
             assert keypoints_tf_ret.dtype == np.float32
-            keypoints_tf_ret[:, :, :2] = keypoints_tf_ret[:, :, :2] * (float(self.keypoint_res) / self.out_res)
+            keypoints_tf_ret[:, :, :2] = keypoints_tf_ret[:, :, :2] * (float(self.keypoint_res) / self.kpmap_res)
 
         locate_mean, locate_std, locate_in_kp = self._compute_locate_mean_std(keypoints_tf)
         locate_mean_ret, locate_std_ret = copy.deepcopy(locate_mean), copy.deepcopy(locate_std)
-        if self.locate_res > 0:
+        if self.locate_res > 0 and self.locate_res != self.kpmap_res:
             assert locate_mean_ret.dtype == np.float32
-            locate_mean_ret = locate_mean_ret * (float(self.locate_res) / self.out_res)
-            locate_std_ret = [(lsr * (float(self.locate_res) / self.out_res)) if lsr is not None else None for lsr in locate_std_ret]
+            locate_mean_ret = locate_mean_ret * (float(self.locate_res) / self.kpmap_res)
+            locate_std_ret = [(lsr * (float(self.locate_res) / self.kpmap_res)) if lsr is not None else None for lsr in locate_std_ret]
 
-        if self.generate_map == True:
-            draw_parts = list(range(NUM_PARTS))
-        elif type(self.generate_map) is list:
-            draw_parts = self.generate_map
-        else:
+        if self.kpmap_select is None:
             draw_parts = []
+        elif self.kpmap_select == "all":
+            assert self.kpmap_res > 0
+            draw_parts = list(range(NUM_PARTS))
+        elif isinstance(self.kpmap_select, list):
+            assert self.kpmap_res > 0
+            draw_parts = self.kpmap_select
+        else:
+            raise ValueError("Wrong kpmap_select")
 
-        target_map = None
+        kp_map = None
         if len(draw_parts) > 0:
-            target_map = np.zeros((len(draw_parts), self.out_res, self.out_res), dtype=np.float32)
+            kp_map = np.zeros((len(draw_parts), self.kpmap_res, self.kpmap_res), dtype=np.float32)
             for iperson, points in enumerate(keypoints_tf):
-                self._draw_label(points[draw_parts], target_map)
-        elif self.generate_map == "locate":
-            target_map = np.zeros((1, self.out_res, self.out_res), dtype=np.float32)
+                self._draw_label(points[draw_parts], kp_map)
+
+        loc_map = None
+        if self.locmap_res > 0:
+            if self.locmap_res != self.kpmap_res:
+                locate_mean = locate_mean * (float(self.locmap_res) / self.kpmap_res)
+                locate_std = [(lsr * (float(self.locmap_res) / self.kpmap_res)) if lsr is not None else None for lsr in locate_std]
+            loc_map = np.zeros((1, self.locmap_res, self.locmap_res), dtype=np.float32)
             for lmean, lstd in zip(locate_mean, locate_std):
-                self._draw_label(lmean, target_map, point_type="point", sigma=np.sqrt(float(lstd)/3) if lstd is not None else 1)
+                self._draw_label(lmean, loc_map, point_type="point", sigma=np.sqrt(float(lstd)/3) if lstd is not None else 1, out_res=self.locmap_res)
         # =====
         # Mask: used to mask off crowds
 
         # init mask with image size
-        mask_crowd = np.zeros(img_size[::-1].astype(int))
-        for ann in anns:
-            if ann['iscrowd']:
-                mask_crowd += self.coco.annToMask(ann)
+        mask_crowd = None
+        if self.mask_res > 0:
+            mask_crowd = np.zeros(img_size[::-1].astype(int))
+            for ann in anns:
+                if ann['iscrowd']:
+                    mask_crowd += self.coco.annToMask(ann)
 
-        mask_crowd = (mask_crowd > 0.5).astype(np.float32)
+            mask_crowd = (mask_crowd > 0.5).astype(np.float32)
 
-        if flip:
-            mask_crowd = fliplr_chwimg(mask_crowd)
+            if flip:
+                mask_crowd = fliplr_chwimg(mask_crowd)
 
-        mask_transform_mat = get_transform(center, scale, [self.out_res, self.out_res], rot=rotate)
-        mask_crowd = cv2.warpAffine((mask_crowd*255).clip(0, 255).astype(np.uint8), mask_transform_mat[:2], dsize=(self.out_res, self.out_res), flags=cv2.INTER_LINEAR).astype(np.float32) / 255
+            mask_transform_mat = get_transform(center, scale, [self.mask_res, self.mask_res], rot=rotate)
+            mask_crowd = cv2.warpAffine((mask_crowd*255).clip(0, 255).astype(np.uint8), mask_transform_mat[:2], dsize=(self.mask_res, self.mask_res), flags=cv2.INTER_LINEAR).astype(np.float32) / 255
 
-        mask_crowd = (mask_crowd > 0.5)
-        mask_noncrowd = (~mask_crowd).astype(np.uint8)
+            mask_crowd = (mask_crowd > 0.5)
+            mask_noncrowd = (~mask_crowd).astype(np.uint8)
 
-        extra = {
+        result = {
             "index": index,
+            "img": torch.from_numpy(img),
             "center": torch.from_numpy(center),
             "scale": scale,
-            "keypoints": torch.from_numpy(keypoints) if keypoints.shape[0] > 0 else None,
-            "keypoints_tf": torch.from_numpy(keypoints_tf_ret) if keypoints.shape[0] > 0 else None
+            "keypoint_ori": torch.from_numpy(keypoints) if keypoints.shape[0] > 0 else None,
+            "keypoint": torch.from_numpy(keypoints_tf_ret) if keypoints.shape[0] > 0 else None,
         }
 
-        if self.locate_res > 0:
-            extra["locate"] = torch.from_numpy(locate_mean_ret) if locate_mean_ret.shape[0] > 0 else None
-            extra["locate_std"] = locate_std_ret if len(locate_std_ret) > 0 else None
-            extra["locate_in_kp"] = torch.from_numpy(locate_in_kp).long() if locate_in_kp.shape[0] > 0 else None
+        if mask_noncrowd is not None:
+            result["mask"] = torch.from_numpy(mask_noncrowd)
 
-        if target_map is not None:
-            return torch.from_numpy(img), \
-                torch.from_numpy(target_map), \
-                torch.from_numpy(mask_noncrowd), \
-                extra
-        else:
-            return torch.from_numpy(img), \
-                torch.FloatTensor(0), \
-                torch.from_numpy(mask_noncrowd), \
-                extra
+        if kp_map is not None:
+            result["keypoint_map"] = torch.from_numpy(kp_map)
+
+        if loc_map is not None:
+            result["locate_map"] = torch.from_numpy(loc_map)
+
+        if self.locate_res > 0:
+            result["locate"] = torch.from_numpy(locate_mean_ret) if locate_mean_ret.shape[0] > 0 else None
+            result["locate_std"] = locate_std_ret if len(locate_std_ret) > 0 else None
+            result["locate_in_kp"] = torch.from_numpy(locate_in_kp).long() if locate_in_kp.shape[0] > 0 else None
+
+        return result
 
     @classmethod
     def collate_function(cls, batch):
-        transposed = zip(*batch)
+        NON_COLLATE_KEYS = ["keypoint_ori", "keypoint", "locate", "locate_std", "locate_in_kp"]
         collate_fn = data.dataloader.default_collate
-        result = [collate_fn(samples) if len(samples[0]) > 0 else None
-            for samples in transposed[:3]]
-        all_keys = transposed[3][0].keys()
-        extra_result = dict()
-        not_collate_keys = ["keypoints", "keypoints_tf", "locate", "locate_std", "locate_in_kp"]
+        all_keys = batch[0].keys()
+        result = dict()
         for k in all_keys:
-            if k in not_collate_keys:
-                extra_result[k] = [sample[k] for sample in transposed[3]]
+            if k in NON_COLLATE_KEYS:
+                result[k] = [sample[k] for sample in batch]
             else:
-                extra_result[k] = collate_fn([sample[k] for sample in transposed[3]])
-        return result + [extra_result]
+                result[k] = collate_fn([sample[k] for sample in batch])
+        return result
 
     def __len__(self):
         if self.is_train:
