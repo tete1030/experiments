@@ -49,11 +49,11 @@ locate:
 
 stretch:
     <<: *DEFAULT
-    id: 0
+    id: 1
     name: stretch
     learning_rate: 5.e-4
-    train_batch: 20
-    test_batch: 20
+    train_batch: 7
+    test_batch: 7
     em_valid_int: 200
     model:
         hg_dim: 256
@@ -63,7 +63,8 @@ stretch:
         init_noise_factor: 5
         mid_noise_factor: 5
         use_outsider: true
-        eval_threshold_factor: 20
+        eval_threshold: 0.1
+        loss_factor: [0.2, 0.3, 0.5]
 
 back:
     <<: *DEFAULT

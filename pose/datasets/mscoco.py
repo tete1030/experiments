@@ -27,7 +27,7 @@ NUM_PARTS = 17
 class COCOPose(data.Dataset):
     def __init__(self, img_folder, anno, split_file, meanstd_file,
                  train, single_person,
-                 img_res=256, kpmap_res=0, locmap_res=0, mask_res=0,
+                 img_res=256, kpmap_res=64, locmap_res=0, mask_res=0,
                  kpmap_select=None, kpmap_sigma=1, locmap_min_sigma=0.5,
                  keypoint_res=0, locate_res=0,
                  scale_factor=0.25, rot_factor=30, random_selection=False):

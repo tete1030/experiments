@@ -65,9 +65,8 @@ class Experiment(object):
         self.num_parts = datasets.mscoco.NUM_PARTS
 
         self.model = torch.nn.DataParallel(
-            models.PoseNet(inp_dim=self.num_parts*2, merge_inp_dim=3, out_dim=self.num_parts*2,
-                           hg_dim=self.hparams["model"]["hg_dim"],
-                           bn=self.hparams["model"]["bn"]).cuda())
+            models.MergeResNet(inp_size=self.num_parts*2, num_classes=self.hparams["model"]["max_person"]*self.num_parts*2).cuda()
+        )
 
         self.criterion = models.PoseDisLoss().cuda()
 
@@ -130,7 +129,7 @@ class Experiment(object):
         #     self.train_dataset.label_sigma *= label_sigma_decay
         #     self.val_dataset.label_sigma *= label_sigma_decayn
 
-    def summary_image(self, img, pred, gt, move_field, indices_TP, mask, title, step):
+    def summary_image(self, img, pred, gt, move_field, move_vector, embedding, indices_TP, mask, title, step):
         """
         Draw summary
 
@@ -139,6 +138,7 @@ class Experiment(object):
             - first column: init_locate+move_1, all_keypoints_1+move_2, all_keypoints_2+move_3, all_keypoints_3+gt+match_line
             - remaining columns: keypoint_1+field_1+move_1, keypoint_2+field_2+move_2, keypoint_3+field_3+move_3, keypoint_4+gt+match_line
         """
+        assert bool(move_field is not None) != bool(move_vector is not None)
 
         # DPI = 300
         TP_COLOR = (95, 162, 44)
@@ -160,7 +160,7 @@ class Experiment(object):
             fieldimg = mpl.colors.hsv_to_rgb(np.stack((fieldimg_h, fieldimg_s, fieldimg_v), axis=-1))
             return fieldimg
 
-        tb_num = 6
+        tb_num = 2
         tb_img = img[:tb_num].numpy() + self.train_dataset.mean[None, :, None, None]
         nrows = self.hparams["model"]["stack"] + 1
         ncols = self.num_parts + 1
@@ -168,10 +168,10 @@ class Experiment(object):
         for i in range(len(tb_img)):
             img_trans = tb_img[i].transpose(1, 2, 0)
 
-            for k in range(4):
+            for k in range(nrows):
                 all_keypoints_img = (img_trans * 255).round().clip(0, 255).astype(np.uint8)
                 for j in range(self.num_parts):
-                    if k < len(move_field):
+                    if move_field is not None and k < len(move_field):
                         # Draw pred field
                         field_x_ori = move_field[k][i, j].numpy()
                         field_y_ori = move_field[k][i, j+self.num_parts].numpy()
@@ -200,13 +200,18 @@ class Experiment(object):
                         point_gt_visible = (point_gt[2] > 0)
                         point_pred = tuple(point_pred[:2].astype(int).tolist())
                         point_gt = tuple(point_gt[:2].astype(int).tolist())
-                        if k < len(move_field):
+                        if k < nrows - 1:
                             color_pred = FP_COLOR[::-1]
                             if point_pred_visible:
-                                point_pred_in_field = (int(point_pred[0]/FACTOR), int(point_pred[1]/FACTOR))
-                                force = (int(round(np.clip(field_x_ori[point_pred_in_field[1], point_pred_in_field[0]], -INP_RES, INP_RES))),
-                                         int(round(np.clip(field_y_ori[point_pred_in_field[1], point_pred_in_field[0]], -INP_RES, INP_RES))))
-                                point2_pred = (point_pred[0] + force[0], point_pred[1] + force[1])
+                                if move_field is not None:
+                                    point_pred_in_field = (int(point_pred[0]/FACTOR), int(point_pred[1]/FACTOR))
+                                    force = (int(round(np.clip(field_x_ori[point_pred_in_field[1], point_pred_in_field[0]], -INP_RES, INP_RES))),
+                                             int(round(np.clip(field_y_ori[point_pred_in_field[1], point_pred_in_field[0]], -INP_RES, INP_RES))))
+                                    point2_pred = (point_pred[0] + force[0], point_pred[1] + force[1])
+                                else:
+                                    force = (int(round(np.clip(move_vector[k][i, (int(embedding[k][iper, i])-1)*self.num_parts+j], -INP_RES, INP_RES))),
+                                             int(round(np.clip(move_vector[k][i, (int(embedding[k][iper, i])-1)*self.num_parts+j+self.hparams["model"]["max_person"]*self.num_parts], -INP_RES, INP_RES))))
+                                    point2_pred = (point_pred[0] + force[0], point_pred[1] + force[1])
                                 # Draw force
                                 cv2.arrowedLine(finalimg, point_pred, point2_pred, FP_COLOR[::-1], thickness=SEP_LINE_THICKNESS)
                                 cv2.arrowedLine(all_keypoints_img, point_pred, point2_pred, FP_COLOR[::-1], thickness=ALL_LINE_THICKNESS)
@@ -232,16 +237,18 @@ class Experiment(object):
                     whole_img[i, k, j+1] = finalimg.transpose(2, 0, 1).astype(np.float32) / 255
                 whole_img[i, k, 0] = all_keypoints_img.transpose(2, 0, 1).astype(np.float32) / 255
 
-        legend_X, legend_Y = np.meshgrid(np.arange(-LEGEND_R, LEGEND_R+1, dtype=np.float32), np.arange(-LEGEND_R, LEGEND_R+1, dtype=np.float32))
-        legend_rho = np.sqrt(legend_X ** 2 + legend_Y ** 2)
-        legend_phi = np.arctan2(legend_Y, legend_X)
-        legend_hsv = np.zeros((LEGEND_R*2+1, LEGEND_R*2+1, 3), dtype=np.float32)
-        legend_hsv[:, :, 0] = (legend_phi/np.pi + 1) / 2
-        legend_hsv[:, :, 1] = 1
-        legend_hsv[:, :, 2] = legend_rho / LEGEND_R
-        legend_mask = (legend_rho <= LEGEND_R)
-        legend = mpl.colors.hsv_to_rgb(legend_hsv).transpose(2, 0, 1)
-        whole_img[0, 0, 0, :, (-LEGEND_R*2-1):, (-LEGEND_R*2-1):][:, legend_mask] = legend[:, legend_mask]
+        if move_field is not None:
+            # show legend of move field
+            legend_X, legend_Y = np.meshgrid(np.arange(-LEGEND_R, LEGEND_R+1, dtype=np.float32), np.arange(-LEGEND_R, LEGEND_R+1, dtype=np.float32))
+            legend_rho = np.sqrt(legend_X ** 2 + legend_Y ** 2)
+            legend_phi = np.arctan2(legend_Y, legend_X)
+            legend_hsv = np.zeros((LEGEND_R*2+1, LEGEND_R*2+1, 3), dtype=np.float32)
+            legend_hsv[:, :, 0] = (legend_phi/np.pi + 1) / 2
+            legend_hsv[:, :, 1] = 1
+            legend_hsv[:, :, 2] = legend_rho / LEGEND_R
+            legend_mask = (legend_rho <= LEGEND_R)
+            legend = mpl.colors.hsv_to_rgb(legend_hsv).transpose(2, 0, 1)
+            whole_img[0, 0, 0, :, (-LEGEND_R*2-1):, (-LEGEND_R*2-1):][:, legend_mask] = legend[:, legend_mask]
 
         whole_img = vutils.make_grid(torch.from_numpy(whole_img.reshape((-1, 3, INP_RES, INP_RES))),
                                      nrow=ncols, range=(0, 1), pad_value=0.3) # that the nrow equals to ncols is expected because make_grid use nrow as ncol
@@ -273,16 +280,21 @@ class Experiment(object):
 
         img_var = torch.autograd.Variable(img.cuda(async=True), volatile=volatile)
 
+        # Init None in locate_gt
         for i in range(len(locate_gt)):
             if locate_gt[i] is None:
                 locate_gt[i] = torch.FloatTensor(0)
 
+        # Init None in locate_std_gt (when using INP_RES as locate_res)
         for i in range(len(locate_std_gt)):
             if locate_std_gt[i] is not None:
                 lsg_i = [float(std) if std is not None else (1.*FACTOR) for std in locate_std_gt[i]]
                 locate_std_gt[i] = torch.FloatTensor(lsg_i)
+            else:
+                locate_std_gt[i] = torch.FloatTensor(0)
+        locate_std_gt_cat_var = torch.autograd.Variable(torch.cat(locate_std_gt, dim=0).cuda())
 
-        # Filter keypoints with locate
+        # Filter keypoints to make it corresponding to locate
         # Change visible attribute of outsider to 0
         for bi in range(len(keypoint_gt)):
             lik_bi = locate_in_kp[bi]
@@ -316,7 +328,8 @@ class Experiment(object):
 
         if np.sum([len(loc_samp) for loc_samp in locate_init]) > 0:
             keypoint_pred_list = list()
-            move_field_list = list()
+            move_vector_list = list()
+            embedding_list = list()
 
             pose_mgr = self.train_pose_mgr if train else self.test_pose_mgr
             pose_mgr.init_with_locate(locate_init)
@@ -325,33 +338,41 @@ class Experiment(object):
 
             model_reg(merge_inp=img_var)
 
-            for i in range(num_stack):
-                posemap = pose_mgr.generate()
-                posemap_var = torch.autograd.Variable(posemap, volatile=volatile)
-                move_field, _ = model_reg(inp=posemap_var, merge=True, free_merge=(i >= num_stack - 1))
-                pose_mgr.move_keypoints(move_field, factor=FACTOR)
-                if detail["summary"]:
-                    move_field_list.append(move_field.data.cpu())
-                    keypoint_pred_list.append(pose_mgr.get_split_keypoints())
-                # TODO: IMPROVEMENT add noise perturb to keypoints to make model robust
-
             # keypoint_gt_cat: #all_match_person x #part x 3
             keypoint_gt_cat = torch.cat(keypoint_gt, dim=0)
-            keypoint_gt_cat_mask = torch.autograd.Variable((keypoint_gt_cat[:, :, 2] > 0).cuda(), requires_grad=False)
+            keypoint_gt_cat_mask_var = torch.autograd.Variable((keypoint_gt_cat[:, :, 2] > 0).cuda(), requires_grad=False)
             keypoint_gt_cat_var = torch.autograd.Variable(keypoint_gt_cat[:, :, :2].cuda(), requires_grad=False)
 
-            keypoint_pred_cat_var = pose_mgr.all_keypoints_var
-            loss = criterion_dis(keypoint_pred_cat_var, keypoint_gt_cat_var, keypoint_gt_cat_mask)
+            loss = None
+            for i in range(num_stack):
+                embedding = pose_mgr.generate_embedding()
+                posemap = pose_mgr.generate(embedding)
+                posemap_var = torch.autograd.Variable(posemap, volatile=volatile)
+                move_vector_var = model_reg(inp=posemap_var, merge=True, free_merge=(i >= num_stack - 1))
+                move_x_var, move_y_var = pose_mgr.extract_movement(move_vector=move_vector_var, embedding=embedding)
+                pose_mgr.move_keypoints(move_x_var, move_y_var)
+                if loss is None:
+                    loss = self.hparams["model"]["loss_factor"][i] * criterion_dis(pose_mgr.all_keypoints_var, keypoint_gt_cat_var, keypoint_gt_cat_mask_var, locate_std_gt_cat_var)
+                else:
+                    loss += self.hparams["model"]["loss_factor"][i] * criterion_dis(pose_mgr.all_keypoints_var, keypoint_gt_cat_var, keypoint_gt_cat_mask_var, locate_std_gt_cat_var)
+                pose_mgr.all_keypoints_var = pose_mgr.all_keypoints_var.detach()
+                if detail["summary"]:
+                    move_vector_list.append(move_vector_var.data.cpu())
+                    keypoint_pred_list.append(pose_mgr.get_split_keypoints())
+                    embedding_list.append(embedding)
+                # TODO: IMPROVEMENT add noise perturb to keypoints to make model robust
 
             keypoint_pred = pose_mgr.get_split_keypoints()
 
-            precision, recall, _, _, indices_TP = PR_multi(keypoint_pred, keypoint_gt, num_parts=self.num_parts, threshold=float(INP_RES)/self.hparams["model"]["eval_threshold_factor"])
+            precision, recall, _, _, indices_TP = PR_multi(keypoint_pred, keypoint_gt, locate_std_gt, num_parts=self.num_parts, threshold=self.hparams["model"]["eval_threshold"])
 
             if detail["summary"]:
                 self.summary_image(img=img,
                                    pred=keypoint_pred_list,
                                    gt=keypoint_gt,
-                                   move_field=move_field_list,
+                                   move_field=None,
+                                   move_vector=move_vector_list,
+                                   embedding=embedding_list,
                                    indices_TP=indices_TP,
                                    mask=mask,
                                    title="stretch/" + ("train" if train else "val"),

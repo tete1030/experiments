@@ -231,17 +231,15 @@ def PR_locate(pred, gt, match_pred, match_gt, threshold):
     recall = float(counter_TP) / float(counter_GT) if counter_GT > 0 else None
     return precision, recall, indices_TP
 
-def PR_multi(pred, gt, num_parts, threshold):
+def PR_multi(pred, gt, person_norm, num_parts, threshold):
     """Calculate accuracy of multi-person predictions
 
     Arguments:
         pred {list of Tensors} -- #batch x [#batch_i_person x #part x 3]
         gt {list of Tensors} -- #batch x [#batch_i_person x #part x 3]
-        norm {int} -- normalize distance to 1
+        person_norm {list of Tensors} -- #batch x [#batch_i_person]
         num_parts {int} -- number of parts
-
-    Keyword Arguments:
-        threshold {float} -- threshold for distance (default: {0.5})
+        threshold {float} -- threshold for distance
     """
 
     counter_GT = torch.zeros(num_parts).float()
@@ -258,7 +256,7 @@ def PR_multi(pred, gt, num_parts, threshold):
             mask_P = (pred_i[:, :, 2] > 0)
             pred_i = pred_i[:, :, :2].float()
             gt_i = gt_i[:, :, :2].float()
-            mask_thres = ((((pred_i - gt_i) ** 2).sum(dim=-1)) <= float(threshold) ** 2)
+            mask_thres = ((((pred_i - gt_i) ** 2).sum(dim=-1)).sqrt_() / (person_norm[ib].view(-1, 1).expand(-1, num_parts) if person_norm is not None else 1.) <= float(threshold))
             mask_TP = mask_GT & mask_P & mask_thres
             index_TP = mask_TP.nonzero()
             if len(index_TP) > 0:

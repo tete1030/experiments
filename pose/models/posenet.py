@@ -1,15 +1,17 @@
 import numpy as np
 import torch
+import math
 from torch import nn
 from torch import autograd
 from .simphg import Conv, Pool, SimpHourglass
+import torchvision.models as tvmodels
 
 try:
     profile
 except NameError:
     profile = lambda func: func
 
-__all__ = ["PoseManager", "PoseMapParser", "PoseNet", "PoseMapLoss", "PoseDisLoss"]
+__all__ = ["PoseManager", "PoseMapParser", "PoseNet", "PoseMapLoss", "PoseDisLoss", "MergeResNet"]
 
 class Merge(nn.Module):
     def __init__(self, x_dim, y_dim):
@@ -21,7 +23,7 @@ class Merge(nn.Module):
 
 class PoseManager(object):
     def __init__(self, batch_size, num_parts, out_size, max_num_people, cuda=True, sigma=1, filter_inside=True, gen_embedding=True):
-        """Generate Pose Map and Embedding Map
+        """Generate Pose Map and s Map
 
         Arguments:
             batch_size {int} -- Batch size
@@ -240,29 +242,13 @@ class PoseManager(object):
             self.draw_insider = torch.ByteTensor(0).cuda(async=True)
 
     @profile
-    def move_keypoints(self, move_field, factor=1):
-        """Move keypoints along vectors in move_field
-
-        Arguments:
-            move_field {Tensor} -- #batch x #parts x h x w
-            factor {int} -- ratio of keypoints to move_field
+    def move_keypoints(self, movement_x, movement_y):
+        """Move keypoints
         """
         if len(self.batch_ids) == 0:
             return
 
-        batch_ids = self.batch_ids
-        part_ids = self.part_ids
-        rows = self.draw_rows_map[self.temp_middle].long() / int(factor)
-        cols = self.draw_cols_map[self.temp_middle].long() / int(factor)
-
-        movement_x = move_field[batch_ids,
-                                part_ids,
-                                rows,
-                                cols]
-        movement_y = move_field[batch_ids,
-                                part_ids + self.num_parts,
-                                rows,
-                                cols]
+        assert isinstance(movement_x, autograd.Variable) and isinstance(movement_y, autograd.Variable)
 
         self.draw_rows_map += movement_y.data
         self.draw_cols_map += movement_x.data
@@ -281,8 +267,47 @@ class PoseManager(object):
         if self.filter_inside:
             self.filter_valid_point()
 
+    def extract_movement(self, move_field=None, factor=None, move_vector=None, embedding=None):
+        assert bool(move_field is not None) != bool(move_vector is not None)
+        assert bool(move_field is not None) == bool(factor is not None)
+        assert bool(move_vector is not None) == bool(embedding is not None)
+
+        if move_field is not None:
+            rows = self.draw_rows_map[self.temp_middle].long() / int(factor)
+            cols = self.draw_cols_map[self.temp_middle].long() / int(factor)
+
+            movement_x = move_field[self.batch_ids,
+                                    self.part_ids,
+                                    rows,
+                                    cols]
+            movement_y = move_field[self.batch_ids,
+                                    self.part_ids + self.num_parts,
+                                    rows,
+                                    cols]
+        else:
+            vec_ids = (embedding[self.person_ids, self.batch_ids].long() - 1) * self.num_parts + self.part_ids
+
+            movement_x = move_vector[self.batch_ids, vec_ids]
+            movement_y = move_vector[self.batch_ids, vec_ids + self.max_num_people * self.num_parts]
+
+        return movement_x, movement_y
+
+    def generate_embedding(self):
+        # embedding: #batch x max_num_people
+        embedding = []
+        for i in range(self.cur_batch_size):
+            emb = np.arange(1, self.max_num_people+1)
+            np.random.shuffle(emb)
+            embedding.append(emb)
+        # embedding: max_num_people x #batch
+        embedding = torch.from_numpy(np.array(embedding, dtype=np.float32).T).contiguous()
+        if self.cuda:
+            embedding = embedding.cuda(async=True)
+
+        return embedding
+
     @profile
-    def generate(self):
+    def generate(self, embedding):
         self.map.zero_()
 
         if self.cur_batch_size == 0:
@@ -301,7 +326,7 @@ class PoseManager(object):
         temp_rows = self.draw_rows_temp
         insider = self.draw_insider
 
-        # select points inside
+        # select pixels inside
         batch_ids = batch_ids[insider]
         part_ids = part_ids[insider]
         map_rows = map_rows[insider].long()
@@ -309,18 +334,6 @@ class PoseManager(object):
         temp_rows = temp_rows[insider]
         temp_cols = temp_cols[insider]
         person_mask = [mask_pi[insider] for mask_pi in person_mask]
-
-        if self.gen_embedding:
-            # embeddings: #batch x max_num_people
-            embeddings = []
-            for i in range(self.cur_batch_size):
-                emb = np.arange(1, self.max_num_people+1)
-                np.random.shuffle(emb)
-                embeddings.append(emb)
-            # embeddings: max_num_people x #batch
-            embeddings = torch.from_numpy(np.array(embeddings, dtype=np.float32).T).contiguous()
-            if self.cuda:
-                embeddings = embeddings.cuda(async=True)
 
         for i, mask_pi in enumerate(person_mask):
             # mask_pi: #all_parts x temp_size
@@ -346,7 +359,7 @@ class PoseManager(object):
 
                 if self.gen_embedding:
                     self.map[batch_ids_masked, part_ids_masked+self.num_parts, map_rows_masked, map_cols_masked] = \
-                        self.embedding_temp[temp_rows_masked, temp_cols_masked] * embeddings[i][batch_ids_masked]
+                        self.embedding_temp[temp_rows_masked, temp_cols_masked] * embedding[i][batch_ids_masked]
 
         return self.map[:self.cur_batch_size].clone()
 
@@ -355,10 +368,10 @@ class PoseManager(object):
         keypoint_cat = self.all_keypoints_var.data.cpu()
         keypoint_cat_info = self.all_keypoints_info.cpu()
         keypoint = [torch.cat((keypoint_cat[start:end],
-                                    keypoint_cat_info[start:end]
-                                    .contiguous().float().view(end-start, self.num_parts, 1)),
-                                    dim=2) if end > start else torch.FloatTensor(0)
-                            for start, end in zip([0] + split[:-1], split)]
+                               keypoint_cat_info[start:end]
+                               .contiguous().float().view(end-start, self.num_parts, 1)),
+                              dim=2) if end > start else torch.FloatTensor(0)
+                        for start, end in zip([0] + split[:-1], split)]
         return keypoint
 
 class PoseHGModule(nn.Module):
@@ -442,16 +455,18 @@ class PoseDisLoss(nn.Module):
     def __init__(self):
         super(PoseDisLoss, self).__init__()
 
-    def forward(self, kp_pred, kp_gt, masks):
+    def forward(self, kp_pred, kp_gt, masks, locate_std_gt):
         """Calculate move field loss
 
         Arguments:
             kp_pred {Tensor} -- #all_person x #part x 2
             kp_gt {Tensor} -- #all_person x #part x 2
+            masks {Tensor} -- #all_person x #part
+            locate_std_gt -- #all_person
         """
         assert kp_pred.dim() == 3
         assert kp_pred.size() == kp_gt.size()
-        loss = ((kp_pred.float() - kp_gt.float()) ** 2).sum(dim=-1) * masks.float()
+        loss = (((kp_pred.float() - kp_gt.float()) ** 2).sum(dim=-1) * masks.float()).sum(dim=-1) / locate_std_gt
         loss = (loss.sum() / masks.float().sum()).sqrt()
 
         return loss
@@ -495,6 +510,54 @@ class PoseNet(nn.Module):
                 ret = self.hgmod(self.pre(inp) + self.merge_data)
             else:
                 ret = self.hgmod(self.pre(inp))
+        else:
+            ret = None
+
+        if free_merge:
+            self.merge_data = None
+
+        return ret
+
+class MergeResNet(nn.Module):
+    def __init__(self, inp_size, num_classes):
+        super(MergeResNet, self).__init__()
+        inp_resnet = tvmodels.resnet50(num_classes=num_classes)
+        merge_resnet = tvmodels.resnet50(num_classes=num_classes)
+        inp_resnet_conv1 = nn.Conv2d(inp_size, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        inp_resnet_conv1_para_n = inp_resnet_conv1.kernel_size[0] * inp_resnet_conv1.kernel_size[1] * inp_resnet_conv1.out_channels
+        inp_resnet_conv1.weight.data.normal_(0, math.sqrt(2. / inp_resnet_conv1_para_n))
+
+        self.inp_pre = nn.Sequential(inp_resnet_conv1, inp_resnet.bn1, inp_resnet.relu, inp_resnet.maxpool)
+        self.merge_pre = nn.Sequential(merge_resnet.conv1, merge_resnet.bn1, merge_resnet.relu, merge_resnet.maxpool)
+        self.layers = nn.Sequential(inp_resnet.layer1, inp_resnet.layer2, inp_resnet.layer3, inp_resnet.layer4)
+        self.avgpool = inp_resnet.avgpool
+        # self.fc = inp_resnet.fc
+        self.fc = nn.Linear(8192, num_classes)
+        self.merge_data = None
+    
+    def res_forward(self, x):
+        x = self.layers(x)
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+
+        return x
+
+    def forward(self, inp=None, merge_inp=None, merge=False, free_merge=False):
+        assert inp is not None or merge_inp is not None or free_merge
+        assert not (inp is None and merge)
+        # Indicating data not properly freed
+        assert not (merge_inp is not None and self.merge_data is not None)
+
+        if merge_inp is not None:
+            self.merge_data = self.merge_pre(merge_inp)
+
+        if inp is not None:
+            if merge:
+                assert self.merge_data is not None
+                ret = self.res_forward(self.inp_pre(inp) + self.merge_data)
+            else:
+                ret = self.res_forward(self.inp_pre(inp))
         else:
             ret = None
 

@@ -268,7 +268,7 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
         acc = result["acc"]
         prec = result["prec"]
 
-        if "step_process" in exp.__dict__ and exp.step_process is not True:
+        if not ("step_process" in exp.__dict__ and exp.step_process is True):
             exp.optimizer.zero_grad()
             loss.backward()
             exp.optimizer.step()
