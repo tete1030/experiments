@@ -8,6 +8,7 @@ data/mscoco/images
 runs
 .vscode
 sftp-config.json
+pose/models/ae_loss/lib
 
 __pycache__/
 *.py[cod]
