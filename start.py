@@ -143,16 +143,16 @@ def main(args):
     # Data loading code
     train_loader = torch.utils.data.DataLoader(
         exp.train_dataset,
-        collate_fn=exp.train_collate_fn if 'train_collate_fn' in exp.__dict__ else default_collate,
+        collate_fn=exp.train_collate_fn if hasattr(exp, "train_collate_fn") else default_collate,
         batch_size=exp.hparams['train_batch'],
         num_workers=config.workers,
         shuffle=True,
         pin_memory=True,
-        drop_last=exp.train_drop_last if 'train_drop_last' in exp.__dict__ else False)
+        drop_last=exp.train_drop_last if hasattr(exp, "train_drop_last") else False)
 
     val_loader = torch.utils.data.DataLoader(
         exp.val_dataset,
-        collate_fn=exp.test_collate_fn if 'test_collate_fn' in exp.__dict__ else default_collate,
+        collate_fn=exp.test_collate_fn if hasattr(exp, "test_collate_fn") else default_collate,
         batch_size=exp.hparams['test_batch'],
         num_workers=config.workers,
         shuffle=False,
@@ -160,7 +160,7 @@ def main(args):
 
     if config.evaluate:
         print('\nEvaluation-only mode')
-        loss, acc, prec, predictions = validate(val_loader, exp, 0)
+        loss, acc, prec, predictions = validate(val_loader, exp, 0, 0)
         save_pred(predictions, checkpoint=config.checkpoint)
         return
 
@@ -268,12 +268,12 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
         acc = result["acc"]
         prec = result["prec"]
 
-        if not ("step_process" in exp.__dict__ and exp.step_process is True):
+        if not (hasattr(exp, "step_process") and exp.step_process is True):
             exp.optimizer.zero_grad()
             loss.backward()
             exp.optimizer.step()
 
-        batch_size = batch["img"].size(0)
+        batch_size = len(batch["index"])
         loss = loss.data[0] if loss is not None else None
         # measure accuracy and record loss
         if loss is not None:
@@ -339,6 +339,8 @@ def validate(val_loader, exp, epoch, cur_step, store_pred=True):
     preces = AverageMeter()
 
     predictions = None
+    image_ids = []
+    annotates = []
 
     # switch to evaluate mode
     exp.model.eval()
@@ -351,7 +353,7 @@ def validate(val_loader, exp, epoch, cur_step, store_pred=True):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        batch_size = batch["img"].size(0)
+        batch_size = len(batch["index"])
 
         detail = {
             "epoch": epoch,
@@ -364,6 +366,10 @@ def validate(val_loader, exp, epoch, cur_step, store_pred=True):
             detail["summary"] = store_pred
 
         result = exp.process(batch, False, detail=detail)
+        if "img_index" in result:
+            image_ids += result["img_index"]
+        if "annotate" in result:
+            annotates += result["annotate"]
         loss = result["loss"]
         loss = loss.data[0] if loss is not None else None
         acc = result["acc"]
@@ -427,6 +433,9 @@ def validate(val_loader, exp, epoch, cur_step, store_pred=True):
         if config.fast_pass > 0 and (i+1) >= config.fast_pass:
             print("Fast Pass!")
             break
+
+    if hasattr(exp, "evaluate"):
+        exp.evaluate(image_ids, annotates)
 
     return losses.avg, acces.avg, preces.avg, predictions
 

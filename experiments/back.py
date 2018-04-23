@@ -37,11 +37,11 @@ class Experiment(object):
         self.num_parts = datasets.mscoco.NUM_PARTS
 
         self.model = torch.nn.DataParallel(
-            models.PoseNet(inp_dim=1, merge_inp_dim=3, out_dim=self.num_parts,
+            models.MergeHGNet(inp_dim=1, merge_inp_dim=3, out_dim=self.num_parts,
                             hg_dim=self.hparams["model"]["hg_dim"],
                             bn=self.hparams["model"]["bn"]).cuda())
 
-        self.criterion = models.PoseMapLoss().cuda()
+        self.criterion = models.HeatmapLoss().cuda()
 
         self.optimizer = torch.optim.Adam(list(self.model.parameters()),
                                           lr=self.hparams["learning_rate"],
@@ -65,7 +65,7 @@ class Experiment(object):
                                                locate_res=INP_RES,
                                                kpmap_sigma=2,
                                                locmap_min_sigma=1,
-                                               random_selection=True)
+                                               person_random_selection=True)
 
         self.val_dataset = datasets.COCOPose("data/mscoco/images",
                                              self.coco,
@@ -82,7 +82,7 @@ class Experiment(object):
                                              locate_res=INP_RES,
                                              kpmap_sigma=2,
                                              locmap_min_sigma=1,
-                                             random_selection=True)
+                                             person_random_selection=True)
 
         self.train_collate_fn = datasets.COCOPose.collate_function
         self.test_collate_fn = datasets.COCOPose.collate_function

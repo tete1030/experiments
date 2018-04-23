@@ -78,3 +78,23 @@ back:
         hg_dim: 256
         bn: false
         parse_threshold: 0.1
+
+ae:
+    <<: *DEFAULT
+    id: 0
+    name: ae
+    learning_rate: 2.e-4
+    lr_gamma: 0.5
+    epochs: 200
+    schedule: [100]
+    train_batch: 2
+    test_batch: 8
+    model:
+        nstack: 4
+        hg_dim: 256
+        increase: 128
+        bn: false
+        max_num_people: 30
+        loss_det_cof: 1
+        loss_push_cof: 1.e-3
+        loss_pull_cof: 1.e-3

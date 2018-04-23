@@ -90,7 +90,7 @@ class Experiment(object):
 
     def summary_histogram(self, n_iter):
         for name, param in self.model.named_parameters():
-            config.tb_writer.add_histogram("locate." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
+            config.tb_writer.add_histogram("hg." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
 
     def process(self, batch, train, detail=None):
         img, target, extra = batch

@@ -64,11 +64,11 @@ class Experiment(object):
         self.num_parts = datasets.mscoco.NUM_PARTS
 
         self.model = torch.nn.DataParallel(
-            models.PoseNet(inp_dim=3, out_dim=1,
+            models.MergeHGNet(inp_dim=3, out_dim=1,
                            hg_dim=self.hparams["model"]["hg_dim"],
                            bn=self.hparams["model"]["bn"]).cuda())
 
-        self.criterion = models.PoseMapLoss().cuda()
+        self.criterion = models.HeatmapLoss().cuda()
 
         self.optimizer = torch.optim.Adam(list(self.model.parameters()),
                                           lr=self.hparams["learning_rate"],

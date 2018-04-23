@@ -11,7 +11,7 @@ try:
 except NameError:
     profile = lambda func: func
 
-__all__ = ["PoseManager", "PoseMapParser", "PoseNet", "PoseMapLoss", "PoseDisLoss", "MergeResNet"]
+__all__ = ["PoseManager", "PoseMapParser", "MergeHGNet", "HeatmapLoss", "PoseDisLoss", "MergeResNet", "PoseHGNet"]
 
 class Merge(nn.Module):
     def __init__(self, x_dim, y_dim):
@@ -23,7 +23,7 @@ class Merge(nn.Module):
 
 class PoseManager(object):
     def __init__(self, batch_size, num_parts, out_size, max_num_people, cuda=True, sigma=1, filter_inside=True, gen_embedding=True):
-        """Generate Pose Map and s Map
+        """Generate Pose Map and Embedding Map
 
         Arguments:
             batch_size {int} -- Batch size
@@ -374,9 +374,9 @@ class PoseManager(object):
                         for start, end in zip([0] + split[:-1], split)]
         return keypoint
 
-class PoseHGModule(nn.Module):
+class HGModule(nn.Module):
     def __init__(self, inp_dim, out_dim, merge, bn=False, increase=128):
-        super(PoseHGModule, self).__init__()
+        super(HGModule, self).__init__()
         self.features = nn.Sequential(
             SimpHourglass(inp_dim, n=4, bn=bn, increase=increase),
             Conv(inp_dim, inp_dim, 3, bn=False),
@@ -386,6 +386,9 @@ class PoseHGModule(nn.Module):
         if merge:
             self.merge_features = Merge(inp_dim, inp_dim)
             self.merge_preds = Merge(out_dim, inp_dim)
+        else:
+            self.merge_features = None
+            self.merge_preds = None
 
     def forward(self, x):
         feature = self.features(x)
@@ -441,9 +444,9 @@ class PoseMapParser():
             return [(det_pid[dbid[:, 0]], det_pos[dbid[:, 0]]) if len(dbid) > 0 else torch.LongTensor(0)
                     for dbid in det_bid]
 
-class PoseMapLoss(nn.Module):
+class HeatmapLoss(nn.Module):
     def __init__(self):
-        super(PoseMapLoss, self).__init__()
+        super(HeatmapLoss, self).__init__()
 
     def forward(self, pred, gt, mask):
         assert pred.size() == gt.size()
@@ -486,14 +489,14 @@ class PosePre(nn.Module):
         x = self.pre(imgs)
         return x
 
-class PoseNet(nn.Module):
+class MergeHGNet(nn.Module):
     def __init__(self, inp_dim, out_dim, hg_dim=256, merge_inp_dim=0, bn=False):
-        super(PoseNet, self).__init__()
+        super(MergeHGNet, self).__init__()
         self.pre = PosePre(img_dim=inp_dim, hg_dim=hg_dim, bn=bn)
         if merge_inp_dim > 0:
             self.merge_pre = PosePre(img_dim=merge_inp_dim, hg_dim=hg_dim, bn=bn)
             self.merge_data = None
-        self.hgmod = PoseHGModule(inp_dim=hg_dim, out_dim=out_dim, merge=True, bn=bn)
+        self.hgmod = HGModule(inp_dim=hg_dim, out_dim=out_dim, merge=True, bn=bn)
 
     def forward(self, inp=None, merge_inp=None, merge=False, free_merge=False):
         assert inp is not None or merge_inp is not None or free_merge
@@ -565,3 +568,21 @@ class MergeResNet(nn.Module):
             self.merge_data = None
 
         return ret
+
+class PoseHGNet(nn.Module):
+    def __init__(self, inp_dim, out_dim, nstack, hg_dim, increase, bn):
+        super(PoseHGNet, self).__init__()
+        self.pre = PosePre(img_dim=inp_dim, hg_dim=hg_dim, bn=bn)
+        hgmod = list()
+        for i in range(nstack):
+            hgmod.append(HGModule(inp_dim=hg_dim, out_dim=out_dim, merge=(i < nstack-1), increase=increase, bn=bn))
+        self.hgmod = nn.ModuleList(hgmod)
+
+    def forward(self, inp):
+        out_list = []
+        x = self.pre(inp)
+        for hm in self.hgmod:
+            out, x = hm(x)
+            out_list.append(out)
+
+        return out_list

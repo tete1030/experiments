@@ -27,15 +27,17 @@ NUM_PARTS = 17
 class COCOPose(data.Dataset):
     def __init__(self, img_folder, anno, split_file, meanstd_file,
                  train, single_person,
-                 img_res=256, kpmap_res=64, locmap_res=0, mask_res=0,
+                 img_res=[256], return_img_transform=False,
+                 kpmap_res=64, locmap_res=0, mask_res=0,
                  kpmap_select=None, kpmap_sigma=1, locmap_min_sigma=0.5,
                  keypoint_res=0, locate_res=0,
-                 scale_factor=0.25, rot_factor=30, random_selection=False):
+                 scale_factor=0.25, rot_factor=30, person_random_selection=False):
         assert not single_person
         self.img_folder = img_folder    # root image folders
         self.is_train = train           # training set or test set
         self.single_person = single_person
         self.img_res = img_res
+        self.return_img_transform = return_img_transform
         self.kpmap_res = kpmap_res
         self.locmap_res = locmap_res
         self.mask_res = mask_res
@@ -46,8 +48,8 @@ class COCOPose(data.Dataset):
         self.locate_res = locate_res
         self.scale_factor = scale_factor
         self.rot_factor = rot_factor
-        self.random_selection = random_selection
-        if self.random_selection:
+        self.person_random_selection = person_random_selection
+        if self.person_random_selection:
             assert not self.single_person
 
         self.heatmap_gen = HeatmapGenerator(self.kpmap_res, self.kpmap_sigma)
@@ -174,7 +176,7 @@ class COCOPose(data.Dataset):
         center = img_size / 2
         scale = float(img_size.max()) / 200
         rotate = 0
-        flip = False
+        flip_status = False
 
         # Image augmentation
         if self.is_train:
@@ -184,26 +186,29 @@ class COCOPose(data.Dataset):
 
             center += np.random.randint(-40 * scale, 40 * scale, size=2)
 
+            # Color distort
+            img_bgr = (img_bgr.astype(np.float32) * (np.random.rand(3) * 0.4 + 0.8)).round().clip(0, 255).astype(np.uint8)
+
             # Flip
             if np.random.rand() <= 0.5:
-                flip = True
+                flip_status = True
                 img_bgr = cv2.flip(img_bgr, 1)
                 center[0] = img_size[0] - center[0]
 
         # Prepare image and groundtruth map
-        img_transform_mat = get_transform(center, scale, [self.img_res, self.img_res], rot=rotate)
-        img_bgr = cv2.warpAffine(img_bgr, img_transform_mat[:2], dsize=(self.img_res, self.img_res), flags=cv2.INTER_LINEAR)
-
-        img = img_bgr[..., ::-1].astype(np.float32) / 255
-
-        if self.is_train:
-            # Color distort
-            img = (img * (np.random.rand(3) * 0.4 + 0.8)).clip(0, 1).astype(np.float32) 
-
-        # Color normalize
-        img -= self.mean
-
-        img = img.transpose(2, 0, 1)
+        img_list = list()
+        if self.return_img_transform:
+            img_transform_list = list()
+        for cur_res in (self.img_res if isinstance(self.img_res, list) else [self.img_res]):
+            img_transform_mat = get_transform(center, scale, [cur_res, cur_res], rot=rotate)
+            if self.return_img_transform:
+                img_transform_list.append(img_transform_mat)
+            img_bgr_warp = cv2.warpAffine(img_bgr, img_transform_mat[:2], dsize=(cur_res, cur_res), flags=cv2.INTER_LINEAR)
+            img = img_bgr_warp[..., ::-1].astype(np.float32) / 255
+            # Color normalize
+            img -= self.mean
+            img = img.transpose(2, 0, 1)
+            img_list.append(img)
 
         # =====
         # Keypoint Map
@@ -216,12 +221,12 @@ class COCOPose(data.Dataset):
                               if ann["num_keypoints"] > 0], dtype=np.float32) \
                 .reshape((-1, NUM_PARTS, 3))
 
-        if self.random_selection:
+        if self.person_random_selection:
             person_indices = np.arange(keypoints.shape[0])
             np.random.shuffle(person_indices)
             keypoints = keypoints[person_indices[:np.random.randint(low=1, high=person_indices.shape[0]+1)]]
 
-        if flip:
+        if flip_status:
             keypoints = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
 
         # keypoints: #person * #joints * 3
@@ -278,7 +283,7 @@ class COCOPose(data.Dataset):
 
             mask_crowd = (mask_crowd > 0.5).astype(np.float32)
 
-            if flip:
+            if flip_status:
                 mask_crowd = fliplr_chwimg(mask_crowd)
 
             mask_transform_mat = get_transform(center, scale, [self.mask_res, self.mask_res], rot=rotate)
@@ -289,12 +294,17 @@ class COCOPose(data.Dataset):
 
         result = {
             "index": index,
-            "img": torch.from_numpy(img),
+            "img_index": img_index,
+            "img": [torch.from_numpy(img) for img in img_list] if isinstance(self.img_res, list) else torch.from_numpy(img_list[0]),
             "center": torch.from_numpy(center),
             "scale": scale,
             "keypoint_ori": torch.from_numpy(keypoints) if keypoints.shape[0] > 0 else None,
             "keypoint": torch.from_numpy(keypoints_tf_ret) if keypoints.shape[0] > 0 else None,
         }
+
+        if self.return_img_transform:
+            result["img_transform"] = [torch.from_numpy(mat) for mat in img_transform_list] if isinstance(self.img_res, list) else torch.from_numpy(img_transform_list[0])
+            result["img_flipped"] = flip_status
 
         if mask_noncrowd is not None:
             result["mask"] = torch.from_numpy(mask_noncrowd)
@@ -314,7 +324,7 @@ class COCOPose(data.Dataset):
 
     @classmethod
     def collate_function(cls, batch):
-        NON_COLLATE_KEYS = ["keypoint_ori", "keypoint", "locate", "locate_std", "locate_in_kp"]
+        NON_COLLATE_KEYS = ["keypoint_ori", "keypoint", "locate", "locate_std", "locate_in_kp", "img_transform", "img_flipped"]
         collate_fn = data.dataloader.default_collate
         all_keys = batch[0].keys()
         result = dict()
