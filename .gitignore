@@ -5,6 +5,7 @@ dev
 data/mpii/images
 *.idea/*
 data/mscoco/images
+data/mscoco/person_keypoints_*.json
 runs
 .vscode
 sftp-config.json
