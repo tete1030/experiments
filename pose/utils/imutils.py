@@ -55,7 +55,7 @@ def gaussian(shape=(7,7),sigma=1):
 
 # Generate heatmap quickly
 # derived from https://github.com/umich-vl/pose-ae-train
-class HeatmapGenerator():
+class HeatmapGenerator(object):
     def __init__(self, output_res, sigma):
         self.output_res = output_res
         if sigma is not None:

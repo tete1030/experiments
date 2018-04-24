@@ -187,3 +187,38 @@ class HeatmapParser():
         if adjust:
             ans = self.adjust(ans, det)
         return ans
+
+class DirectionHeatmapParser(object):
+    def __init__(self, detection_thres=0.1, max_num_people=30):
+        self.detection_thres = detection_thres
+        self.max_num_people = max_num_people
+        self.pool = nn.MaxPool2d(3, 1, 1)
+
+    def nms(self, det):
+        # suppose det is a tensor
+        maxm = self.pool(det)
+        maxm = torch.eq(maxm, det).float()
+        det = det * maxm
+        return det
+
+    def parse(self, deg, field, gt):
+        det = torch.autograd.Variable(torch.Tensor(det), volatile=True)
+        field = torch.autograd.Variable(torch.Tensor(field), volatile=True)
+        width = det.size(-1)
+        height = det.size(-2)
+        det = self.nms(det)
+        topkval, topkind = det.view(det.size()[:2] + (-1,)).topk(self.max_num_people, dim=-1)
+        
+        topkloc = torch.stack(((topkind[:, 2] // width), (topkind[:, -1] % width)), stack=-1)
+        
+        # TODO: not finished
+        # for isample, samplept in enumerate(gt):
+        #     for ijoint in range(14):
+        #         isj = torch.nonzero((topkind[:, 0] == isample) & (topkind[:, 1] == ijoint))[0]
+        #         pred_loc = topkloc[isj]
+        #         pred_val = topkval[isj]
+        #         for iperson, personpt in enumerate(samplept):
+        #             gt_loc = personpt[ijoint]
+        #             (pred_loc - gt_loc[:2])
+
+

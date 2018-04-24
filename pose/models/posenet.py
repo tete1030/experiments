@@ -11,7 +11,7 @@ try:
 except NameError:
     profile = lambda func: func
 
-__all__ = ["PoseManager", "PoseMapParser", "MergeHGNet", "HeatmapLoss", "PoseDisLoss", "MergeResNet", "PoseHGNet"]
+__all__ = ["PoseManager", "PoseMapParser", "MergeHGNet", "HeatmapLoss", "FieldmapLoss", "PoseDisLoss", "MergeResNet", "PoseHGNet"]
 
 class Merge(nn.Module):
     def __init__(self, x_dim, y_dim):
@@ -453,6 +453,57 @@ class HeatmapLoss(nn.Module):
         l = ((pred - gt)**2) * mask[:, None, :, :].expand_as(pred).float()
         l = l.mean()
         return l
+
+class FieldmapLoss(nn.Module):
+    def __init__(self, radius, pair, pair_indexof):
+        super(FieldmapLoss, self).__init__()
+        self.radius = radius
+        self.pair = pair
+        self.pair_indexof = pair_indexof
+        X, Y = np.meshgrid(np.arange(radius*2+1), np.arange(radius*2+1))
+        X -= radius
+        Y -= radius
+        self.select = torch.autograd.Variable(torch.from_numpy((np.sqrt(X**2 + Y**2) <= radius).astype(np.uint8)).byte().cuda(), requires_grad=False)
+
+    def forward(self, field, gt, mask):
+        loss = []
+        point_count = 0
+        width = field.size(-1)
+        height = field.size(-2)
+        for isample, samplept in enumerate(gt):
+            for iperson, personpt in enumerate(samplept):
+                for ijoint, joint in enumerate(personpt):
+                    x = int(joint[0])
+                    y = int(joint[1])
+                    if joint[2] <= 0 or x < 0 or y < 0 or x >= width or y >= height:
+                        continue
+                    if mask[isample, y, x] != 1:
+                        continue
+                    ul = int(x - self.radius), int(y - self.radius)
+                    br = int(x + self.radius + 1), int(y + self.radius + 1)
+
+                    c,d = max(0, -ul[0]), min(br[0], width) - ul[0]
+                    a,b = max(0, -ul[1]), min(br[1], height) - ul[1]
+                    cc,dd = max(0, ul[0]), min(br[0], width)
+                    aa,bb = max(0, ul[1]), min(br[1], height)
+                    select = self.select[a:b, c:d]
+                    select_count = int(torch.sum(select))
+                    assert select_count > 0
+                    
+                    for ipair, forward in self.pair_indexof[ijoint]:
+                        secondijoint = self.pair[ipair][forward]
+                        secondjoint = personpt[secondijoint]
+                        if secondjoint[2] > 0:
+                            force = (secondjoint[:2] - joint[:2])
+                            force /= torch.norm(force)
+                            fieldchannel = ipair*4+(1-forward)*2
+                            fieldmap_x = field[isample, fieldchannel]
+                            fieldmap_y = field[isample, fieldchannel+1]
+                            loss.append(((fieldmap_x[aa:bb, cc:dd][select] - force[0]) ** 2 + (fieldmap_y[aa:bb, cc:dd][select] - force[1]) ** 2).clamp(max=1).sum())
+                            point_count += select_count
+
+        loss = sum(loss) / point_count
+        return loss
 
 class PoseDisLoss(nn.Module):
     def __init__(self):
