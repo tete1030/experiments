@@ -188,37 +188,183 @@ class HeatmapParser():
             ans = self.adjust(ans, det)
         return ans
 
-class DirectionHeatmapParser(object):
-    def __init__(self, detection_thres=0.1, max_num_people=30):
+class FieldmapParser(object):
+    def __init__(self, pair, pair_indexof, detection_thres=0.1, group_thres=0.86, max_num_people=30):
+        self.pair = pair
+        self.pair_indexof = pair_indexof
         self.detection_thres = detection_thres
+        self.group_thres = group_thres
         self.max_num_people = max_num_people
-        self.pool = nn.MaxPool2d(3, 1, 1)
+        self.pool = torch.nn.MaxPool2d(3, 1, 1)
 
     def nms(self, det):
         # suppose det is a tensor
+        det = torch.autograd.Variable(det, volatile=True)
         maxm = self.pool(det)
         maxm = torch.eq(maxm, det).float()
         det = det * maxm
-        return det
+        return det.data
 
-    def parse(self, deg, field, gt):
-        det = torch.autograd.Variable(torch.Tensor(det), volatile=True)
-        field = torch.autograd.Variable(torch.Tensor(field), volatile=True)
-        width = det.size(-1)
-        height = det.size(-2)
+    def parse(self, det, field):
+        def move_joint(ijoint_idet_2_iperson, iperson_ijoint_2_idet, iperson_A, iperson_B, mask_joint_B):
+            ijoint_B_sel = torch.nonzero(mask_joint_B)[:, 0]
+            idet_B_sel_ori = iperson_ijoint_2_idet[iperson_B, ijoint_B_sel]
+            for ijoint_B_iter, idet_B_iter in zip(ijoint_B_sel, idet_B_sel_ori):
+                ijoint_idet_2_iperson[ijoint_B_iter][idet_B_iter] = iperson_A
+            iperson_ijoint_2_idet[iperson_A, ijoint_B_sel] = idet_B_sel_ori
+            iperson_ijoint_2_idet[iperson_B, ijoint_B_sel] = -1
+
+        assert isinstance(det, torch.FloatTensor) and isinstance(field, torch.FloatTensor)
+        num_batch = det.size(0)
+        num_joint = det.size(1)
+        height = det.size(2)
+        width = det.size(3)
+        num_field = field.size(1)
         det = self.nms(det)
         topkval, topkind = det.view(det.size()[:2] + (-1,)).topk(self.max_num_people, dim=-1)
-        
-        topkloc = torch.stack(((topkind[:, 2] // width), (topkind[:, -1] % width)), stack=-1)
-        
-        # TODO: not finished
-        # for isample, samplept in enumerate(gt):
-        #     for ijoint in range(14):
-        #         isj = torch.nonzero((topkind[:, 0] == isample) & (topkind[:, 1] == ijoint))[0]
-        #         pred_loc = topkloc[isj]
-        #         pred_val = topkval[isj]
-        #         for iperson, personpt in enumerate(samplept):
-        #             gt_loc = personpt[ijoint]
-        #             (pred_loc - gt_loc[:2])
+        topkloc = torch.stack(((topkind % width), (topkind // width)), stack=-1)
 
+        for isample in range(num_batch):
+            val_samp = []
+            loc_samp = []
+            force_samp = []
+            idetcat_2_ijoint = []
+            idetcat_2_idet = []
+            ijoint_idet_2_iperson = []
+            max_num_person_samp = 0
+            for ijoint in range(num_joint):
+                topkval_joint = topkval[isample, ijoint]
+                topkloc_joint = topkloc[isample, ijoint]
+                select_joint = (topkval_joint > self.detection_thres).nonzero()
 
+                max_num_person_samp = max_num_person_samp if max_num_person_samp > len(select_joint) else len(select_joint)
+                if len(select_joint) > 0:
+                    val_joint = topkval_joint[select_joint[:, 0]]
+                    loc_joint = topkloc_joint[select_joint[:, 0]]
+                    force_joint = torch.FloatTensor(select_joint.size(0), num_field, 2)
+                    for ipair, forward in self.pair_indexof[ijoint]:
+                        ichannel = ipair * 4 + (1 - forward) * 2
+                        # TODO: use average instead of single point
+                        force_joint_x = field[isample, ichannel][topkloc_joint[:, 1], topkloc_joint[:, 0]]
+                        force_joint_y = field[isample, ichannel+1][topkloc_joint[:, 1], topkloc_joint[:, 0]]
+                        force_joint[:, ichannel] = torch.stack([force_joint_x, force_joint_y], dim=-1)
+                else:
+                    val_joint = torch.FloatTensor(0)
+                    loc_joint = torch.LongTensor(0)
+                    force_joint = torch.FloatTensor(0)
+
+                val_samp.append(val_joint)
+                loc_samp.append(loc_joint)
+                force_samp.append(force_joint)
+                if len(joint_select) > 0:
+                    ijoint_idet_2_iperson.append(torch.LongTensor(loc_joint.size()[:-1] + (1,)).fill_(-1))
+                else:
+                    ijoint_idet_2_iperson.append(torch.LongTensor(0))
+                idetcat_2_ijoint.append(torch.LongTensor(len(val_joint)).fill_(ijoint))
+                idetcat_2_idet.append(torch.arange(end=len(val_joint)).long())
+
+            idetcat_2_ijoint = torch.cat(idetcat_2_ijoint, dim=0)
+            idetcat_2_idet = torch.cat(idetcat_2_idet, dim=0)
+            # val_samp = torch.cat(val_samp, dim=0)
+            # loc_samp = torch.cat(loc_samp, dim=0)
+            # loc_samp = torch.cat([loc_samp, torch.LongTensor(len(loc_samp)).fill_(-1)], dim=-1)
+            # ijoint_idet_2_iperson = torch.cat(ijoint_idet_2_iperson, dim=0)
+            force_samp = torch.cat(force_samp, dim=0).view(-1, 2)
+            force_samp_norm = force_samp.norm(dim=-1)
+            force_samp_norm_sorted, force_samp_norm_sorted_ind = force_samp_norm.sort(dim=0, descending=True)
+
+            # TODO: sorting consider detection score
+
+            iperson_ijoint_2_idet = torch.LongTensor(force_samp.size(0), num_joint).fill_(-1)
+            counter_person = 0
+            for iforce in force_samp_norm_sorted_ind:
+                idetcat = iforce // num_field
+                ijoint = idetcat_2_ijoint[idetcat]
+                idet = idetcat_2_idet[idetcat]
+                ichannel = iforce % num_field
+                force_field = force_samp[iforce]
+                force_field_norm = force_samp_norm[iforce]
+                ipair = ichannel // 4
+                iforward = 1 - (ichannel - ipair * 4) // 2
+                iperson = ijoint_idet_2_iperson[ijoint][idet]
+    
+                ijoint_sec = self.pair[ipair][iforward]
+                force_det = (loc_samp[ijoint_sec] - loc_samp[ijoint][idet]).float()
+                similarity = (force_det[:, 0] * force_field[0] + force_det[:, 1] * force_field[1]) / (force_det.norm(dim=1) * force_field_norm)
+                sim_sorted, sim_sorted_ind = similarity.sort(descending=True)
+                
+                # TODO: consider the distance between top cos similarities
+                # TODO: consider the detection score of B detection
+                # TODO: consider current person limb length: mean,variance
+                
+                if iperson != -1 and iperson_ijoint_2_idet[iperson, ijoint_sec] == -1:
+                    for sim, idet_sec in zip(sim_sorted, sim_sorted_ind):
+                        if sim < self.group_thres:
+                            break
+                        if ijoint_idet_2_iperson[ijoint_sec][idet_sec] != -1:
+                            # TODO: consider OKS of intersection; record for combination
+                            # guard: this detection should not share same iperson with A (because current person's corresponding detetion == -1)
+                            iperson_sec = ijoint_idet_2_iperson[ijoint_sec][idet_sec]
+                            assert iperson_sec != iperson
+                            mask_joint_sec = (iperson_ijoint_2_idet[iperson_sec] > -1)
+                            # if no intersection, happens when connecting part
+                            if not ((iperson_ijoint_2_idet[iperson] > -1) & mask_joint_sec).any():
+                                move_joint(ijoint_idet_2_iperson, iperson_ijoint_2_idet, iperson, iperson_sec, mask_joint_sec)
+                                break
+                            else:
+                                continue
+                        # A->B
+                        ijoint_idet_2_iperson[ijoint_sec][idet_sec] = iperson
+                        iperson_ijoint_2_idet[iperson, ijoint_sec] = idet_sec
+                        break
+                    # TODO: remainder process
+
+                elif iperson == -1:
+                    for sim, idet_sec in zip(sim_sorted, sim_sorted_ind):
+                        if sim < self.group_thres:
+                            break
+                        if ijoint_idet_2_iperson[ijoint_sec][idet_sec] != -1:
+                            # B->A
+                            iperson_sec = ijoint_idet_2_iperson[ijoint_sec][idet_sec]
+                            # if the B's correspoinding ijoint is already taken
+                            if iperson_ijoint_2_idet[iperson_sec, ijoint] != -1:
+                                # TODO: consider if the existed point is closer enough, and intersection between two person, and OKS of intersection; record for combination
+                                # guard
+                                assert iperson_ijoint_2_idet[iperson_sec, ijoint] != idet
+                                continue
+
+                            iperson = ijoint_idet_2_iperson[ijoint_sec][idet_sec]
+                        else:
+                            # create new person
+                            iperson = counter_person
+                            counter_person += 1
+                            ijoint_idet_2_iperson[ijoint_sec][idet_sec] = iperson
+                            # guard
+                            assert iperson_ijoint_2_idet[iperson, ijoint_sec] == -1
+                            iperson_ijoint_2_idet[iperson, ijoint_sec] = idet_sec
+
+                        ijoint_idet_2_iperson[ijoint][idet] = iperson
+                        # guard
+                        assert iperson_ijoint_2_idet[iperson, ijoint] == -1
+                        iperson_ijoint_2_idet[iperson, ijoint] = idet
+                        break
+                    # TODO: remainder process
+                else:
+                    # guard for cycle
+                    assert iperson == ijoint_idet_2_iperson[ijoint_sec][iperson_ijoint_2_idet[iperson, ijoint_sec]]
+            
+                if iperson == -1:
+                    iperson = counter_person
+                    counter_person += 1
+                    ijoint_idet_2_iperson[ijoint][idet] = iperson
+                    iperson_ijoint_2_idet[iperson, ijoint] = idet
+
+            iperson_sel_nonempty = ((iperson_ijoint_2_idet > -1).int().sum(dim=1) > 0).nonzero()[:, 0]
+            pred = iperson_ijoint_2_idet[iperson_sel_nonempty]
+
+            assert iperson_sel_nonempty.size(0) <= max_num_person_samp
+
+            # TODO: Combine complementary areas (1. consider distance; 2. score by directions)
+            # TODO: Combine not assigned point
+
+            return pred

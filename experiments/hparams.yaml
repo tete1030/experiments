@@ -117,3 +117,6 @@ chain:
         max_num_people: 30
         loss_det_cof: 1
         loss_field_cof: 0.0001
+    eval:
+        detection_thres: 0.1
+        group_thres: 0.86

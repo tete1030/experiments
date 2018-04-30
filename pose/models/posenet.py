@@ -495,13 +495,17 @@ class FieldmapLoss(nn.Module):
                         secondjoint = personpt[secondijoint]
                         if secondjoint[2] > 0:
                             force = (secondjoint[:2] - joint[:2])
-                            force /= torch.norm(force)
+                            force_norm = torch.norm(force)
+                            if force_norm < 0.1:
+                                continue
+                            force /= force_norm
                             fieldchannel = ipair*4+(1-forward)*2
                             fieldmap_x = field[isample, fieldchannel]
                             fieldmap_y = field[isample, fieldchannel+1]
                             loss.append(((fieldmap_x[aa:bb, cc:dd][select] - force[0]) ** 2 + (fieldmap_y[aa:bb, cc:dd][select] - force[1]) ** 2).clamp(max=1).sum())
                             point_count += select_count
 
+        assert point_count > 0
         loss = sum(loss) / point_count
         return loss
 

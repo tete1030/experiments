@@ -7,7 +7,7 @@ import pose.utils.config as config
 from pose.utils.misc import adjust_learning_rate
 from pose.utils.transforms import fliplr_chwimg, fliplr_map
 from pose.models import HeatmapLoss, FieldmapLoss
-from pose.utils.group import HeatmapParser
+from pose.utils.group import FieldmapParser
 
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
@@ -91,7 +91,7 @@ class Experiment(object):
                                              kpmap_select="all",
                                              keypoint_res=OUT_RES)
 
-        # self.parser = HeatmapParser(detection_val=0.1, max_num_people=self.hparams["model"]["max_num_people"])
+        self.parser = FieldmapParser(PAIR, PAIR_INDEXOF, detection_thres=self.hparams["eval"]["detection_thres"], group_thres=self.hparams["eval"]["group_thres"], max_num_people=self.hparams["model"]["max_num_people"])
 
         self.train_collate_fn = datasets.COCOPose.collate_function
         self.test_collate_fn = datasets.COCOPose.collate_function
@@ -143,9 +143,9 @@ class Experiment(object):
 
     def process(self, batch, train, detail=None):
         def extract_map(output_var):
-            assert output_var[-1].size(1) == self.num_parts + len(PAIRS)*4
-            det_map = output_var[-1].data[:, :self.num_parts].cpu().numpy().astype(np.float32)
-            field_map = output_var[-1].data[:, self.num_parts:].cpu().numpy().astype(np.float32)
+            assert output_var[-1].size(1) == self.num_parts + len(PAIR)*4
+            det_map = output_var[-1].data[:, :self.num_parts].cpu()
+            field_map = output_var[-1].data[:, self.num_parts:].cpu()
             return det_map, field_map
 
         mse_criterion = self.criterion[0]
@@ -183,9 +183,11 @@ class Experiment(object):
         if (loss.data != loss.data).any():
             raise RuntimeError("loss is nan")
 
+        # pred = self.parser.parse(*extract_map(output_var))
+
         phase_str = "train" if train else "valid"
-        config.tb_writer.add_scalars(config.exp_name + "/loss_det", {phase_str: loss_dets}, detail["step"])
-        config.tb_writer.add_scalars(config.exp_name + "/loss_field", {phase_str: loss_fields}, detail["step"])
+        config.tb_writer.add_scalars(config.exp_name + "/loss_det", {phase_str: loss_dets.data.cpu()[0]}, detail["step"])
+        config.tb_writer.add_scalars(config.exp_name + "/loss_field", {phase_str: loss_fields.data.cpu()[0]}, detail["step"])
 
         result = {
             "loss": loss,
