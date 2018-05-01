@@ -1,5 +1,6 @@
 from __future__ import print_function, absolute_import
 import torch
+from torch.autograd import Variable
 import pose.models as models
 import pose.datasets as datasets
 from pose.utils.evaluation import PR_multi
@@ -14,6 +15,11 @@ from pycocotools.cocoeval import COCOeval
 import cv2
 import numpy as np
 import torchvision.utils as vutils
+
+try:
+    profile
+except NameError:
+    profile = lambda func: func
 
 INP_RES = 512
 FACTOR = 4
@@ -141,6 +147,7 @@ class Experiment(object):
     #     else:
     #         print("No points")
 
+    @profile
     def process(self, batch, train, detail=None):
         def extract_map(output_var):
             assert output_var[-1].size(1) == self.num_parts + len(PAIR)*4
@@ -158,15 +165,15 @@ class Experiment(object):
         transform_mats = batch["img_transform"]
         img_flipped = batch["img_flipped"]
         volatile = not train
-        img_vars = [torch.autograd.Variable(img.cuda(async=True), volatile=volatile) for img in imgs]
-        kpmap_var = torch.autograd.Variable(kpmap.cuda(async=True), volatile=volatile)
-        mask_var = torch.autograd.Variable(mask.cuda(async=True), volatile=volatile)
+        # img_vars = [Variable(img.cuda(async=True), volatile=volatile) for img in imgs]
+        kpmap_var = Variable(kpmap.cuda(async=True), volatile=volatile)
+        mask_var = Variable(mask.cuda(async=True), volatile=volatile)
 
         for isample in range(len(keypoint_gt)):
             if keypoint_gt[isample] is None:
                 keypoint_gt[isample] = torch.FloatTensor(0)
 
-        output_var = self.model(img_vars[0])
+        output_var = self.model(Variable(imgs[0], volatile=volatile))
 
         loss_dets = []
         loss_fields = []

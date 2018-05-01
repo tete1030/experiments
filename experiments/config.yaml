@@ -41,6 +41,7 @@ resume: &RESUME
     resume: 'checkpoint/{exp}/{id}'
 
 fasteval:
+    <<: *DEFAULT
     fast_pass: 3
     resume: 'checkpoint/{exp}/{id}'
     evaluate: true

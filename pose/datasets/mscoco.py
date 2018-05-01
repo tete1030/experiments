@@ -27,7 +27,7 @@ NUM_PARTS = 17
 class COCOPose(data.Dataset):
     def __init__(self, img_folder, anno, split_file, meanstd_file,
                  train, single_person,
-                 img_res=[256], return_img_transform=False,
+                 img_res=[256], minus_mean=True, return_img_transform=False,
                  kpmap_res=64, locmap_res=0, mask_res=0,
                  kpmap_select=None, kpmap_sigma=1, locmap_min_sigma=0.5,
                  keypoint_res=0, locate_res=0,
@@ -37,6 +37,7 @@ class COCOPose(data.Dataset):
         self.is_train = train           # training set or test set
         self.single_person = single_person
         self.img_res = img_res
+        self.minus_mean = minus_mean
         self.return_img_transform = return_img_transform
         self.kpmap_res = kpmap_res
         self.locmap_res = locmap_res
@@ -61,7 +62,10 @@ class COCOPose(data.Dataset):
             self.coco = COCO(anno)
 
         self.train, self.valid = self._split(split_file)
-        self.mean, self.std = self._compute_mean(meanstd_file)
+        if self.minus_mean:
+            self.mean, self.std = self._compute_mean(meanstd_file)
+        else:
+            self.mean, self.std = None, None
 
     def _split(self, split_file):
         if split_file is not None and os.path.isfile(split_file):
@@ -206,7 +210,8 @@ class COCOPose(data.Dataset):
             img_bgr_warp = cv2.warpAffine(img_bgr, img_transform_mat[:2], dsize=(cur_res, cur_res), flags=cv2.INTER_LINEAR)
             img = img_bgr_warp[..., ::-1].astype(np.float32) / 255
             # Color normalize
-            img -= self.mean
+            if self.minus_mean:
+                img -= self.mean
             img = img.transpose(2, 0, 1)
             img_list.append(img)
 

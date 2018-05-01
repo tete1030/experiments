@@ -94,7 +94,6 @@ class PoseManager(object):
     def init_with_keypoints(self, keypoints):
         self.init(keypoints, False)
 
-    @profile
     def init(self, keypoints, is_locate):
         """Init flat keypoints
 
@@ -200,7 +199,6 @@ class PoseManager(object):
         if self.filter_inside:
             self.filter_valid_point()
 
-    @profile
     def filter_valid_point(self):
         insider = self.draw_insider[self.temp_middle]
         outsider = ~insider
@@ -241,7 +239,6 @@ class PoseManager(object):
             self.draw_cols_temp = torch.LongTensor(0).cuda(async=True)
             self.draw_insider = torch.ByteTensor(0).cuda(async=True)
 
-    @profile
     def move_keypoints(self, movement_x, movement_y):
         """Move keypoints
         """
@@ -306,7 +303,6 @@ class PoseManager(object):
 
         return embedding
 
-    @profile
     def generate(self, embedding):
         self.map.zero_()
 
@@ -465,6 +461,7 @@ class FieldmapLoss(nn.Module):
         Y -= radius
         self.select = torch.autograd.Variable(torch.from_numpy((np.sqrt(X**2 + Y**2) <= radius).astype(np.uint8)).byte().cuda(), requires_grad=False)
 
+    @profile
     def forward(self, field, gt, mask):
         loss = []
         point_count = 0

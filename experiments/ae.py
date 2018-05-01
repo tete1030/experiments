@@ -1,5 +1,6 @@
 from __future__ import print_function, absolute_import
 import torch
+from torch.autograd import Variable
 import pose.models as models
 import pose.datasets as datasets
 from pose.utils.evaluation import PR_multi
@@ -20,15 +21,6 @@ FACTOR = 4
 OUT_RES = INP_RES // FACTOR
 INP_EXTRA_RES = [INP_RES//2, INP_RES*2]
 INP_EVAL_RES = [INP_RES] + INP_EXTRA_RES
-
-"""
-TODO:
-
-DEBUG:
-
-1. evaluation
-"""
-
 
 class Experiment(object):
     def __init__(self, hparams):
@@ -60,6 +52,7 @@ class Experiment(object):
                                                train=True,
                                                single_person=False,
                                                img_res=[INP_RES],
+                                               minus_mean=False,
                                                return_img_transform=True,
                                                mask_res=OUT_RES,
                                                kpmap_res=OUT_RES,
@@ -73,6 +66,7 @@ class Experiment(object):
                                              train=False,
                                              single_person=False,
                                              img_res=INP_EVAL_RES,
+                                             minus_mean=False,
                                              return_img_transform=True,
                                              mask_res=OUT_RES,
                                              kpmap_res=OUT_RES,
@@ -145,9 +139,8 @@ class Experiment(object):
         transform_mats = batch["img_transform"]
         img_flipped = batch["img_flipped"]
         volatile = not train
-        img_vars = [torch.autograd.Variable(img.cuda(async=True), volatile=volatile) for img in imgs]
-        kpmap_var = torch.autograd.Variable(kpmap.cuda(async=True), volatile=volatile)
-        mask_var = torch.autograd.Variable(mask.cuda(async=True), volatile=volatile)
+        kpmap_var = Variable(kpmap.cuda(async=True), volatile=volatile)
+        mask_var = Variable(mask.cuda(async=True), volatile=volatile)
         keypoint_gt_ae = torch.zeros(len(keypoint_gt), self.hparams["model"]["max_num_people"], self.num_parts, 2).long()
 
         for bi, keypoint_gt_i in enumerate(keypoint_gt):
@@ -164,9 +157,9 @@ class Experiment(object):
                         keypoint_gt_ae[bi, person_counter, part_i, 1] = 1
             if avail_joint_counter > 0:
                 person_counter += 1
-        keypoint_gt_ae = torch.autograd.Variable(keypoint_gt_ae)
+        keypoint_gt_ae = Variable(keypoint_gt_ae)
 
-        output_var = self.model(img_vars[0])
+        output_var = self.model(Variable(imgs[0], volatile=volatile))
 
         loss_dets = []
         loss_tags = []
@@ -197,11 +190,11 @@ class Experiment(object):
             max_map_res = imgs[max_map_i].size()[-1] // FACTOR
             det_map_list = list()
             tag_map_list = list()
-            for scale_i in range(0, len(img_vars)):
+            for scale_i in range(0, len(imgs)):
                 if scale_i > 0:
-                    output_var = self.model(img_vars[scale_i])
+                    output_var = self.model(Variable(imgs[scale_i], volatile=True))
                 det_map, tag_map = extract_map(output_var)
-                output_var = self.model(torch.autograd.Variable(img_vars[scale_i].data[..., torch.arange(start=img_vars[scale_i].size(-1)-1, end=-1, step=-1).long().cuda()], volatile=True))
+                output_var = self.model(Variable(imgs[scale_i][..., torch.arange(start=imgs[scale_i].size(-1)-1, end=-1, step=-1).long()], volatile=True))
                 det_map_r, tag_map_r = extract_map(output_var)
                 det_map += det_map_r[..., ::-1][:, datasets.mscoco.FLIP_INDEX]
                 if det_map.max() <= 10:
