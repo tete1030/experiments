@@ -2,6 +2,7 @@ from __future__ import print_function, absolute_import
 import torch
 from torch.autograd import Variable
 import pose.models as models
+from pose.models.parallel import DataParallelModel, DataParallelCriterion
 import pose.datasets as datasets
 from pose.utils.evaluation import PR_multi
 import pose.utils.config as config
@@ -52,7 +53,7 @@ class Experiment(object):
     def __init__(self, hparams):
         self.num_parts = datasets.mscoco.NUM_PARTS
         self.hparams = hparams
-        self.model = torch.nn.DataParallel(
+        self.model = DataParallelModel(
             models.PoseHGNet(
                 inp_dim=3,
                 out_dim=self.num_parts + len(PAIR)*4,
@@ -61,9 +62,11 @@ class Experiment(object):
                 increase=hparams["model"]["increase"],
                 bn=hparams["model"]["bn"]).cuda())
 
-        self.criterion = torch.nn.ModuleList([
-            HeatmapLoss(),
-            FieldmapLoss(radius=2, pair=PAIR, pair_indexof=PAIR_INDEXOF)]).cuda()
+        self.criterion = DataParallelCriterion(
+            ChainLoss(self.num_parts,
+                      len(PAIR)).cuda(), comp_mean=True)
+
+        self.pfgen = PairwiseFieldGenerator(radius=self.hparams["dataset"]["label_field_radius"], pair=PAIR, pair_indexof=PAIR_INDEXOF, res=OUT_RES)
         
         self.optimizer = torch.optim.Adam(list(self.model.parameters()),
                                           lr=hparams['learning_rate'],
@@ -82,7 +85,8 @@ class Experiment(object):
                                                mask_res=OUT_RES,
                                                kpmap_res=OUT_RES,
                                                kpmap_select="all",
-                                               keypoint_res=OUT_RES)
+                                               keypoint_res=0,
+                                               custom_generator=self.pfgen)
 
         self.val_dataset = datasets.COCOPose("data/mscoco/images",
                                              self.coco,
@@ -95,7 +99,8 @@ class Experiment(object):
                                              mask_res=OUT_RES,
                                              kpmap_res=OUT_RES,
                                              kpmap_select="all",
-                                             keypoint_res=OUT_RES)
+                                             keypoint_res=0,
+                                             custom_generator=self.pfgen)
 
         self.parser = FieldmapParser(PAIR, PAIR_INDEXOF, detection_thres=self.hparams["eval"]["detection_thres"], group_thres=self.hparams["eval"]["group_thres"], max_num_people=self.hparams["model"]["max_num_people"])
 
@@ -155,46 +160,35 @@ class Experiment(object):
             field_map = output_var[-1].data[:, self.num_parts:].cpu()
             return det_map, field_map
 
-        mse_criterion = self.criterion[0]
-        field_criterion = self.criterion[1]
-
         imgs = batch["img"]
-        kpmap = batch["keypoint_map"]
-        keypoint_gt = batch["keypoint"]
-        mask = batch["mask"]
+        det_map = batch["keypoint_map"]
+        det_mask = batch["mask"]
         transform_mats = batch["img_transform"]
         img_flipped = batch["img_flipped"]
+        field_map = batch["custom"][0]
+        field_map_mask = batch["custom"][1]
         volatile = not train
-        # img_vars = [Variable(img.cuda(async=True), volatile=volatile) for img in imgs]
-        kpmap_var = Variable(kpmap.cuda(async=True), volatile=volatile)
-        mask_var = Variable(mask.cuda(async=True), volatile=volatile)
 
-        for isample in range(len(keypoint_gt)):
-            if keypoint_gt[isample] is None:
-                keypoint_gt[isample] = torch.FloatTensor(0)
+        det_map_var = Variable(det_map, volatile=volatile)
+        det_map_mask_var = Variable(det_mask, volatile=volatile)
+        field_map_var = Variable(field_map, volatile=volatile)
+        field_map_mask_var = Variable(field_map_mask, volatile=volatile)
+        num_field = field_map_mask_var.size(1)
 
         output_var = self.model(Variable(imgs[0], volatile=volatile))
 
-        loss_dets = []
-        loss_fields = []
-        for j in range(0, self.hparams["model"]["nstack"]):
-            output_j = output_var[j]
-            loss_dets.append(mse_criterion(output_j[:, :self.num_parts], kpmap_var, mask_var))
-            loss_fields.append(field_criterion(output_j[:, self.num_parts:], keypoint_gt, mask))
-
-        loss_dets = sum(loss_dets) / self.hparams["model"]["nstack"]
-        loss_fields = sum(loss_fields) / self.hparams["model"]["nstack"]
-
-        loss = loss_dets * self.hparams["model"]["loss_det_cof"] + loss_fields * self.hparams["model"]["loss_field_cof"]
+        det_loss, field_loss = self.criterion(output_var, det_map_var, det_map_mask_var, field_map_var, field_map_mask_var)
+        loss = det_loss * self.hparams["model"]["loss_det_cof"] + field_loss * self.hparams["model"]["loss_field_cof"]
 
         if (loss.data != loss.data).any():
-            raise RuntimeError("loss is nan")
+            import pdb; pdb.set_trace()
+            # raise RuntimeError("loss is nan")
 
         # pred = self.parser.parse(*extract_map(output_var))
 
         phase_str = "train" if train else "valid"
-        config.tb_writer.add_scalars(config.exp_name + "/loss_det", {phase_str: loss_dets.data.cpu()[0]}, detail["step"])
-        config.tb_writer.add_scalars(config.exp_name + "/loss_field", {phase_str: loss_fields.data.cpu()[0]}, detail["step"])
+        config.tb_writer.add_scalars(config.exp_name + "/loss_det", {phase_str: det_loss.data.cpu()[0]}, detail["step"])
+        config.tb_writer.add_scalars(config.exp_name + "/loss_field", {phase_str: field_loss.data.cpu()[0]}, detail["step"])
 
         result = {
             "loss": loss,
@@ -206,6 +200,93 @@ class Experiment(object):
         }
     
         return result
+
+class PairwiseFieldGenerator(object):
+    def __init__(self, radius, pair, pair_indexof, res):
+        self.radius = radius
+        self.pair = pair
+        self.pair_indexof = pair_indexof
+        self.res = res
+        X, Y = np.meshgrid(np.arange(radius*2+1), np.arange(radius*2+1))
+        X -= radius
+        Y -= radius
+        self.select_X = X.astype(np.int32)
+        self.select_Y = Y.astype(np.int32)
+        self.select = (np.sqrt(X**2 + Y**2) <= radius)
+
+    def __call__(self, *args, **kwargs):
+        return self.generate(*args, **kwargs)
+
+    def generate(self, img, keypoint, mask):
+        num_field = len(self.pair) * 2
+        res = self.res
+        width = res
+        height = res
+        radius = self.radius
+        out = np.zeros((num_field * 2, res, res), dtype=np.float32)
+        out_mask = np.zeros((num_field, res, res), dtype=np.bool)
+        dirty_mask = np.zeros((num_field, res, res), dtype=np.bool)
+        assert mask.shape[-1] == res
+
+        for iperson, personpt in enumerate(keypoint):
+            for ijoint, joint in enumerate(personpt):
+                x = int(joint[0])
+                y = int(joint[1])
+                if joint[2] <= 0 or x < 0 or y < 0 or x >= width or y >= height:
+                    continue
+                if mask[y, x] != 1:
+                    continue
+                ul = int(x - radius), int(y - radius)
+                br = int(x + radius + 1), int(y + radius + 1)
+
+                c,d = max(0, -ul[0]), min(br[0], width) - ul[0]
+                a,b = max(0, -ul[1]), min(br[1], height) - ul[1]
+                # cc,dd = max(0, ul[0]), min(br[0], width)
+                # aa,bb = max(0, ul[1]), min(br[1], height)
+
+                select_X = self.select_X[a:b, c:d][self.select[a:b, c:d]] + x
+                select_Y = self.select_Y[a:b, c:d][self.select[a:b, c:d]] + y
+
+                for ipair, idestend in self.pair_indexof[ijoint]:
+                    secondijoint = self.pair[ipair][idestend]
+                    secondjoint = personpt[secondijoint]
+                    if secondjoint[2] > 0:
+                        force = (secondjoint[:2] - joint[:2])
+                        force_norm = np.linalg.norm(force)
+                        if force_norm < 0.1:
+                            continue
+                        force /= force_norm
+                        ifield = ipair*2+(1-idestend)
+                        out[ifield, select_Y, select_X] = force[0]
+                        out[num_field+ifield, select_Y, select_X] = force[1]
+                        dirty_mask[ifield, select_Y, select_X] = np.logical_or(out_mask[ifield, select_Y, select_X], dirty_mask[ifield, select_Y, select_X])
+                        out_mask[ifield, select_Y, select_X] = True
+
+        out_mask = np.logical_and(out_mask, np.logical_not(dirty_mask))
+        out_mask = np.logical_and(out_mask, np.expand_dims(mask.astype(np.bool), axis=0))
+
+        return torch.from_numpy(out).float(), torch.from_numpy(out_mask.astype(np.float32)).float()
+
+class ChainLoss(torch.nn.Module):
+    def __init__(self, num_parts, num_pairs):
+        super(ChainLoss, self).__init__()
+        self.num_parts = num_parts
+        self.num_pairs = num_pairs
+        self.heapmaploss = HeatmapLoss()
+        self.fieldmaploss = FieldmapLoss()
+
+    def forward(self, pred, gt_detmap, mask_detmap, gt_fieldmap, mask_fieldmap):
+        if not isinstance(pred, list):
+            pred = [pred]
+        kplosses = []
+        fclosses = []
+        for pr in pred:
+            kplosses.append(self.heapmaploss(pr[:, :self.num_parts], gt_detmap, mask_detmap))
+            fclosses.append(self.fieldmaploss(pr[:, self.num_parts:], gt_fieldmap, mask_fieldmap))
+
+        kploss = sum(kplosses) / len(kplosses)
+        fcloss = sum(fclosses) / len(fclosses)
+        return kploss, fcloss
 
 # Input: 
 #   det: num_parts(17) x h x w

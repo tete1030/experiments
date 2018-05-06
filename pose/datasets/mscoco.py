@@ -31,7 +31,8 @@ class COCOPose(data.Dataset):
                  kpmap_res=64, locmap_res=0, mask_res=0,
                  kpmap_select=None, kpmap_sigma=1, locmap_min_sigma=0.5,
                  keypoint_res=0, locate_res=0,
-                 scale_factor=0.25, rot_factor=30, person_random_selection=False):
+                 scale_factor=0.25, rot_factor=30, person_random_selection=False,
+                 custom_generator=None):
         assert not single_person
         self.img_folder = img_folder    # root image folders
         self.is_train = train           # training set or test set
@@ -50,6 +51,7 @@ class COCOPose(data.Dataset):
         self.scale_factor = scale_factor
         self.rot_factor = rot_factor
         self.person_random_selection = person_random_selection
+        self.custom_generator = custom_generator
         if self.person_random_selection:
             assert not self.single_person
 
@@ -162,6 +164,11 @@ class COCOPose(data.Dataset):
         return locate_mean, locate_std, locate_in_kp
 
     def __getitem__(self, index):
+        if "OPENCV_CUDA_DEVICE" in os.environ:
+            CVD_ori = os.environ.get("CUDA_VISIBLE_DEVICES", None)
+            if CVD_ori:
+                os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["OPENCV_CUDA_DEVICE"]
+
         sf = float(self.scale_factor)
         rf = float(self.rot_factor)
 
@@ -297,6 +304,9 @@ class COCOPose(data.Dataset):
             mask_crowd = (mask_crowd > 0.5)
             mask_noncrowd = (~mask_crowd).astype(np.uint8)
 
+        if self.custom_generator:
+            custom = self.custom_generator(img, keypoints_tf_ret, mask_noncrowd)
+
         result = {
             "index": index,
             "img_index": img_index,
@@ -324,6 +334,13 @@ class COCOPose(data.Dataset):
             result["locate"] = torch.from_numpy(locate_mean_ret) if locate_mean_ret.shape[0] > 0 else None
             result["locate_std"] = locate_std_ret if len(locate_std_ret) > 0 else None
             result["locate_in_kp"] = torch.from_numpy(locate_in_kp).long() if locate_in_kp.shape[0] > 0 else None
+
+        if self.custom_generator:
+            result["custom"] = custom
+
+        if "OPENCV_CUDA_DEVICE" in os.environ:
+            if CVD_ori:
+                os.environ["CUDA_VISIBLE_DEVICES"] = CVD_ori
 
         return result
 

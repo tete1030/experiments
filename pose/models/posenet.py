@@ -11,7 +11,7 @@ try:
 except NameError:
     profile = lambda func: func
 
-__all__ = ["PoseManager", "PoseMapParser", "MergeHGNet", "HeatmapLoss", "FieldmapLoss", "PoseDisLoss", "MergeResNet", "PoseHGNet"]
+__all__ = ["PoseManager", "PoseMapParser", "MergeHGNet", "HeatmapLoss", "FieldmapLoss", "PairForceLoss", "PoseDisLoss", "MergeResNet", "PoseHGNet"]
 
 class Merge(nn.Module):
     def __init__(self, x_dim, y_dim):
@@ -451,8 +451,23 @@ class HeatmapLoss(nn.Module):
         return l
 
 class FieldmapLoss(nn.Module):
-    def __init__(self, radius, pair, pair_indexof):
+    def __init__(self):
         super(FieldmapLoss, self).__init__()
+    
+    def forward(self, pred, gt, mask):
+        assert pred.size() == gt.size()
+        count = mask.sum().data.cpu()[0]
+        if count == 0:
+            with torch.cuda.device(pred.get_device()):
+                return autograd.Variable(torch.cuda.FloatTensor([0]))
+        view_size = (pred.size(0), 2, pred.size(1) // 2, pred.size(2), pred.size(3))
+        l = ((pred - gt)**2).view(*view_size) * mask[:, None, :, :, :].expand(*view_size)
+        l = l.sum() / mask.sum() / 2
+        return l
+
+class PairForceLoss(nn.Module):
+    def __init__(self, radius, pair, pair_indexof):
+        super(PairForceLoss, self).__init__()
         self.radius = radius
         self.pair = pair
         self.pair_indexof = pair_indexof
@@ -467,6 +482,7 @@ class FieldmapLoss(nn.Module):
         point_count = 0
         width = field.size(-1)
         height = field.size(-2)
+        num_field = len(self.pair) * 2
         for isample, samplept in enumerate(gt):
             for iperson, personpt in enumerate(samplept):
                 for ijoint, joint in enumerate(personpt):
@@ -487,8 +503,8 @@ class FieldmapLoss(nn.Module):
                     select_count = int(torch.sum(select))
                     assert select_count > 0
                     
-                    for ipair, forward in self.pair_indexof[ijoint]:
-                        secondijoint = self.pair[ipair][forward]
+                    for ipair, idestend in self.pair_indexof[ijoint]:
+                        secondijoint = self.pair[ipair][idestend]
                         secondjoint = personpt[secondijoint]
                         if secondjoint[2] > 0:
                             force = (secondjoint[:2] - joint[:2])
@@ -496,9 +512,9 @@ class FieldmapLoss(nn.Module):
                             if force_norm < 0.1:
                                 continue
                             force /= force_norm
-                            fieldchannel = ipair*4+(1-forward)*2
-                            fieldmap_x = field[isample, fieldchannel]
-                            fieldmap_y = field[isample, fieldchannel+1]
+                            ifield = ipair*2+(1-idestend)
+                            fieldmap_x = field[isample, ifield]
+                            fieldmap_y = field[isample, num_field+ifield]
                             loss.append(((fieldmap_x[aa:bb, cc:dd][select] - force[0]) ** 2 + (fieldmap_y[aa:bb, cc:dd][select] - force[1]) ** 2).clamp(max=1).sum())
                             point_count += select_count
 

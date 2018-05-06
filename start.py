@@ -127,6 +127,7 @@ def main(args):
                   .format(checkpoint['epoch']))
             if os.path.isfile(log_file):
                 logger = Logger(log_file, title=title, resume=True)
+            del checkpoint
         else:
             print("=> no checkpoint found at '{}'".format(config.resume))
             sys.exit(1)

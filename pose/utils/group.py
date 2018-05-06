@@ -219,7 +219,7 @@ class FieldmapParser(object):
         num_joint = det.size(1)
         height = det.size(2)
         width = det.size(3)
-        num_field = field.size(1)
+        num_field = len(self.pair) * 2
         det = self.nms(det)
         topkval, topkind = det.view(det.size()[:2] + (-1,)).topk(self.max_num_people, dim=-1)
         topkloc = torch.stack(((topkind % width), (topkind // width)), stack=-1)
@@ -243,11 +243,11 @@ class FieldmapParser(object):
                     loc_joint = topkloc_joint[select_joint[:, 0]]
                     force_joint = torch.FloatTensor(select_joint.size(0), num_field, 2)
                     for ipair, forward in self.pair_indexof[ijoint]:
-                        ichannel = ipair * 4 + (1 - forward) * 2
+                        ifield = ipair * 2 + (1 - forward)
                         # TODO: use average instead of single point
-                        force_joint_x = field[isample, ichannel][topkloc_joint[:, 1], topkloc_joint[:, 0]]
-                        force_joint_y = field[isample, ichannel+1][topkloc_joint[:, 1], topkloc_joint[:, 0]]
-                        force_joint[:, ichannel] = torch.stack([force_joint_x, force_joint_y], dim=-1)
+                        force_joint_x = field[isample, ifield][topkloc_joint[:, 1], topkloc_joint[:, 0]]
+                        force_joint_y = field[isample, num_field+ifield][topkloc_joint[:, 1], topkloc_joint[:, 0]]
+                        force_joint[:, ifield] = torch.stack([force_joint_x, force_joint_y], dim=-1)
                 else:
                     val_joint = torch.FloatTensor(0)
                     loc_joint = torch.LongTensor(0)
@@ -281,14 +281,14 @@ class FieldmapParser(object):
                 idetcat = iforce // num_field
                 ijoint = idetcat_2_ijoint[idetcat]
                 idet = idetcat_2_idet[idetcat]
-                ichannel = iforce % num_field
+                ifield = iforce % num_field
                 force_field = force_samp[iforce]
                 force_field_norm = force_samp_norm[iforce]
-                ipair = ichannel // 4
-                iforward = 1 - (ichannel - ipair * 4) // 2
+                ipair = ifield // 2
+                idestend = 1 - (ifield - ipair * 2)
                 iperson = ijoint_idet_2_iperson[ijoint][idet]
     
-                ijoint_sec = self.pair[ipair][iforward]
+                ijoint_sec = self.pair[ipair][idestend]
                 force_det = (loc_samp[ijoint_sec] - loc_samp[ijoint][idet]).float()
                 similarity = (force_det[:, 0] * force_field[0] + force_det[:, 1] * force_field[1]) / (force_det.norm(dim=1) * force_field_norm)
                 sim_sorted, sim_sorted_ind = similarity.sort(descending=True)
