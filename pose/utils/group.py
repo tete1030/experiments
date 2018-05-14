@@ -208,11 +208,12 @@ class FieldmapParser(object):
     def parse(self, det, field):
         def move_joint(ijoint_idet_2_iperson, iperson_ijoint_2_idet, iperson_A, iperson_B, mask_joint_B):
             ijoint_B_sel = torch.nonzero(mask_joint_B)[:, 0]
-            idet_B_sel_ori = iperson_ijoint_2_idet[iperson_B, ijoint_B_sel]
+            idet_B_sel_ori = iperson_ijoint_2_idet[iperson_B][ijoint_B_sel]
             for ijoint_B_iter, idet_B_iter in zip(ijoint_B_sel, idet_B_sel_ori):
                 ijoint_idet_2_iperson[ijoint_B_iter][idet_B_iter] = iperson_A
-            iperson_ijoint_2_idet[iperson_A, ijoint_B_sel] = idet_B_sel_ori
-            iperson_ijoint_2_idet[iperson_B, ijoint_B_sel] = -1
+            
+            iperson_ijoint_2_idet[torch.LongTensor([iperson_A]).expand_as(ijoint_B_sel), ijoint_B_sel] = idet_B_sel_ori
+            iperson_ijoint_2_idet[torch.LongTensor([iperson_B]).expand_as(ijoint_B_sel), ijoint_B_sel] = -1
 
         assert isinstance(det, torch.FloatTensor) and isinstance(field, torch.FloatTensor)
         num_batch = det.size(0)
@@ -222,7 +223,8 @@ class FieldmapParser(object):
         num_field = len(self.pair) * 2
         det = self.nms(det)
         topkval, topkind = det.view(det.size()[:2] + (-1,)).topk(self.max_num_people, dim=-1)
-        topkloc = torch.stack(((topkind % width), (topkind // width)), stack=-1)
+        topkloc = torch.stack([(topkind % width), (topkind / width)], dim=-1)
+        preds = []
 
         for isample in range(num_batch):
             val_samp = []
@@ -241,27 +243,28 @@ class FieldmapParser(object):
                 if len(select_joint) > 0:
                     val_joint = topkval_joint[select_joint[:, 0]]
                     loc_joint = topkloc_joint[select_joint[:, 0]]
-                    force_joint = torch.FloatTensor(select_joint.size(0), num_field, 2)
+                    force_joint = torch.FloatTensor(select_joint.size(0), num_field, 3).fill_(0)
                     for ipair, forward in self.pair_indexof[ijoint]:
                         ifield = ipair * 2 + (1 - forward)
                         # TODO: use average instead of single point
-                        force_joint_x = field[isample, ifield][topkloc_joint[:, 1], topkloc_joint[:, 0]]
-                        force_joint_y = field[isample, num_field+ifield][topkloc_joint[:, 1], topkloc_joint[:, 0]]
-                        force_joint[:, ifield] = torch.stack([force_joint_x, force_joint_y], dim=-1)
+                        force_joint_x = field[isample, ifield][loc_joint[:, 1], loc_joint[:, 0]]
+                        force_joint_y = field[isample, num_field+ifield][loc_joint[:, 1], loc_joint[:, 0]]
+                        force_joint[:, ifield, :2] = torch.stack([force_joint_x, force_joint_y], dim=-1)
+                        force_joint[:, ifield, 2] = 1
+                    ijoint_idet_2_iperson.append(torch.LongTensor(loc_joint.size()[:-1]).fill_(-1))
+                    idetcat_2_ijoint.append(torch.LongTensor(len(val_joint)).fill_(ijoint))
+                    idetcat_2_idet.append(torch.arange(end=len(val_joint)).long())
                 else:
                     val_joint = torch.FloatTensor(0)
                     loc_joint = torch.LongTensor(0)
                     force_joint = torch.FloatTensor(0)
+                    ijoint_idet_2_iperson.append(torch.LongTensor(0))
+                    idetcat_2_ijoint.append(torch.LongTensor(0))
+                    idetcat_2_idet.append(torch.LongTensor(0))
 
                 val_samp.append(val_joint)
                 loc_samp.append(loc_joint)
                 force_samp.append(force_joint)
-                if len(joint_select) > 0:
-                    ijoint_idet_2_iperson.append(torch.LongTensor(loc_joint.size()[:-1] + (1,)).fill_(-1))
-                else:
-                    ijoint_idet_2_iperson.append(torch.LongTensor(0))
-                idetcat_2_ijoint.append(torch.LongTensor(len(val_joint)).fill_(ijoint))
-                idetcat_2_idet.append(torch.arange(end=len(val_joint)).long())
 
             idetcat_2_ijoint = torch.cat(idetcat_2_ijoint, dim=0)
             idetcat_2_idet = torch.cat(idetcat_2_idet, dim=0)
@@ -269,28 +272,33 @@ class FieldmapParser(object):
             # loc_samp = torch.cat(loc_samp, dim=0)
             # loc_samp = torch.cat([loc_samp, torch.LongTensor(len(loc_samp)).fill_(-1)], dim=-1)
             # ijoint_idet_2_iperson = torch.cat(ijoint_idet_2_iperson, dim=0)
-            force_samp = torch.cat(force_samp, dim=0).view(-1, 2)
-            force_samp_norm = force_samp.norm(dim=-1)
-            force_samp_norm_sorted, force_samp_norm_sorted_ind = force_samp_norm.sort(dim=0, descending=True)
+            force_samp = torch.cat(force_samp, dim=0).view(-1, 3)
+            force_samp_sel = torch.nonzero(force_samp[:, 2] > 0)[:, 0]
+            force_samp_clean_norm = force_samp[force_samp_sel][:, :2].norm(p=2, dim=-1)
+            force_samp_clean_norm_sorted, force_samp_clean_norm_sorted_ind = force_samp_clean_norm.sort(dim=0, descending=True)
+            force_samp_clean_norm_sorted_oriind = force_samp_sel[force_samp_clean_norm_sorted_ind]
 
             # TODO: sorting consider detection score
 
             iperson_ijoint_2_idet = torch.LongTensor(force_samp.size(0), num_joint).fill_(-1)
             counter_person = 0
-            for iforce in force_samp_norm_sorted_ind:
+            for iforce, force_field_norm in zip(force_samp_clean_norm_sorted_oriind, force_samp_clean_norm_sorted):
                 idetcat = iforce // num_field
                 ijoint = idetcat_2_ijoint[idetcat]
                 idet = idetcat_2_idet[idetcat]
                 ifield = iforce % num_field
-                force_field = force_samp[iforce]
-                force_field_norm = force_samp_norm[iforce]
+                force_field = force_samp[iforce, :2]
                 ipair = ifield // 2
-                idestend = 1 - (ifield - ipair * 2)
+                idestend = 1 - (ifield % 2)
                 iperson = ijoint_idet_2_iperson[ijoint][idet]
     
                 ijoint_sec = self.pair[ipair][idestend]
-                force_det = (loc_samp[ijoint_sec] - loc_samp[ijoint][idet]).float()
-                similarity = (force_det[:, 0] * force_field[0] + force_det[:, 1] * force_field[1]) / (force_det.norm(dim=1) * force_field_norm)
+                assert ijoint != ijoint_sec
+                loc_joint_sec = loc_samp[ijoint_sec]
+                if len(loc_joint_sec) == 0:
+                    continue
+                force_det = (loc_joint_sec - loc_samp[ijoint][idet]).float()
+                similarity = (force_det[:, 0] * force_field[0] + force_det[:, 1] * force_field[1]) / (force_det.norm(p=2, dim=1) * force_field_norm)
                 sim_sorted, sim_sorted_ind = similarity.sort(descending=True)
                 
                 # TODO: consider the distance between top cos similarities
@@ -359,12 +367,30 @@ class FieldmapParser(object):
                     ijoint_idet_2_iperson[ijoint][idet] = iperson
                     iperson_ijoint_2_idet[iperson, ijoint] = idet
 
-            iperson_sel_nonempty = ((iperson_ijoint_2_idet > -1).int().sum(dim=1) > 0).nonzero()[:, 0]
-            pred = iperson_ijoint_2_idet[iperson_sel_nonempty]
+            iperson_sel_nonempty = ((iperson_ijoint_2_idet > -1).int().sum(dim=1) > 0).nonzero()
+            if len(iperson_sel_nonempty) == 0:
+                preds.append(torch.FloatTensor(0))
+                continue
+            iperson_sel_nonempty = iperson_sel_nonempty[:, 0]
+            iperson_ijoint_2_idet = iperson_ijoint_2_idet[iperson_sel_nonempty]
+            pred = torch.FloatTensor(iperson_ijoint_2_idet.size() + (3,)).fill_(0)
+            pred[..., 2] = (iperson_ijoint_2_idet >= 0).float()
+            for ijoint in range(num_joint):
+                sel_valid_idet = (iperson_ijoint_2_idet[:, ijoint] >= 0).nonzero()
+                if len(sel_valid_idet) == 0:
+                    continue
+                sel_valid_idet = sel_valid_idet[:, 0]
+                idet_valid = iperson_ijoint_2_idet[sel_valid_idet][:, ijoint]
+                assert idet_valid.size(0) == len(idet_valid.tolist())
+                for sel_iter in sel_valid_idet:
+                    pred[sel_iter, ijoint, :2] = loc_samp[ijoint][iperson_ijoint_2_idet[sel_iter, ijoint]]
 
-            assert iperson_sel_nonempty.size(0) <= max_num_person_samp
+            if iperson_sel_nonempty.size(0) != max_num_person_samp:
+                print("Warning: extracted %d != max_det %d" % (iperson_sel_nonempty.size(0), max_num_person_samp))
 
             # TODO: Combine complementary areas (1. consider distance; 2. score by directions)
             # TODO: Combine not assigned point
 
-            return pred
+            preds.append(pred)
+
+        return preds

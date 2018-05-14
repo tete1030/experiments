@@ -2,7 +2,7 @@ from __future__ import print_function, absolute_import
 import torch
 from torch.autograd import Variable
 import pose.models as models
-from pose.models.parallel import DataParallelModel, DataParallelCriterion
+from pose.models.parallel import DataParallelModel, DataParallelCriterion, gather
 import pose.datasets as datasets
 from pose.utils.evaluation import PR_multi
 import pose.utils.config as config
@@ -11,11 +11,15 @@ from pose.utils.transforms import fliplr_chwimg, fliplr_map
 from pose.models import HeatmapLoss, FieldmapLoss
 from pose.utils.group import FieldmapParser
 
+import sys
+
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 import cv2
 import numpy as np
 import torchvision.utils as vutils
+
+import unittest
 
 try:
     profile
@@ -40,14 +44,6 @@ def generate_pair_index():
     return pair_indexof
 
 PAIR_INDEXOF = generate_pair_index()
-
-"""
-TODO:
-
-DEBUG:
-
-1. evaluation
-"""
 
 class Experiment(object):
     def __init__(self, hparams):
@@ -85,7 +81,7 @@ class Experiment(object):
                                                mask_res=OUT_RES,
                                                kpmap_res=OUT_RES,
                                                kpmap_select="all",
-                                               keypoint_res=0,
+                                               keypoint_res=OUT_RES,
                                                custom_generator=self.pfgen)
 
         self.val_dataset = datasets.COCOPose("data/mscoco/images",
@@ -99,7 +95,7 @@ class Experiment(object):
                                              mask_res=OUT_RES,
                                              kpmap_res=OUT_RES,
                                              kpmap_select="all",
-                                             keypoint_res=0,
+                                             keypoint_res=OUT_RES,
                                              custom_generator=self.pfgen)
 
         self.parser = FieldmapParser(PAIR, PAIR_INDEXOF, detection_thres=self.hparams["eval"]["detection_thres"], group_thres=self.hparams["eval"]["group_thres"], max_num_people=self.hparams["model"]["max_num_people"])
@@ -140,17 +136,17 @@ class Experiment(object):
         for name, param in self.model.named_parameters():
             config.tb_writer.add_histogram(config.exp_name + "." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
 
-    # def evaluate(self, image_ids, ans):
-    #     if len(ans) > 0:
-    #         coco_dets = self.coco.loadRes(ans)
-    #         coco_eval = COCOeval(self.coco, coco_dets, "keypoints")
-    #         coco_eval.params.imgIds = list(image_ids)
-    #         coco_eval.params.catIds = [1]
-    #         coco_eval.evaluate()
-    #         coco_eval.accumulate()
-    #         coco_eval.summarize()
-    #     else:
-    #         print("No points")
+    def evaluate(self, image_ids, ans):
+        if len(ans) > 0:
+            coco_dets = self.coco.loadRes(ans)
+            coco_eval = COCOeval(self.coco, coco_dets, "keypoints")
+            coco_eval.params.imgIds = list(image_ids)
+            coco_eval.params.catIds = [1]
+            coco_eval.evaluate()
+            coco_eval.accumulate()
+            coco_eval.summarize()
+        else:
+            print("No points")
 
     @profile
     def process(self, batch, train, detail=None):
@@ -183,6 +179,49 @@ class Experiment(object):
         if (loss.data != loss.data).any():
             import pdb; pdb.set_trace()
             # raise RuntimeError("loss is nan")
+
+        if not train:
+            max_map_i = np.argmax([img.size()[-1] for img in imgs])
+            max_map_res = imgs[max_map_i].size()[-1] // FACTOR
+            det_map_list = list()
+            field_map = None
+            for scale_i in range(0, len(imgs)):
+                if scale_i > 0:
+                    output_var = gather(self.model(Variable(imgs[scale_i], volatile=True)), target_device=-1)
+                    det_map, _ = extract_map(output_var)
+                else:
+                    output_var = gather(output_var, -1)
+                    det_map, field_map = extract_map(output_var)
+                det_map, _ = extract_map(output_var)
+                output_var = gather(self.model(Variable(imgs[scale_i][..., torch.arange(start=imgs[scale_i].size(-1)-1, end=-1, step=-1).long()], volatile=True)), -1)
+                det_map_r, _ = extract_map(output_var)
+                det_map += det_map_r[..., ::-1][:, datasets.mscoco.FLIP_INDEX]
+                if det_map.max() <= 10:
+                    det_map_list.append(batch_resize(det_map, (max_map_res, max_map_res)))
+
+            if len(det_map_list) > 0:
+                det_map_mean = np.mean(det_map_list, axis=0) / 2.
+
+                grouped = self.parser.parse(det_map_mean, field_map)
+
+                scores = [sample_grouped[:, :, 2].mean(axis=1) if len(sample_grouped) > 0 else 0. for sample_grouped in grouped]
+
+                for batch_i, sample_grouped in enumerate(grouped):
+                    inverse_mat = np.linalg.pinv(transform_mats[batch_i][max_map_i])[:2]
+                    for person_i in range(len(sample_grouped)):
+                        sample_grouped[person_i] = refine(det_map_mean[batch_i],
+                                                    field_map_cat[batch_i],
+                                                    sample_grouped[person_i])
+                    if len(sample_grouped) > 0:
+                        if img_flipped[batch_i]:
+                            sample_grouped[:, :, 0] = INP_EVAL_RES[max_map_i] / FACTOR - sample_grouped[:, :, 0]
+                            sample_grouped = sample_grouped[:, datasets.mscoco.FLIP_INDEX]
+                        sample_grouped[:, :, :2] = kpt_affine(sample_grouped[:, :, :2] * FACTOR, inverse_mat)
+
+                image_ids = list(batch["img_index"])
+                ans = generate_ans(image_ids, grouped, scores)
+            else:
+                print("No avail result")
 
         # pred = self.parser.parse(*extract_map(output_var))
 
@@ -384,3 +423,127 @@ def generate_ans(image_ids, preds, scores):
                         tmp["keypoints"] += [float(p[0]), float(p[1]), 1]
                 ans.append(tmp)
     return ans
+
+class TestOutput(object):
+    def __init__(self):
+        hparams = dict(
+            learning_rate=5e-4,
+            weight_decay=0,
+            model=dict(
+                nstack=4,
+                hg_dim=256,
+                increase=128,
+                bn=False,
+                max_num_people=30,
+                loss_det_cof=1,
+                loss_field_cof=0.0001),
+            dataset=dict(
+                label_field_radius=2),
+            eval=dict(
+                detection_thres=0.1,
+                group_thres=0.86)
+        )
+        self.exp = Experiment(hparams)
+        self.dataloader = torch.utils.data.DataLoader(self.exp.val_dataset,
+                                                      batch_size=8,
+                                                      shuffle=False,
+                                                      num_workers=5,
+                                                      collate_fn=self.exp.test_collate_fn,
+                                                      pin_memory=True)
+        self.data = next(iter(self.dataloader))
+        print("Data loaded")
+
+    def generate_output(self, transform_back=True):
+        image_ids = list(self.data["img_index"])
+        det_map = self.data["keypoint_map"]
+        det_mask = self.data["mask"]
+        field_map = self.data["custom"][0]
+        field_map_mask = self.data["custom"][1]
+        transform_mats = self.data["img_transform"]
+        img_flipped = self.data["img_flipped"]
+
+        preds = self.exp.parser.parse(det_map, field_map)
+        preds_new = []
+        scores = []
+        for batch_i, sample_pred in enumerate(preds):
+            sample_pred = sample_pred.numpy()
+            if transform_back:
+                inverse_mat = np.linalg.pinv(transform_mats[batch_i][0])[:2]
+                sample_pred[:, :, :2] = kpt_affine(sample_pred[:, :, :2], inverse_mat)
+            preds_new.append(sample_pred)
+            scores.append(sample_pred[:, :, 2].mean(axis=1))
+        return {
+            "pred": preds_new,
+            "score": scores,
+            "image_id": image_ids,
+            "det_map": det_map,
+            "field_map": field_map,
+            "keypoint": self.data["keypoint"],
+            "img": self.data["img"]
+        }
+
+    def plot(self):
+        def draw_pose(img, pose, factor=1):
+            for iperson, personjoint in enumerate(pose):
+                color = np.random.randint(0, 256, size=3, dtype=np.uint8).tolist()
+                if torch.is_tensor(personjoint):
+                    personjoint = personjoint.numpy()
+                personjoint[:, :2] = personjoint[:, :2] * factor
+                personjoint = personjoint.astype(int)
+
+                for ijoint, joint in enumerate(personjoint):
+                    if joint[2] > 0:
+                        cv2.circle(img, tuple(joint[:2].tolist()), 3, color, thickness=-1)
+                for iconnect, connect in enumerate(datasets.mscoco.PART_CONNECT):
+                    joint1 = personjoint[connect[0]]
+                    joint2 = personjoint[connect[1]]
+                    if joint1[2] > 0 and joint2[2] > 0:
+                        cv2.line(img, tuple(joint1[:2].tolist()), tuple(joint2[:2].tolist()), color, thickness=1)
+
+        import matplotlib.pyplot as plt
+        import cv2
+        result = self.generate_output(transform_back=False)
+        preds = result["pred"]
+        scores = result["score"]
+        image_ids = result["image_id"]
+        gts = result["keypoint"]
+        img = self.exp.val_dataset.restore_image(result["img"][0])
+        # gt, pred
+        fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(40, 20), gridspec_kw={"wspace": 0, "hspace": 0, "left": 0, "top": 1, "right": 1, "bottom": 0})
+        for i, (pred, gt) in enumerate(zip(preds, gts)):
+            draw_img_gt = img[i].copy()
+            draw_img_pred = draw_img_gt.copy()
+            draw_pose(draw_img_gt, gt, 4)
+            draw_pose(draw_img_pred, pred, 4)
+            axes[0].imshow(draw_img_gt)
+            axes[0].axis("off")
+            axes[1].imshow(draw_img_pred)
+            axes[1].axis("off")
+            break
+        plt.show()
+
+class UnitTest(unittest.TestCase):
+    def setUp(self):
+        self.to = TestOutput()
+
+    def run(self, result=None):
+        def __add_error_replacement(_, err):
+            etype, evalue, etraceback = err
+            raise etype, evalue, etraceback
+
+        if result is not None:
+            result.addError = __add_error_replacement
+            result.addFailure = __add_error_replacement
+        super(Test, self).run(result)
+
+    def test_evaluate(self):
+        result = self.to.generate_output()
+        preds = result["pred"]
+        scores = result["score"]
+        image_ids = result["image_id"]
+        ans = generate_ans(image_ids, preds, scores)
+        self.to.exp.evaluate(image_ids, ans)
+
+if __name__ == "__main__":
+    # unittest.main()
+    TestOutput().plot()

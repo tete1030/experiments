@@ -17,8 +17,9 @@ from torch.nn.parallel.data_parallel import DataParallel
 from torch.nn.parallel.replicate import replicate
 from torch.nn.parallel.parallel_apply import parallel_apply
 from torch.nn.parallel._functions import Broadcast
+from torch.nn.parallel.scatter_gather import gather
 
-__all__ = ['DataParallelModel', 'DataParallelCriterion']
+__all__ = ['DataParallelModel', 'DataParallelCriterion', 'gather']
 
 class ReduceAdd(Function):
     @staticmethod
@@ -87,7 +88,15 @@ class DataParallelModel(DataParallel):
         >>> net = encoding.nn.DataParallelModel(model, device_ids=[0, 1, 2])
         >>> y = net(x)
     """
-    def gather(self, outputs, output_device):
+
+    def forward(self, *inputs, **kwargs):
+        if not self.device_ids:
+            return [self.module(*inputs, **kwargs)]
+        inputs, kwargs = self.scatter(inputs, kwargs, self.device_ids)
+        if len(self.device_ids) == 1:
+            return [self.module(*inputs[0], **kwargs[0])]
+        replicas = self.replicate(self.module, self.device_ids[:len(inputs)])
+        outputs = self.parallel_apply(replicas, inputs, kwargs)
         return outputs
 
 
@@ -114,17 +123,60 @@ class DataParallelCriterion(DataParallel):
 
     def __init__(self, *args, **kwargs):
         self.comp_mean = kwargs.pop('comp_mean', True)
+        self.store_replicas = kwargs.pop('store_replicas', False)
         super(DataParallelCriterion, self).__init__(*args, **kwargs)
+        assert self.device_ids, "empty device_ids is not supported"
+        if self.store_replicas:
+            self.replicas = self.replicate_module()
+
+    def replicas_each(self, method, shared_args=None, shared_kwargs=None, ind_args=None, ind_kwargs=None):
+        assert self.store_replicas and self.replicas
+        
+        for i, mod in enumerate(self.replicas):
+            args = tuple()
+            if shared_args:
+                args += shared_args
+            if ind_args:
+                args += ind_args[i]
+            kwargs = dict()
+            if shared_kwargs:
+                kwargs.update(shared_kwargs)
+            if ind_kwargs:
+                kwargs.update(ind_kwargs[i])
+            getattr(mod, method).__call__(*args, **kwargs)
+
+    def replicate_module(self, input_length=None):
+        if len(self.device_ids) == 1:
+            return [self.module]
+        else:
+            if input_length:
+                return replicate(self.module, self.device_ids[:input_length])
+            else:
+                return replicate(self.module, self.device_ids)
 
     def forward(self, scattered_inputs, *targets, **kwargs):
         # input should be already scatterd
         # scattering the targets instead
-        if not self.device_ids:
-            return self.module(scattered_inputs, *targets, **kwargs)
+        assert self.device_ids, "empty device_ids is not supported"
+        assert isinstance(scattered_inputs, list)
+
         targets, kwargs = self.scatter(targets, kwargs, self.device_ids)
-        if len(self.device_ids) == 1:
-            return self.module(scattered_inputs, *targets[0], **kwargs[0])
+        if len(scattered_inputs) < len(targets):
+            scattered_inputs.extend([() for _ in range(len(targets) - len(scattered_inputs))])
+        elif len(targets) < len(scattered_inputs):
+            complement_len = len(scattered_inputs) - len(targets)
+            targets += tuple([() for _ in range(complement_len)])
+            kwargs += tuple([{} for _ in range(complement_len)])
+        assert len(scattered_inputs) <= len(self.device_ids)
+
         inputs = map(lambda a, seq: (a,) + tuple(seq), scattered_inputs, targets)
-        replicas = replicate(self.module, self.device_ids[:len(inputs)])
-        outputs = parallel_apply(replicas, inputs, kwargs, self.device_ids[:len(inputs)])
-        return sum_output(outputs, self.output_device, comp_mean=self.comp_mean)
+        if self.store_replicas:
+            replicas = self.replicas[:len(inputs)]
+        else:
+            replicas = self.replicate_module(input_length=len(inputs))
+
+        if len(self.device_ids) == 1:
+            return replicas[0](*inputs[0], **kwargs[0])
+        else:
+            outputs = parallel_apply(replicas, inputs, kwargs, self.device_ids[:len(inputs)])
+            return sum_output(outputs, self.output_device, comp_mean=self.comp_mean)
