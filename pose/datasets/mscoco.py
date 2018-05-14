@@ -22,6 +22,10 @@ PART_LABELS = ['nose','eye_l','eye_r','ear_l','ear_r',
                'sho_l','sho_r','elb_l','elb_r','wri_l','wri_r',
                'hip_l','hip_r','kne_l','kne_r','ank_l','ank_r']
 
+PART_CONNECT = [(0, 1), (0, 2), (1, 3), (2, 4),
+                (0, 5), (0, 6), (5, 6), (5, 7), (6, 8), (7, 9), (8, 10),
+                (5, 11), (6, 12), (11, 12), (11, 13), (12, 14), (13, 15), (14, 16)]
+
 NUM_PARTS = 17
 
 class COCOPose(data.Dataset):
@@ -30,7 +34,7 @@ class COCOPose(data.Dataset):
                  img_res=[256], minus_mean=True, return_img_transform=False,
                  kpmap_res=64, locmap_res=0, mask_res=0,
                  kpmap_select=None, kpmap_sigma=1, locmap_min_sigma=0.5,
-                 keypoint_res=0, locate_res=0,
+                 keypoint_res=0, keypoint_label_outsider=False, keypoint_filter=False, locate_res=0,
                  scale_factor=0.25, rot_factor=30, person_random_selection=False,
                  custom_generator=None):
         assert not single_person
@@ -47,6 +51,8 @@ class COCOPose(data.Dataset):
         self.kpmap_sigma = kpmap_sigma
         self.locmap_min_sigma = locmap_min_sigma
         self.keypoint_res = keypoint_res
+        self.keypoint_label_outsider = keypoint_label_outsider
+        self.keypoint_filter = keypoint_filter
         self.locate_res = locate_res
         self.scale_factor = scale_factor
         self.rot_factor = rot_factor
@@ -163,6 +169,9 @@ class COCOPose(data.Dataset):
             locate_in_kp = np.zeros((0,), dtype=np.int64)
         return locate_mean, locate_std, locate_in_kp
 
+    def restore_image(self, img):
+        return ((img.numpy().astype(np.float32).transpose(0, 2, 3, 1) + self.mean) * 255).round().clip(0, 255).astype(np.uint8)
+
     def __getitem__(self, index):
         if "OPENCV_CUDA_DEVICE" in os.environ:
             CVD_ori = os.environ.get("CUDA_VISIBLE_DEVICES", None)
@@ -233,17 +242,30 @@ class COCOPose(data.Dataset):
                               if ann["num_keypoints"] > 0], dtype=np.float32) \
                 .reshape((-1, NUM_PARTS, 3))
 
-        if self.person_random_selection:
-            person_indices = np.arange(keypoints.shape[0])
-            np.random.shuffle(person_indices)
-            keypoints = keypoints[person_indices[:np.random.randint(low=1, high=person_indices.shape[0]+1)]]
-
         if flip_status:
             keypoints = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
 
         # keypoints: #person * #joints * 3
+        keypoints_tf_ids = np.arange(keypoints.shape[0], dtype=np.int32)
         keypoints_tf = transform(keypoints.reshape((-1, 3))[...,:2], center, scale, [self.kpmap_res, self.kpmap_res], rot=rotate)
         keypoints_tf = np.c_[keypoints_tf, keypoints.reshape((-1, 3))[:, 2]].reshape(keypoints.shape)
+
+        if self.keypoint_label_outsider:
+            outsider_mask = ((keypoints_tf[:, :, 0] < 0) | (keypoints_tf[:, :, 0] >= self.kpmap_res) | \
+                            (keypoints_tf[:, :, 1] < 0) | (keypoints_tf[:, :, 1] >= self.kpmap_res))
+            keypoints_tf[outsider_mask.nonzero() + (2,)] = 0
+
+        if self.keypoint_filter:
+            sel_person_filter = (keypoints_tf[:, :, 2].sum(axis=1) > 0).nonzero()
+            keypoints_tf = keypoints_tf[sel_person_filter]
+            keypoints_tf_ids = keypoints_tf_ids[sel_person_filter]
+
+        if self.person_random_selection and keypoints_tf.shape[0] > 1:
+            person_indices = np.arange(keypoints_tf.shape[0])
+            np.random.shuffle(person_indices)
+            sel_person_random = person_indices[:np.random.randint(low=1, high=person_indices.shape[0]+1)]
+            keypoints_tf = keypoints_tf[sel_person_random]
+            keypoints_tf_ids = keypoints_tf_ids[sel_person_random]
 
         keypoints_tf_ret = keypoints_tf.copy()
         if self.keypoint_res > 0 and self.keypoint_res != self.kpmap_res:
@@ -314,7 +336,8 @@ class COCOPose(data.Dataset):
             "center": torch.from_numpy(center),
             "scale": scale,
             "keypoint_ori": torch.from_numpy(keypoints) if keypoints.shape[0] > 0 else None,
-            "keypoint": torch.from_numpy(keypoints_tf_ret) if keypoints.shape[0] > 0 else None,
+            "keypoint": torch.from_numpy(keypoints_tf_ret) if keypoints_tf_ret.shape[0] > 0 else None,
+            "keypoint_ids": torch.from_numpy(keypoints_tf_ids).long() if keypoints_tf_ids.shape[0] > 0 else None,
         }
 
         if self.return_img_transform:
@@ -346,7 +369,7 @@ class COCOPose(data.Dataset):
 
     @classmethod
     def collate_function(cls, batch):
-        NON_COLLATE_KEYS = ["keypoint_ori", "keypoint", "locate", "locate_std", "locate_in_kp", "img_transform", "img_flipped"]
+        NON_COLLATE_KEYS = ["keypoint_ori", "keypoint", "keypoint_ids", "locate", "locate_std", "locate_in_kp", "img_transform", "img_flipped"]
         collate_fn = data.dataloader.default_collate
         all_keys = batch[0].keys()
         result = dict()
