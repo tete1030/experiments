@@ -125,23 +125,23 @@ chain:
 
 ae2d:
     <<: *DEFAULT
-    id: 0
+    id: 2
     name: ae2d
     learning_rate: 2.e-4
     lr_gamma: 0.5
     epochs: 200
     schedule: [100]
-    train_batch: 16
-    test_batch: 16
+    train_batch: 12
+    test_batch: 12
     model:
         nstack: 4
         hg_dim: 256
         increase: 128
-        bn: false
+        bn: true
         max_num_people: 30
         loss_det_cof: 1
         loss_em_push_cof: 1.e-4
-        loss_em_pull_cof: 1.e-3
+        loss_em_pull_cof: 1.e-4
     eval:
-        detection_thres: 0.1
-        group_thres: 0.86
+        detection_thres: 0.05
+        group_thres: 0.1

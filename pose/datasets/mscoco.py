@@ -35,6 +35,7 @@ class COCOPose(data.Dataset):
                  kpmap_res=64, locmap_res=0, mask_res=0,
                  kpmap_select=None, kpmap_sigma=1, locmap_min_sigma=0.5,
                  keypoint_res=0, keypoint_label_outsider=False, keypoint_filter=False, locate_res=0,
+                 keypoint_extender=None,
                  scale_factor=0.25, rot_factor=30, person_random_selection=False,
                  custom_generator=None):
         assert not single_person
@@ -46,6 +47,7 @@ class COCOPose(data.Dataset):
         self.return_img_transform = return_img_transform
         self.kpmap_res = kpmap_res
         self.locmap_res = locmap_res
+        self.keypoint_extender = keypoint_extender
         self.mask_res = mask_res
         self.kpmap_select = kpmap_select
         self.kpmap_sigma = kpmap_sigma
@@ -131,7 +133,7 @@ class COCOPose(data.Dataset):
                     self.heatmap_gen(points[ijoint, :2], ijoint, target_map)
         elif point_type == "point":
             assert not np.isclose(sigma, 0)
-            self.heatmap_gen(points, 0, target_map, sigma=sigma, out_res=out_res, normalize_factor=0)
+            self.heatmap_gen(points, 0, target_map, sigma=sigma, out_res=out_res, normalize_factor=None)
         else:
             raise RuntimeError("Wrong point_type")
 
@@ -266,6 +268,9 @@ class COCOPose(data.Dataset):
             sel_person_random = person_indices[:np.random.randint(low=1, high=person_indices.shape[0]+1)]
             keypoints_tf = keypoints_tf[sel_person_random]
             keypoints_tf_ids = keypoints_tf_ids[sel_person_random]
+
+        if self.keypoint_extender:
+            keypoints_tf = self.keypoint_extender(keypoints_tf)
 
         keypoints_tf_ret = keypoints_tf.copy()
         if self.keypoint_res > 0 and self.keypoint_res != self.kpmap_res:

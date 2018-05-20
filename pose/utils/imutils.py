@@ -61,18 +61,18 @@ class HeatmapGenerator(object):
         if sigma is not None:
             self.sigma = float(sigma)
             self.sigma3 = int(np.around(3 * self.sigma))
-            self.g = self._gen_temp(self.sigma, self.sigma3, 0)
+            self.g = self._gen_temp(self.sigma, self.sigma3)
 
     @classmethod
-    def _gen_temp(cls, sigma, sigma3, normalize_factor):
+    def _gen_temp(cls, sigma, sigma3):
         size = 2 * sigma3 + 3
         x = np.arange(0, size, 1, np.float32)
         y = x[:, np.newaxis]
         x0, y0 = sigma3 + 1, sigma3 + 1
         sigma = float(sigma)
-        return np.exp(- ((x - x0) ** 2 + (y - y0) ** 2) / (2 * sigma ** 2)) / (sigma * float(normalize_factor) if normalize_factor > 0 else 1)
+        return np.exp(- ((x - x0) ** 2 + (y - y0) ** 2) / (2 * sigma ** 2))
 
-    def __call__(self, pt, index, out, sigma=None, normalize_factor=0, out_res=0):
+    def __call__(self, pt, index, out, sigma=None, normalize_factor=None, out_res=0, mingle_mode="max"):
         if sigma is None:
             sigma = self.sigma
             sigma3 = self.sigma3
@@ -80,7 +80,10 @@ class HeatmapGenerator(object):
         else:
             sigma = float(sigma)
             sigma3 = int(np.around(3 * sigma))
-            g = self._gen_temp(sigma, sigma3, normalize_factor)
+            g = self._gen_temp(sigma, sigma3)
+
+        if normalize_factor is not None:
+            g = g * float(normalize_factor)
 
         if out_res == 0:
             out_res = self.output_res
@@ -98,7 +101,12 @@ class HeatmapGenerator(object):
 
         cc,dd = max(0, ul[0]), min(br[0], out_res)
         aa,bb = max(0, ul[1]), min(br[1], out_res)
-        out[index][aa:bb,cc:dd] = np.maximum(out[index][aa:bb,cc:dd], g[a:b,c:d])
+        if mingle_mode == "max":
+            out[index][aa:bb,cc:dd] = np.maximum(out[index][aa:bb,cc:dd], g[a:b,c:d])
+        elif mingle_mode == "add":
+            out[index][aa:bb,cc:dd] += g[a:b,c:d]
+        else:
+            raise ValueError("Unknown mingle_mode='%s'" % (mingle_mode,))
 
 def draw_labelmap(img, pt, sigma, type='Gaussian'):
     # Draw a 2D gaussian 
