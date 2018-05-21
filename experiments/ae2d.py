@@ -47,7 +47,7 @@ PAIR = [[17, 6], [17, 5], [6, 8], [8, 10], [5, 7], [7, 9],
 
 class Experiment(object):
     def __init__(self, hparams):
-        self.num_parts = datasets.mscoco.NUM_PARTS
+        self.num_parts = datasets.mscoco.NUM_PARTS + 1
         self.hparams = hparams
         self.model = DataParallelModel(
             models.PoseHGNet(
@@ -88,7 +88,7 @@ class Experiment(object):
                                                return_img_transform=True,
                                                mask_res=OUT_RES,
                                                kpmap_res=OUT_RES,
-                                               kpmap_select="all",
+                                               kpmap_select="all_ex",
                                                keypoint_res=OUT_RES,
                                                keypoint_extender=keypoint_extender,
                                                keypoint_label_outsider=True,
@@ -104,7 +104,7 @@ class Experiment(object):
                                              return_img_transform=True,
                                              mask_res=OUT_RES,
                                              kpmap_res=OUT_RES,
-                                             kpmap_select="all",
+                                             kpmap_select="all_ex",
                                              keypoint_res=OUT_RES,
                                              keypoint_extender=keypoint_extender,
                                              keypoint_label_outsider=True,
@@ -781,12 +781,12 @@ class TestOutput(object):
             gs1 = gridspec.GridSpecFromSubplotSpec(num_row, num_col, wspace=0.05, hspace=0, subplot_spec=gs[1])
 
             gt = gt.numpy()
-            gt = np.concatenate((gt, np.zeros((gt.shape[0], 1, 3), dtype=np.float32)), axis=1)
-            gt[:, 17, :2] = (gt[:, 5, :2] +  gt[:, 6, :2]) / 2
-            gt[:, 17, 2] = ((gt[:, 5, 2] > 0) & (gt[:, 6, 2] > 0)).astype(np.float32)
-            pred = np.concatenate((pred, np.zeros((pred.shape[0], 1, 3), dtype=np.float32)), axis=1)
-            pred[:, 17, :2] = (pred[:, 5, :2] + pred[:, 6, :2]) / 2
-            pred[:, 17, 2] = ((pred[:, 5, 2] > 0) & (pred[:, 6, 2] > 0)).astype(np.float32)
+            # gt = np.concatenate((gt, np.zeros((gt.shape[0], 1, 3), dtype=np.float32)), axis=1)
+            # gt[:, 17, :2] = (gt[:, 5, :2] +  gt[:, 6, :2]) / 2
+            # gt[:, 17, 2] = ((gt[:, 5, 2] > 0) & (gt[:, 6, 2] > 0)).astype(np.float32)
+            # pred = np.concatenate((pred, np.zeros((pred.shape[0], 1, 3), dtype=np.float32)), axis=1)
+            # pred[:, 17, :2] = (pred[:, 5, :2] + pred[:, 6, :2]) / 2
+            # pred[:, 17, 2] = ((pred[:, 5, 2] > 0) & (pred[:, 6, 2] > 0)).astype(np.float32)
 
             draw_img_gt = img[i].copy()
             draw_img_pred = draw_img_gt.copy()

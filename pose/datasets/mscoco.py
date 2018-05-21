@@ -289,6 +289,9 @@ class COCOPose(data.Dataset):
         elif self.kpmap_select == "all":
             assert self.kpmap_res > 0
             draw_parts = list(range(NUM_PARTS))
+        elif self.kpmap_select == "all_ex":
+            assert self.kpmap_res > 0
+            draw_parts = list(range(keypoints_tf.shape[1]))
         elif isinstance(self.kpmap_select, list):
             assert self.kpmap_res > 0
             draw_parts = self.kpmap_select
