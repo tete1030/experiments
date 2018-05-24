@@ -2,17 +2,18 @@ from __future__ import print_function, absolute_import
 
 # Handle matplotlib backend error when DISPLAY is wrong
 # the error originates from Tk used in matplotlib
-matplotlib_backend = "TkAgg"
-try:
-    import Tkinter
-    Tkinter.Tk().destroy()
-except Tkinter.TclError:
-    print("Cannot use TkAgg for matplotlib, using Agg")
-    matplotlib_backend = "Agg"
-finally:
-    del Tkinter
 import matplotlib
-matplotlib.use(matplotlib_backend)
+if matplotlib.get_backend() != "module://ipykernel.pylab.backend_inline":
+    matplotlib_backend = "TkAgg"
+    try:
+        import Tkinter
+        Tkinter.Tk().destroy()
+    except Tkinter.TclError:
+        print("Cannot use TkAgg for matplotlib, using Agg")
+        matplotlib_backend = "Agg"
+    finally:
+        del Tkinter
+    matplotlib.use(matplotlib_backend)
 
 import os
 import sys
