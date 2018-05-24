@@ -16,6 +16,7 @@ from pose.utils.transforms import *
 from pycocotools.coco import COCO
 import pycocotools
 
+# FLIP_INDEX is an involution map
 FLIP_INDEX = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]
 
 PART_LABELS = ['nose','eye_l','eye_r','ear_l','ear_r',
@@ -31,7 +32,7 @@ NUM_PARTS = 17
 class COCOPose(data.Dataset):
     def __init__(self, img_folder, anno, split_file, meanstd_file,
                  train, single_person,
-                 img_res=[256], minus_mean=True, return_img_transform=False,
+                 img_res=[256], minus_mean=True,
                  kpmap_res=64, locmap_res=0, mask_res=0,
                  kpmap_select=None, kpmap_sigma=1, locmap_min_sigma=0.5,
                  keypoint_res=0, keypoint_label_outsider=False, keypoint_filter=False, locate_res=0,
@@ -44,7 +45,6 @@ class COCOPose(data.Dataset):
         self.single_person = single_person
         self.img_res = img_res
         self.minus_mean = minus_mean
-        self.return_img_transform = return_img_transform
         self.kpmap_res = kpmap_res
         self.locmap_res = locmap_res
         self.keypoint_extender = keypoint_extender
@@ -172,7 +172,18 @@ class COCOPose(data.Dataset):
         return locate_mean, locate_std, locate_in_kp
 
     def restore_image(self, img):
-        return ((img.numpy().astype(np.float32).transpose(0, 2, 3, 1) + self.mean) * 255).round().clip(0, 255).astype(np.uint8)
+        if not isinstance(img, np.ndarray):
+            img = img.numpy()
+        return ((img.astype(np.float32).transpose(0, 2, 3, 1) + self.mean) * 255).round().clip(0, 255).astype(np.uint8)
+
+    def get_index_by_imgidx(self, imgidx):
+        try:
+            if self.is_train:
+                return self.train.index(imgidx)
+            else:
+                return self.valid.index(imgidx)
+        except ValueError:
+            return -1
 
     def __getitem__(self, index):
         if "OPENCV_CUDA_DEVICE" in os.environ:
@@ -219,12 +230,10 @@ class COCOPose(data.Dataset):
 
         # Prepare image and groundtruth map
         img_list = list()
-        if self.return_img_transform:
-            img_transform_list = list()
+        img_transform_list = list()
         for cur_res in (self.img_res if isinstance(self.img_res, list) else [self.img_res]):
             img_transform_mat = get_transform(center, scale, [cur_res, cur_res], rot=rotate)
-            if self.return_img_transform:
-                img_transform_list.append(img_transform_mat)
+            img_transform_list.append(img_transform_mat)
             img_bgr_warp = cv2.warpAffine(img_bgr, img_transform_mat[:2], dsize=(cur_res, cur_res), flags=cv2.INTER_LINEAR)
             img = img_bgr_warp[..., ::-1].astype(np.float32) / 255
             # Color normalize
@@ -244,13 +253,19 @@ class COCOPose(data.Dataset):
                               if ann["num_keypoints"] > 0], dtype=np.float32) \
                 .reshape((-1, NUM_PARTS, 3))
 
+        num_person = keypoints.shape[0]
+
         if flip_status:
-            keypoints = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
+            keypoints_tf = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
+        else:
+            keypoints_tf = keypoints.copy()
 
         # keypoints: #person * #joints * 3
-        keypoints_tf_ids = np.arange(keypoints.shape[0], dtype=np.int32)
-        keypoints_tf = transform(keypoints.reshape((-1, 3))[...,:2], center, scale, [self.kpmap_res, self.kpmap_res], rot=rotate)
-        keypoints_tf = np.c_[keypoints_tf, keypoints.reshape((-1, 3))[:, 2]].reshape(keypoints.shape)
+        keypoints_tf_ids = np.arange(num_person, dtype=np.int32)
+        keypoints_tf = np.c_[
+                transform(keypoints_tf.reshape((-1, 3))[...,:2], center, scale, [self.kpmap_res, self.kpmap_res], rot=rotate),
+                keypoints_tf.reshape((-1, 3))[:, 2]
+            ].reshape(keypoints_tf.shape)
 
         if self.keypoint_label_outsider:
             outsider_mask = ((keypoints_tf[:, :, 0] < 0) | (keypoints_tf[:, :, 0] >= self.kpmap_res) | \
@@ -269,6 +284,13 @@ class COCOPose(data.Dataset):
             keypoints_tf = keypoints_tf[sel_person_random]
             keypoints_tf_ids = keypoints_tf_ids[sel_person_random]
 
+        locate_mean, locate_std, locate_in_kp = self._compute_locate_mean_std(keypoints_tf)
+        locate_mean_ret, locate_std_ret = copy.deepcopy(locate_mean), copy.deepcopy(locate_std)
+        if self.locate_res > 0 and self.locate_res != self.kpmap_res:
+            assert locate_mean_ret.dtype == np.float32
+            locate_mean_ret = locate_mean_ret * (float(self.locate_res) / self.kpmap_res)
+            locate_std_ret = [(lsr * (float(self.locate_res) / self.kpmap_res)) if lsr is not None else None for lsr in locate_std_ret]
+
         if self.keypoint_extender:
             keypoints_tf = self.keypoint_extender(keypoints_tf)
 
@@ -276,13 +298,6 @@ class COCOPose(data.Dataset):
         if self.keypoint_res > 0 and self.keypoint_res != self.kpmap_res:
             assert keypoints_tf_ret.dtype == np.float32
             keypoints_tf_ret[:, :, :2] = keypoints_tf_ret[:, :, :2] * (float(self.keypoint_res) / self.kpmap_res)
-
-        locate_mean, locate_std, locate_in_kp = self._compute_locate_mean_std(keypoints_tf)
-        locate_mean_ret, locate_std_ret = copy.deepcopy(locate_mean), copy.deepcopy(locate_std)
-        if self.locate_res > 0 and self.locate_res != self.kpmap_res:
-            assert locate_mean_ret.dtype == np.float32
-            locate_mean_ret = locate_mean_ret * (float(self.locate_res) / self.kpmap_res)
-            locate_std_ret = [(lsr * (float(self.locate_res) / self.kpmap_res)) if lsr is not None else None for lsr in locate_std_ret]
 
         if self.kpmap_select is None:
             draw_parts = []
@@ -301,7 +316,7 @@ class COCOPose(data.Dataset):
         kp_map = None
         if len(draw_parts) > 0:
             kp_map = np.zeros((len(draw_parts), self.kpmap_res, self.kpmap_res), dtype=np.float32)
-            for iperson, points in enumerate(keypoints_tf):
+            for points in keypoints_tf:
                 self._draw_label(points[draw_parts], kp_map)
 
         loc_map = None
@@ -348,9 +363,9 @@ class COCOPose(data.Dataset):
             "keypoint_ids": torch.from_numpy(keypoints_tf_ids).long() if keypoints_tf_ids.shape[0] > 0 else None,
         }
 
-        if self.return_img_transform:
-            result["img_transform"] = [torch.from_numpy(mat) for mat in img_transform_list] if isinstance(self.img_res, list) else torch.from_numpy(img_transform_list[0])
-            result["img_flipped"] = flip_status
+        result["img_transform"] = [torch.from_numpy(mat) for mat in img_transform_list] if isinstance(self.img_res, list) else torch.from_numpy(img_transform_list[0])
+        result["img_flipped"] = flip_status
+        result["img_ori_size"] = torch.from_numpy(img_size.astype(np.int32))
 
         if mask_noncrowd is not None:
             result["mask"] = torch.from_numpy(mask_noncrowd)
