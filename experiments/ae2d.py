@@ -3,6 +3,7 @@ import torch
 from torch.autograd import Variable
 import pose.models as models
 from pose.models.parallel import DataParallelModel, DataParallelCriterion, gather
+from torch.nn import DataParallel
 import pose.datasets as datasets
 from pose.utils.evaluation import PR_multi
 import pose.utils.config as config
@@ -103,7 +104,7 @@ class Experiment(object):
     def __init__(self, hparams):
         self.num_parts = datasets.mscoco.NUM_PARTS + 1
         self.hparams = hparams
-        self.model = DataParallelModel(
+        self.model = DataParallel(
             models.PoseHGNet(
                 inp_dim=3,
                 out_dim=self.num_parts + len(PAIR)*4,
@@ -112,12 +113,11 @@ class Experiment(object):
                 increase=hparams["model"]["increase"],
                 bn=hparams["model"]["bn"]).cuda())
 
-        ae2dloss = DataParallelCriterion(AE2DLoss(pair=PAIR).cuda(), comp_mean=True, store_replicas=True)
-        for i, did in enumerate(ae2dloss.device_ids):
-            ae2dloss.replicas[i].current_device = did
+        ae2dloss = AE2DLoss(pair=PAIR).cuda()
+        ae2dloss.current_device = torch.cuda.device_count()-1
 
         self.criterion = torch.nn.ModuleList([
-            DataParallelCriterion(HeatmapLoss().cuda(), comp_mean=True, store_replicas=True),
+            HeatmapLoss().cuda(),
             ae2dloss])
 
         self.optimizer = torch.optim.Adam(list(self.model.parameters()),
@@ -231,17 +231,14 @@ class Experiment(object):
         keypoint = batch["keypoint"]
         volatile = not train
 
-        split_size = (len(keypoint) + len(ae2dloss.replicas) - 1) // len(ae2dloss.replicas)
-        keypoint_scattered = split_data(keypoint, split_size)
-        ae2dloss.replicas_each("prepare", ind_args=map(lambda a: (a,), keypoint_scattered), shared_kwargs=dict(_async=False))
+        ae2dloss.prepare(keypoint, _async=False)
 
-        det_map_gt_var = Variable(det_map_gt, volatile=volatile)
-        det_map_mask_gt_var = Variable(det_mask_gt, volatile=volatile)
+        det_map_gt_var = Variable(det_map_gt.cuda(), volatile=volatile)
+        det_map_mask_gt_var = Variable(det_mask_gt.cuda(), volatile=volatile)
 
         output_var = self.model(Variable(imgs[0], volatile=volatile))
-        output_var_transposed = zip(*output_var)
-        heatmap_var = map(lambda out_stack: map(lambda out_gpu: out_gpu[:, :self.num_parts], out_stack), output_var_transposed)
-        emmap_var = map(lambda out_stack: map(lambda out_gpu: out_gpu[:, self.num_parts:], out_stack), output_var_transposed)
+        heatmap_var = map(lambda out_stack: out_stack[:, :self.num_parts], output_var)
+        emmap_var = map(lambda out_stack: out_stack[:, self.num_parts:], output_var)
 
         kplosses = []
         emlosses_push = []
@@ -256,6 +253,7 @@ class Experiment(object):
         emloss_push = sum(emlosses_push) / len(emlosses_push)
         emloss_pull = sum(emlosses_pull) / len(emlosses_pull)
 
+        # TODO: Temporaryly disable to check mseloss integrity
         loss = kploss * self.hparams["model"]["loss_det_cof"] + emloss_push * self.hparams["model"]["loss_em_push_cof"] + emloss_pull * self.hparams["model"]["loss_em_pull_cof"]
 
         if (loss.data != loss.data).any():
@@ -264,19 +262,19 @@ class Experiment(object):
 
         image_ids = list(batch["img_index"])
         ans = None
-        if not train:
+        # TODO: Temporaryly disable
+        if not train and True:
             max_map_i = np.argmax([img.size()[-1] for img in imgs])
             max_map_res = imgs[max_map_i].size()[-1] // FACTOR
             det_map_list = list()
             field_map = None
             for scale_i in range(0, len(imgs)):
                 if scale_i > 0:
-                    output_var = gather(self.model(Variable(imgs[scale_i], volatile=True)), target_device=-1)
+                    output_var = self.model(Variable(imgs[scale_i], volatile=True))
                     det_map, _ = extract_map(output_var)
                 else:
-                    output_var = gather(output_var, -1)
                     det_map, field_map = extract_map(output_var)
-                output_var = gather(self.model(Variable(imgs[scale_i][..., torch.arange(start=imgs[scale_i].size(-1)-1, end=-1, step=-1).long()], volatile=True)), -1)
+                output_var = self.model(Variable(imgs[scale_i][..., torch.arange(start=imgs[scale_i].size(-1)-1, end=-1, step=-1).long()], volatile=True))
                 det_map_r, _ = extract_map(output_var)
                 det_map += det_map_r[..., ::-1][:, datasets.mscoco.FLIP_INDEX + [17]]
                 det_map_list.append(batch_resize(det_map, (max_map_res, max_map_res)))
@@ -332,7 +330,6 @@ class AE2DLoss(torch.nn.Module):
         self.push = None
         self.pull_count = None
         self.push_count = None
-        self.current_device = None
 
     def prepare(self, keypoint, _async=True):
         def _worker(self, keypoint):
@@ -382,19 +379,18 @@ class AE2DLoss(torch.nn.Module):
                     Y_2.append(kp_samp[sel_comb_2][:, pr_2, 1])
 
             if len(iS) > 0:
-                with torch.cuda.device(self.current_device):
-                    self.iS = torch.cat(iS).cuda(async=True)
-                    self.iC = torch.cat(iC).cuda(async=True)
-                    self.X_1 = torch.cat(X_1).long().cuda(async=True)
-                    self.Y_1 = torch.cat(Y_1).long().cuda(async=True)
-                    self.X_2 = torch.cat(X_2).long().cuda(async=True)
-                    self.Y_2 = torch.cat(Y_2).long().cuda(async=True)
-                    pull = torch.cat(pull)
-                    push = (~pull)
-                    self.pull = pull.cuda(async=True)
-                    self.push = push.cuda(async=True)
-                    self.pull_count = pull.int().sum()
-                    self.push_count = push.int().sum()
+                self.iS = torch.cat(iS).cuda(async=True)
+                self.iC = torch.cat(iC).cuda(async=True)
+                self.X_1 = torch.cat(X_1).long().cuda(async=True)
+                self.Y_1 = torch.cat(Y_1).long().cuda(async=True)
+                self.X_2 = torch.cat(X_2).long().cuda(async=True)
+                self.Y_2 = torch.cat(Y_2).long().cuda(async=True)
+                pull = torch.cat(pull)
+                push = (~pull)
+                self.pull = pull.cuda(async=True)
+                self.push = push.cuda(async=True)
+                self.pull_count = pull.int().sum()
+                self.push_count = push.int().sum()
             else:
                 self.pull_count = 0
                 self.push_count = 0
@@ -443,8 +439,8 @@ class AE2DLoss(torch.nn.Module):
             # Make the similarity from 0 to 1
             em_cos = (((em_x_1 * em_x_2 + em_y_1 * em_y_2) / ((em_x_1 ** 2 + em_y_1 ** 2).sqrt() * (em_x_2 ** 2 + em_y_2 ** 2).sqrt()) + 1) / 2) ** 2
 
-        loss_push = (em_cos[push].sum() / self.push_count) if self.push_count > 0 else torch.autograd.Variable(torch.zeros(1).cuda(self.current_device), requires_grad=False)
-        loss_pull = (1-(em_cos[pull].sum() / self.pull_count)) if self.pull_count > 0 else torch.autograd.Variable(torch.zeros(1).cuda(self.current_device), requires_grad=False)
+        loss_push = (em_cos[push].sum() / self.push_count) if self.push_count > 0 else torch.autograd.Variable(torch.zeros(1).cuda(), requires_grad=False)
+        loss_pull = (1-(em_cos[pull].sum() / self.pull_count)) if self.pull_count > 0 else torch.autograd.Variable(torch.zeros(1).cuda(), requires_grad=False)
 
         return loss_push, loss_pull
 
