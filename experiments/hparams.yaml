@@ -125,9 +125,9 @@ chain:
 
 ae2d:
     <<: *DEFAULT
-    id: 4
+    id: 0
     name: ae2d
-    learning_rate: 2.e-4
+    learning_rate: 1.e-4
     lr_gamma: 0.5
     epochs: 200
     schedule: [100]
@@ -137,6 +137,9 @@ ae2d:
         nstack: 4
         hg_dim: 256
         increase: 128
+        inp_res: 512
+        inp_res_ms: [512, 256, 1024]
+        out_res: 128
         bn: false
         max_num_people: 30
         loss_det_cof: 1

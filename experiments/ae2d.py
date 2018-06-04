@@ -30,11 +30,7 @@ try:
 except NameError:
     profile = lambda func: func
 
-INP_RES = 512
 FACTOR = 4
-OUT_RES = INP_RES // FACTOR
-INP_EXTRA_RES = [INP_RES//2, INP_RES*2]
-INP_EVAL_RES = [INP_RES]# + INP_EXTRA_RES
 
 # PAIR = [[0,1], [0,2], [0,3], [0,4], [0,5], [0,6], [5,6],
 #          [5,7], [7,9], [6,8], [8,10], [5,11], [6,12], [11,12],
@@ -138,11 +134,11 @@ class Experiment(object):
                                                "data/mscoco/mean_std.pth",
                                                train=True,
                                                single_person=False,
-                                               img_res=[INP_RES],
-                                               mask_res=OUT_RES,
-                                               kpmap_res=OUT_RES,
+                                               img_res=[self.hparams["model"]["inp_res"]],
+                                               mask_res=self.hparams["model"]["out_res"],
+                                               kpmap_res=self.hparams["model"]["out_res"],
                                                kpmap_select="all_ex",
-                                               keypoint_res=OUT_RES,
+                                               keypoint_res=self.hparams["model"]["out_res"],
                                                keypoint_extender=keypoint_extender,
                                                keypoint_label_outsider=True,
                                                keypoint_filter=True)
@@ -153,11 +149,11 @@ class Experiment(object):
                                              "data/mscoco/mean_std.pth",
                                              train=False,
                                              single_person=False,
-                                             img_res=INP_EVAL_RES,
-                                             mask_res=OUT_RES,
-                                             kpmap_res=OUT_RES,
+                                             img_res=self.hparams["model"]["inp_res_ms"],
+                                             mask_res=self.hparams["model"]["out_res"],
+                                             kpmap_res=self.hparams["model"]["out_res"],
                                              kpmap_select="all_ex",
-                                             keypoint_res=OUT_RES,
+                                             keypoint_res=self.hparams["model"]["out_res"],
                                              keypoint_extender=keypoint_extender,
                                              keypoint_label_outsider=True,
                                              keypoint_filter=True)
@@ -169,32 +165,6 @@ class Experiment(object):
 
     def epoch(self, epoch):
         self.hparams['learning_rate'] = adjust_learning_rate(self.optimizer, epoch, self.hparams['learning_rate'], self.hparams['schedule'], self.hparams['lr_gamma'])
-
-    # def summary_image(self, img, pred, gt, title, step):
-    #     tb_num = 3
-    #     tb_img = img[:tb_num].numpy() + self.train_dataset.mean[None, :, None, None]
-    #     tb_gt = gt[:tb_num].numpy()
-    #     tb_pred = pred[:tb_num].numpy()
-    #     show_img = np.zeros((tb_num * 2, 3, INP_RES, INP_RES))
-    #     for iimg in range(tb_num):
-    #         cur_img = (tb_img[iimg][::-1].transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8)
-    #         cur_gt = cv2.applyColorMap(
-    #             cv2.resize(
-    #                 (tb_gt[iimg].transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8),
-    #                 (INP_RES, INP_RES)),
-    #             cv2.COLORMAP_HOT)
-    #         cur_gt = cv2.addWeighted(cur_img, 1, cur_gt, 0.5, 0).transpose(2, 0, 1)[::-1].astype(np.float32) / 255
-    #         show_img[iimg] = cur_gt
-    #         cur_pred = cv2.applyColorMap(
-    #             cv2.resize(
-    #                 (tb_pred[iimg].transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8),
-    #                 (INP_RES, INP_RES)),
-    #             cv2.COLORMAP_HOT)
-    #         cur_pred = cv2.addWeighted(cur_img, 1, cur_pred, 0.5, 0).transpose(2, 0, 1)[::-1].astype(np.float32) / 255
-    #         show_img[tb_num + iimg] = cur_pred
-
-    #     show_img = vutils.make_grid(torch.from_numpy(show_img), nrow=tb_num, range=(0, 1))
-    #     config.tb_writer.add_image(title, show_img, step)
 
     def summary_histogram(self, n_iter):
         for name, param in self.model.named_parameters():
@@ -229,6 +199,7 @@ class Experiment(object):
         transform_mats = batch["img_transform"]
         img_flipped = batch["img_flipped"]
         keypoint = batch["keypoint"]
+        img_ori_size = batch["img_ori_size"]
         volatile = not train
 
         ae2dloss.prepare(keypoint, _async=False)
@@ -282,20 +253,26 @@ class Experiment(object):
             det_map = np.mean(det_map_list, axis=0) / 2.
             field_map = batch_resize(field_map, (max_map_res, max_map_res))
 
-            preds = self.parser.parse(det_map, field_map)
-            preds_new = []
-            scores = []
-            for isamp, pred_samp in enumerate(preds):
-                pred_samp = pred_samp[:, :self.num_parts-1]
-                inverse_mat = np.linalg.pinv(transform_mats[isamp][max_map_i])[:2]
-                pred_samp[:, :, :2] = kpt_affine(pred_samp[:, :, :2] * FACTOR, inverse_mat)
-                if img_flipped[isamp]:
-                    pred_samp = fliplr_pts(pred_samp, datasets.mscoco.FLIP_INDEX, width=self.data["img_ori_size"][isamp, 0])
+            transform_mats_max_map = [tfm[max_map_i] for tfm in transform_mats]
+            if "no_parse" in config.__dict__ and config.no_parse:
+                ans = None
+            else:
+                ans = parse_result(self.parser, det_map, field_map, self.num_parts-1, image_ids, transform_mats_max_map, img_flipped, img_ori_size)
 
-                preds_new.append(pred_samp)
-                scores.append(pred_samp[:, :, 2].mean(axis=1).astype(np.float32))
-
-            ans = generate_ans(image_ids, preds_new, scores)
+            if "save_pred" in config.__dict__ and config.save_pred:
+                save_args = [
+                    det_map,
+                    field_map,
+                    self.num_parts-1,
+                    image_ids,
+                    transform_mats_max_map,
+                    img_flipped,
+                    img_ori_size
+                ]
+                import os
+                if not os.path.isdir(config.save_pred_path):
+                    os.makedirs(config.save_pred_path)
+                np.save(os.path.join(config.save_pred_path, "pred_{}_{}.npy".format(detail["epoch"], detail["iter"])), save_args)
 
         phase_str = "train" if train else "valid"
         config.tb_writer.add_scalars(config.exp_name + "/loss_det", {phase_str: kploss.data.cpu()[0]}, detail["step"])
@@ -314,6 +291,31 @@ class Experiment(object):
         }
     
         return result
+
+def parse_result(parser, det_map, field_map, preserve_num_parts, image_ids, transform_mats, img_flipped, img_ori_size, use_joint_det_scores=False, output_ans=True):
+    preds, joint_scores = parser.parse(det_map, field_map)
+    preds_new = []
+    scores = []
+    for isamp, pred_samp in enumerate(preds):
+        pred_samp = pred_samp[:, :preserve_num_parts]
+        inverse_mat = np.linalg.pinv(transform_mats[isamp])[:2]
+        pred_samp[:, :, :2] = kpt_affine(pred_samp[:, :, :2] * FACTOR, inverse_mat)
+        if img_flipped[isamp]:
+            pred_samp = fliplr_pts(pred_samp, datasets.mscoco.FLIP_INDEX, width=img_ori_size[isamp, 0])
+
+        preds_new.append(pred_samp)
+        if use_joint_det_scores:
+            joint_scores_samp = joint_scores[isamp][:, :preserve_num_parts]
+            # joint_scores_samp[pred_samp[:, :, 2] > 0] += 0.2
+            scores.append(joint_scores_samp.mean(axis=1))
+        else:
+            scores.append(pred_samp[:, :, 2].mean(axis=1).astype(np.float32))
+
+    if output_ans:
+        ans = generate_ans(image_ids, preds_new, scores)
+        return ans
+    else:
+        return preds_new
 
 class AE2DLoss(torch.nn.Module):
     def __init__(self, pair):
@@ -445,14 +447,14 @@ class AE2DLoss(torch.nn.Module):
         return loss_push, loss_pull
 
 class AE2DParser(object):
-    def __init__(self, pair, joint_dis, detection_thres=0.1, group_thres=0.1, fallback_group_thres1=0.2, fallback_group_thres2=0.4, fallback_group_thres3=0.5, max_num_people=30):
+    def __init__(self, pair, joint_dis, joint_spdis_mean_file, joint_spdis_std_file, joint_norm_spdis_std_file, detection_thres=0.1, group_thres=0.1, max_num_people=30):
         self.pair = pair
         self.joint_dis = joint_dis
         self.detection_thres = detection_thres
         self.group_thres = group_thres
-        self.fallback_group_thres1 = fallback_group_thres1
-        self.fallback_group_thres2 = fallback_group_thres2
-        self.fallback_group_thres3 = fallback_group_thres3
+        self.joint_spdis_mean = np.load(joint_spdis_mean_file)
+        self.joint_spdis_std = np.load(joint_spdis_std_file)
+        self.joint_norm_spdis_std = np.load(joint_norm_spdis_std_file)
         self.max_num_people = max_num_people
         self.pool = torch.nn.MaxPool2d(3, 1, 1)
 
@@ -527,7 +529,86 @@ class AE2DParser(object):
             dismin_joint = list(zip(ijoints1[dismin_joint1_index], ijoints2[dismin_joint2_index]))
             assert dismin > 0
             return dismin, dismin_joint
-        
+
+        def get_joint_connectivity(ijoint1, ijoint2, pred_valid_mask_person, joint_dis):
+            assert pred_valid_mask_person[ijoint1] and pred_valid_mask_person[ijoint2]
+            joint_dis_clone = joint_dis.copy()
+            
+            joint_dis_clone[ijoint1, ijoint2] = 100
+            joint_dis_clone[ijoint2, ijoint1] = 100
+
+            def spread_connectivity(ijoint):
+                spread_mat_joint = np.zeros(joint_dis_clone.shape[0], dtype=bool)
+                next_joints = [ijoint]
+                while len(next_joints) > 0:
+                    spread_mat_joint[next_joints] = 1
+                    next_joints = np.nonzero(((joint_dis_clone[next_joints] == 1).astype(np.int32).sum(axis=0) > 0) & pred_valid_mask_person & (~spread_mat_joint))[0]
+
+                return spread_mat_joint
+
+            spread_mat_joint1 = spread_connectivity(ijoint1)
+            spread_mat_joint2 = spread_connectivity(ijoint2)
+
+            return (spread_mat_joint1 & spread_mat_joint2).any(), spread_mat_joint1, spread_mat_joint2, joint_dis_clone
+
+        def get_person(iperson_ijoint_2_idet, topkind_samp_thr, iperson, ijoint_sel):
+            kp = np.zeros((len(ijoint_sel), 3), dtype=np.float32)
+            for ijoint in ijoint_sel:
+                idet = iperson_ijoint_2_idet[iperson][ijoint]
+                if idet >= 0:
+                    ind = topkind_samp_thr[ijoint][idet]
+                    kp[ijoint, 0] = ind % width
+                    kp[ijoint, 1] = ind / width
+                    kp[ijoint, 2] = 1
+            return kp
+
+        def get_person_scale(person_kp, joint_spdis_mean, joint_spdis_std):
+            scale = 0.
+            scale_denom = 0.
+            scale_count = 0
+            ijoints1, ijoints2 = np.nonzero(joint_spdis_std > 0)
+            # sortind = np.argsort(joint_spdis_std[ijoints1, ijoints2])
+            # ijoints1 = ijoints1[sortind]
+            # ijoints2 = ijoints2[sortind]
+            for ijoint1, ijoint2 in zip(ijoints1, ijoints2):
+                if person_kp[ijoint1, 2] > 0 and person_kp[ijoint2, 2] > 0:
+                    scale += np.linalg.norm(person_kp[ijoint1, :2] - person_kp[ijoint2, :2]) / joint_spdis_mean[ijoint1, ijoint2] / (joint_spdis_std[ijoint1, ijoint2] / joint_spdis_mean[ijoint1, ijoint2])
+                    scale_denom += 1 / (joint_spdis_std[ijoint1, ijoint2] / joint_spdis_mean[ijoint1, ijoint2])
+                    scale_count += 1
+            if scale_denom > 0:
+                return (scale / scale_denom), scale_count
+            else:
+                return None, None
+
+        def get_person_outside_ipair(person_kp, pair, joint_spdis_mean, joint_spdis_std, joint_norm_spdis_std):
+            outsider = []
+            scale = 0.
+            scale_norm = 0.
+            scale_counter = 0
+            for ipair, (ijoint1, ijoint2) in enumerate(pair):
+                if ijoint1 > ijoint2:
+                    tmp = ijoint1
+                    ijoint1 = ijoint2
+                    ijoint2 = tmp
+                if person_kp[ijoint1, 2] > 0 and person_kp[ijoint2, 2] > 0:
+                    scale += np.linalg.norm(person_kp[ijoint1, :2] - person_kp[ijoint2, :2]) / joint_spdis_mean[ijoint1, ijoint2] / (joint_spdis_std[ijoint1, ijoint2] / joint_spdis_mean[ijoint1, ijoint2])
+                    scale_norm += 1. / (joint_spdis_std[ijoint1, ijoint2] / joint_spdis_mean[ijoint1, ijoint2])
+                    scale_counter += 1
+
+            if scale_counter > 5 and scale > 0 and scale_norm > 0:
+                scale = scale / scale_norm
+
+                for ipair, (ijoint1, ijoint2) in enumerate(pair):
+                    if ijoint1 > ijoint2:
+                        tmp = ijoint1
+                        ijoint1 = ijoint2
+                        ijoint2 = tmp
+                    if person_kp[ijoint1, 2] > 0 and person_kp[ijoint2, 2] > 0:
+                        size_norm = np.linalg.norm(person_kp[ijoint1, :2] - person_kp[ijoint2, :2]) / scale
+                        if size_norm < joint_spdis_mean[ijoint1, ijoint2] - 5*joint_norm_spdis_std[ijoint1, ijoint2] or size_norm > joint_spdis_mean[ijoint1, ijoint2] + 5*joint_norm_spdis_std[ijoint1, ijoint2]:
+                            outsider.append(ipair)
+            return outsider
+
         assert isinstance(det, np.ndarray) and isinstance(field, np.ndarray)
         num_samp = det.shape[0]
         num_joint = det.shape[1]
@@ -538,11 +619,11 @@ class AE2DParser(object):
 
         joint_dis_max = self.joint_dis.max()
         assert joint_dis_max > 3
-        thres = [0] * joint_dis_max
-        thres[1] = self.fallback_group_thres1
-        thres[2] = self.fallback_group_thres2
-        for distance in range(3, len(thres)+1):
-            thres[distance-1] = self.fallback_group_thres3
+        # thres = [0] * joint_dis_max
+        # thres[1] = self.fallback_group_thres1
+        # thres[2] = self.fallback_group_thres2
+        # for distance in range(3, len(thres)+1):
+        #     thres[distance-1] = self.fallback_group_thres3
 
         topkval, topkind = det_nms.view(det_nms.size()[:2] + (-1,)).topk(self.max_num_people, dim=-1)
         det_nms = det_nms.numpy()
@@ -554,17 +635,22 @@ class AE2DParser(object):
         field = field.reshape(field.shape[:2] + (-1,))
 
         preds = []
+        scores = []
         for isamp in range(num_samp):
-            topkind_samp_thr = dict()
-            ijoint_idet_2_iperson = dict()
+            topkind_samp_thr = list()
+            ijoint_idet_2_iperson = list()
             iperson_ijoint_2_idet = list()
             person_counter = 0
-
             for ijoint in range(num_joint):
                 sel_topk_joint_thr = mask_topk_thr[isamp, ijoint].nonzero()[0]
-                topkind_samp_thr[ijoint] = topkind[isamp, ijoint][sel_topk_joint_thr]
-                ijoint_idet_2_iperson[ijoint] = [-1] * topkind_samp_thr[ijoint].shape[0]
-            
+                topkind_samp_thr.append(topkind[isamp, ijoint][sel_topk_joint_thr])
+                ijoint_idet_2_iperson.append([-1] * topkind_samp_thr[ijoint].shape[0])
+
+            sim_all_pair = []
+            ijoint_idet_all_pair = []
+            force_mag_all_pair = []
+            det_mag_all_pair = []
+
             for ipair, pr in enumerate(self.pair):
                 ijoint1 = pr[0]
                 ijoint2 = pr[1]
@@ -577,37 +663,158 @@ class AE2DParser(object):
 
                 x1 = field[isamp, ipair*2, topkind_joint1][:, np.newaxis]
                 y1 = field[isamp, ipair*2+1, topkind_joint1][:, np.newaxis]
+                mag1 = np.sqrt(x1 ** 2 + y1 ** 2)
 
                 x2 = field[isamp, ipair*2, topkind_joint2][np.newaxis, :]
                 y2 = field[isamp, ipair*2+1, topkind_joint2][np.newaxis, :]
+                mag2 = np.sqrt(x2 ** 2 + y2 ** 2)
+
+                mag_mul = mag1 * mag2
+
+                det_mag1 = topkval[isamp, ijoint1][mask_topk_thr[isamp, ijoint1].nonzero()[0]]
+                det_mag2 = topkval[isamp, ijoint2][mask_topk_thr[isamp, ijoint2].nonzero()[0]]
+
+                det_mag_mul = det_mag1[:, np.newaxis] * det_mag2[np.newaxis, :]
 
                 # TODO: situation: magnitude too small
-                sim_neg = ((-(x1 * x2 + y1 * y2) / np.sqrt((x1 ** 2 + y1 ** 2) * (x2 ** 2 + y2 ** 2)) + 1) / 2)
+                sim = (-(x1 * x2 + y1 * y2) / mag_mul + 1) / 2
 
-                # mk = Munkres()
+                sim_all_pair.append(sim.ravel())
+                force_mag_all_pair.append(mag_mul.ravel())
+                det_mag_all_pair.append(det_mag_mul.ravel())
+                ijoint_idet = np.zeros((sim.size, 5), dtype=np.int32)
+                ijoint_idet[:, 0] = ijoint1
+                ijoint_idet[:, 2] = ijoint2
+                ijdet1, ijdet2 = np.meshgrid(np.arange(topkind_joint1.shape[0]), np.arange(topkind_joint2.shape[0]), indexing='ij')
+                ijoint_idet[:, 1] = ijdet1.ravel()
+                ijoint_idet[:, 3] = ijdet2.ravel()
+                ijoint_idet[:, 4] = ipair
+                ijoint_idet_all_pair.append(ijoint_idet)
+            
+            if len(sim_all_pair) > 0:
+                sim_all_pair = np.concatenate(sim_all_pair, axis=0)
+                force_mag_all_pair = np.concatenate(force_mag_all_pair, axis=0)
+                det_mag_all_pair = np.concatenate(det_mag_all_pair, axis=0)
+                ind_sort = sim_all_pair.argsort()
+                ijoint_idet_all_pair = np.concatenate(ijoint_idet_all_pair, axis=0)
+                sim_all_pair = sim_all_pair[ind_sort]
+                force_mag_all_pair = force_mag_all_pair[ind_sort]
+                det_mag_all_pair = det_mag_all_pair[ind_sort]
+                ijoint_idet_all_pair = ijoint_idet_all_pair[ind_sort]
+            else:
+                sim_all_pair = np.zeros(0, dtype=np.float32)
+                force_mag_all_pair = np.zeros(0, dtype=np.float32)
+                det_mag_all_pair = np.zeros(0, dtype=np.float32)
+                ijoint_idet_all_pair = np.zeros((0, 5), dtype=np.int32)
 
-                # sim_neg[sim_neg > self.group_thres] = 1e10
-                # sim_neg_pad = mk.pad_matrix(sim_neg.tolist(), 1e10)
-                
-                # # \T\O\D\O: mark conflict person as DISALLOWED ?
+            # pairs_det = []
+            # sim_neg_clone = sim_rev.copy()
+            # while True:
+            #     sim_neg_min_ind = sim_neg_clone.argmin()
+            #     idet1 = sim_neg_min_ind / sim_neg_clone.shape[1]
+            #     idet2 = sim_neg_min_ind % sim_neg_clone.shape[1]
+            #     if sim_neg_clone[idet1, idet2] > self.group_thres:
+            #         break
+            #     pairs_det.append((idet1, idet2))
+            #     sim_neg_clone[idet1] = 1e10
+            #     sim_neg_clone[:, idet2] = 1e10
 
-                # pairs_det = mk.compute(sim_neg_pad)
+            # for idet1, idet2 in pairs_det:
 
-                pairs_det = []
-                sim_neg_clone = sim_neg.copy()
-                while True:
-                    sim_neg_min_ind = sim_neg_clone.argmin()
-                    idet1 = sim_neg_min_ind / sim_neg_clone.shape[1]
-                    idet2 = sim_neg_min_ind % sim_neg_clone.shape[1]
-                    if sim_neg_clone[idet1, idet2] > self.group_thres:
-                        break
-                    pairs_det.append((idet1, idet2))
-                    sim_neg_clone[idet1] = 1e10
-                    sim_neg_clone[:, idet2] = 1e10
+            def Log(logstr):
+                if False:
+                    print(logstr)
 
-                for idet1, idet2 in pairs_det:
-                    # if idet1 >= sim_neg.shape[0] or idet2 >= sim_neg.shape[1] or sim_neg[idet1, idet2] > self.group_thres:
-                    #     continue
+            class PairCollection(object):
+                class DictList(object):
+                    def __init__(self):
+                        self._arrdict = dict()
+                    def __getitem__(self, key):
+                        if key not in self._arrdict:
+                            self._arrdict[key] = list()
+                        return self._arrdict[key]
+                    def __delitem__(self, key):
+                        if isinstance(key, int) or (isinstance(key, tuple) and len(key) == 1):
+                            if key in self._arrdict:
+                                del self._arrdict[key]
+                        elif isinstance(key, tuple) and len(key) == 2:
+                            if key[0] in self._arrdict and key[1] < len(self._arrdict[key[0]]):
+                                del self._arrdict[key[0]][key[1]]
+                        else:
+                            raise ValueError()
+
+                def __init__(self):
+                    self.collection = []
+                    self.collection_reverse_dict = PairCollection.DictList()
+
+                def append(self, elem1, elem2):
+                    assert elem1 != -1 and elem2 != -1
+                    self.collection.append((elem1, elem2))
+                    self.collection_reverse_dict[elem1].append((len(self.collection) - 1, 0))
+                    self.collection_reverse_dict[elem2].append((len(self.collection) - 1, 1))
+
+                def contain(self, elem1, elem2):
+                    assert elem1 != -1 and elem2 != -1
+                    try:
+                        self.index(elem1, elem2)
+                        return True
+                    except ValueError:
+                        return False
+
+                def __contains__(self, elems):
+                    assert len(elems) == 2
+                    return self.contain(elems[0], elems[1])
+
+                def index(self, elem1, elem2):
+                    assert elem1 != -1 and elem2 != -1
+                    inds = self.collection_reverse_dict[elem1]
+                    for col_ind, pair_ind in inds:
+                        if self.collection[col_ind][1-pair_ind] == elem2:
+                            return col_ind
+                    raise ValueError("Not exist")
+
+                def modify(self, src_elem, dest_elem):
+                    assert src_elem != dest_elem
+                    inds_src = self.collection_reverse_dict[src_elem]
+                    for col_ind, pair_ind in inds_src:
+                        oppo_elem = self.collection[col_ind][1-pair_ind]
+                        assert oppo_elem != -1
+                        assert dest_elem != oppo_elem
+
+                        if (dest_elem, oppo_elem) not in self:
+                            if pair_ind == 0:
+                                self.collection[col_ind] = (dest_elem, oppo_elem)
+                                self.collection_reverse_dict[dest_elem].append((col_ind, 0))
+                            else:
+                                self.collection[col_ind] = (oppo_elem, dest_elem)
+                                self.collection_reverse_dict[dest_elem].append((col_ind, 1))
+                        else:
+                            rev_ind_rem = -1
+                            for col_rev_ind, (col_ind_oppo, pair_ind_oppo) in enumerate(self.collection_reverse_dict[oppo_elem]):
+                                if col_ind_oppo == col_ind:
+                                    rev_ind_rem = col_rev_ind
+                                    break
+                            assert rev_ind_rem != -1
+                            del self.collection_reverse_dict[oppo_elem, rev_ind_rem]
+                            self.collection[col_ind] = (-1, -1)
+                    del self.collection_reverse_dict[src_elem]
+
+            blocked_pair = PairCollection()
+            blocked_person_pair = PairCollection()
+            # Loop for connecting and disconnecting
+            for iconndis in range(2):
+                for idetpair in range(len(ijoint_idet_all_pair)):
+                    if sim_all_pair[idetpair] > self.group_thres:
+                        continue
+                    ijoint1 = ijoint_idet_all_pair[idetpair, 0]
+                    idet1 = ijoint_idet_all_pair[idetpair, 1]
+                    ijoint2 = ijoint_idet_all_pair[idetpair, 2]
+                    idet2 = ijoint_idet_all_pair[idetpair, 3]
+
+                    if ((ijoint1, idet1), (ijoint2, idet2)) in blocked_pair:
+                        Log("Blocked (%d, %d, %d, %d)" % (ijoint1, idet1, ijoint2, idet2))
+                        continue
+
                     iperson1 = ijoint_idet_2_iperson[ijoint1][idet1]
                     iperson2 = ijoint_idet_2_iperson[ijoint2][idet2]
                     if iperson1 != -1 and iperson2 == -1:
@@ -627,6 +834,9 @@ class AE2DParser(object):
                         iperson_ijoint_2_idet[person_counter][ijoint2] = idet2
                         person_counter += 1
                     elif iperson1 != iperson2:
+                        if (iperson1, iperson2) in blocked_person_pair:
+                            Log("Blocked person (%d, %d)" % (iperson1, iperson2))
+                            continue
                         # combine
                         person1 = np.array(iperson_ijoint_2_idet[iperson1], dtype=np.int32)
                         person2 = np.array(iperson_ijoint_2_idet[iperson2], dtype=np.int32)
@@ -635,12 +845,56 @@ class AE2DParser(object):
                             # TODO: conflict
                             pass
                         else:
+                            Log("Joining %d and %d" % (iperson1, iperson2))
                             person1[mask_person2] = person2[mask_person2]
                             iperson_ijoint_2_idet[iperson1] = person1.tolist()
                             iperson_ijoint_2_idet[iperson2] = [-1] * num_joint
                             for _ijoint_person2, _idet_person2 in enumerate(person2):
                                 if _idet_person2 >= 0:
                                     ijoint_idet_2_iperson[_ijoint_person2][_idet_person2] = iperson1
+
+                            blocked_person_pair.modify(iperson2, iperson1)
+                
+                breaked_any = False
+                # Loop for break too long person parts
+                while True:
+                    if iconndis == 1:
+                        break
+                    # 'breaked' is used for break to this loop and check for if continue this loop
+                    breaked = False
+                    for iperson in range(len(iperson_ijoint_2_idet)):
+                        person_kp = get_person(iperson_ijoint_2_idet, topkind_samp_thr, iperson, list(range(num_joint)))
+                        outsider = get_person_outside_ipair(person_kp, self.pair, self.joint_spdis_mean, self.joint_spdis_std, self.joint_norm_spdis_std)
+                        joint_dis = self.joint_dis
+                        for ipair in outsider:
+                            ijoint_l, ijoint_r = self.pair[ipair]
+                            idet_l, idet_r = iperson_ijoint_2_idet[iperson][ijoint_l], iperson_ijoint_2_idet[iperson][ijoint_r]
+                            if ((ijoint_l, idet_l), (ijoint_r, idet_r)) not in blocked_pair:
+                                blocked_pair.append((ijoint_l, idet_l), (ijoint_r, idet_r))
+                                Log("Blocking (%d, %d, %d, %d)" % (ijoint_l, idet_l, ijoint_r, idet_r))
+                            conn, mask_joint1, mask_joint2, joint_dis = get_joint_connectivity(ijoint_l, ijoint_r, (np.array(iperson_ijoint_2_idet[iperson]) >= 0), joint_dis)
+                            if not conn:
+                                iperson_ijoint_2_idet.append([-1] * num_joint)
+                                for ijoint in np.nonzero(mask_joint2)[0]:
+                                    idet = iperson_ijoint_2_idet[iperson][ijoint]
+                                    iperson_ijoint_2_idet[person_counter][ijoint] = idet
+                                    iperson_ijoint_2_idet[iperson][ijoint] = -1
+                                    ijoint_idet_2_iperson[ijoint][idet] = person_counter
+                                Log("Breaking %d to %d and %d" % (iperson, iperson, person_counter))
+                                blocked_person_pair.append(iperson, person_counter)
+                                
+                                Log("Blocking person (%d, %d)" % (iperson, person_counter))
+                                person_counter += 1
+                                breaked = True
+                                breaked_any = True
+                                break
+                        if breaked:
+                            break
+
+                    if not breaked:
+                        break
+                if not breaked_any:
+                    break
 
             # allocate for remaining detected point a new person
             for ijoint in range(num_joint):
@@ -687,30 +941,44 @@ class AE2DParser(object):
                                 dis_min, pairs_ijoint_dis_min = joint_distance(iperson1, iperson2, pred_valid_mask)
                                 dis_2_person[dis_min-1].append((iperson2, pairs_ijoint_dis_min))
 
+                            person1 = get_person(iperson_ijoint_2_idet, topkind_samp_thr, iperson1, list(range(num_joint)))
                             # count start from 1, and persons with distance 1 should already be merged
                             for distance in range(2, joint_dis_max+1):
                                 min_space_dis = width
                                 iperson_min_space_dis = -1
                                 for iperson2, pairs_ijoint in dis_2_person[distance-1]:
-                                    all_satisfied = True
-                                    min_space_dis_person = width
-                                    for pr_ijoint in pairs_ijoint:
-                                        point1 = topkind_samp_thr[pr_ijoint[0]][iperson_ijoint_2_idet[iperson1, pr_ijoint[0]]]
-                                        point2 = topkind_samp_thr[pr_ijoint[1]][iperson_ijoint_2_idet[iperson2, pr_ijoint[1]]]
-                                        point1 = (point1 % width, point1 / height)
-                                        point2 = (point2 % width, point2 / height)
-                                        space_dis = np.linalg.norm(np.array(point1) - np.array(point2))
-                                        if space_dis > (thres[distance-1] * width):
-                                            all_satisfied = False
-                                        if space_dis < min_space_dis_person:
-                                            min_space_dis_person = space_dis
-                                    if all_satisfied:
-                                        assert min_space_dis_person < width
-                                        if min_space_dis_person < min_space_dis:
-                                            min_space_dis = min_space_dis_person
-                                            iperson_min_space_dis = iperson2
-                                if iperson_min_space_dis != -1:
-                                    return (iperson1, iperson_min_space_dis)
+                                    person2 = get_person(iperson_ijoint_2_idet, topkind_samp_thr, iperson2, list(range(num_joint)))
+                                    scale1, num_pair_p1 = get_person_scale(person1, self.joint_spdis_mean, self.joint_spdis_std)
+                                    scale2, num_pair_p2 = get_person_scale(person2, self.joint_spdis_mean, self.joint_spdis_std)
+                                    if scale1 and scale2:
+                                        num_pair_total = (self.joint_spdis_std.size - self.joint_spdis_std.shape[0]) / 2
+                                        if (4 * (num_pair_p1 * num_pair_p2) / float(num_pair_total)**2) * max(scale1, scale2) / min(scale1, scale2) > 1.5:
+                                            continue
+                                        scale_mean = (scale1 * num_pair_p1 + scale2 * num_pair_p2) / (num_pair_p1 + num_pair_p2)
+                                    elif scale1:
+                                        scale_mean = scale1
+                                    elif scale2:
+                                        scale_mean = scale2
+                                    else:
+                                        scale_mean = None
+
+                                    if scale_mean and scale_mean > 0:
+                                        for pr_ijoint in pairs_ijoint:
+                                            point1 = person1[pr_ijoint[0]][:2]
+                                            point2 = person2[pr_ijoint[1]][:2]
+                                            space_dis = np.linalg.norm(point1 - point2)
+                                            space_dis_mean = self.joint_spdis_mean[min(pr_ijoint[0], pr_ijoint[1]), max(pr_ijoint[0], pr_ijoint[1])]
+                                            space_norm_dis_std = self.joint_norm_spdis_std[min(pr_ijoint[0], pr_ijoint[1]), max(pr_ijoint[0], pr_ijoint[1])]
+
+                                            if (space_dis / scale_mean) >= (space_dis_mean - space_norm_dis_std * 2) and (space_dis / scale_mean) <= (space_dis_mean + space_norm_dis_std * 2):
+                                                # if space_dis < min_space_dis:
+                                                #     min_space_dis = space_dis
+                                                #     iperson_min_space_dis = iperson2
+                                                return (iperson1, iperson2)
+
+                                # if iperson_min_space_dis != -1:
+                                #     return (iperson1, iperson_min_space_dis)
+
                         return None
 
                     ipersons = find_joinable_person()
@@ -733,6 +1001,7 @@ class AE2DParser(object):
 
             # convert iperson_ijoint_2_idet to prediction
             pred = np.zeros(iperson_ijoint_2_idet.shape + (3,), dtype=np.int32)
+            score = np.zeros(iperson_ijoint_2_idet.shape, dtype=np.float32)
             if iperson_ijoint_2_idet.shape[0] > 0:
                 for ijoint in range(num_joint):
                     idet_2_ind = topkind_samp_thr[ijoint]
@@ -741,9 +1010,15 @@ class AE2DParser(object):
                     sel_valid_joint_person = (iperson_ijoint_2_idet[:, ijoint] >= 0).nonzero()[0]
                     ind = idet_2_ind[iperson_ijoint_2_idet[sel_valid_joint_person, ijoint]]
 
-                    pred[sel_valid_joint_person, ijoint, 0] = ind % width
-                    pred[sel_valid_joint_person, ijoint, 1] = ind / width
+                    pred_x = ind % width
+                    pred_y = ind / width
+                    pred[sel_valid_joint_person, ijoint, 0] = pred_x
+                    pred[sel_valid_joint_person, ijoint, 1] = pred_y
                     pred[sel_valid_joint_person, ijoint, 2] = 1
+                    score[sel_valid_joint_person, ijoint] = det[isamp, ijoint][pred_y, pred_x]
+
+            assert (score >= 0).all()
+            scores.append(score)
 
             pred = pred.astype(np.float32)
             for iperson in range(pred.shape[0]):
@@ -770,7 +1045,7 @@ class AE2DParser(object):
 
             preds.append(pred)
 
-        return preds
+        return preds, scores
 
 def batch_resize(im, res):
     im_pre_shape = im.shape[:-2]
@@ -835,6 +1110,9 @@ class TestOutput(object):
                 nstack=4,
                 hg_dim=256,
                 increase=128,
+                inp_res=512,
+                inp_res_ms=[512],#[512, 256, 1024]
+                out_res=128,
                 bn=False,
                 max_num_people=30,
                 loss_det_cof=1,
@@ -912,7 +1190,7 @@ class TestOutput(object):
 
         det_map = det_map.numpy()
 
-        preds = self.exp.parser.parse(det_map, field_map)
+        preds, joint_scores = self.exp.parser.parse(det_map, field_map)
         preds_new = []
         scores = []
         for isamp, pred_samp in enumerate(preds):
@@ -925,8 +1203,7 @@ class TestOutput(object):
             else:
                 pred_samp[:, :, :2] = pred_samp[:, :, :2] * FACTOR
             preds_new.append(pred_samp)
-            # FIXME:
-            scores.append((pred_samp[:, :, 2].mean(axis=1) > 0).astype(np.float32))
+            scores.append(pred_samp[:, :, 2].mean(axis=1).astype(np.float32))
         # print("Keypoint Original:")
         # print(self.data["keypoint_ori"])
         # print("\nKeypoint Predicted:")
@@ -1095,11 +1372,11 @@ def generate_distribution(pair):
                                     "data/mscoco/mean_std.pth",
                                     train=False,
                                     single_person=False,
-                                    img_res=[INP_RES],
+                                    img_res=[512],
                                     mask_res=0,
                                     kpmap_res=0,
                                     kpmap_select="all_ex",
-                                    keypoint_res=INP_RES,
+                                    keypoint_res=512,
                                     keypoint_extender=keypoint_extender,
                                     keypoint_label_outsider=True,
                                     keypoint_filter=True)

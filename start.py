@@ -68,6 +68,17 @@ def main(args):
     config.exp_name = exp_name
 
     hparams = get_hparams(exp_name)
+
+    if args.override is not None:
+        def set_hierarchic_attr(var, var_name_hierarchic, var_value):
+            if len(var_name_hierarchic) > 1:
+                set_hierarchic_attr(var[var_name_hierarchic[0]], var_name_hierarchic[1:], var_value)
+            else:
+                var[var_name_hierarchic[0]] = var_value
+        for var_name, var_value in args.override:
+            set_hierarchic_attr(hparams, var_name.split("."), eval(var_value))
+        set_hierarchic_attr = None
+
     config.checkpoint = config.checkpoint.format(**{'exp': exp_name, 'id': hparams['id']})
     if config.resume is not None:
         config.resume = config.resume.format(**{'exp': exp_name, 'id': hparams['id']})
@@ -110,13 +121,16 @@ def main(args):
                     resume_hparams = YAML(typ='safe').load(f)
                 if resume_hparams != exp.hparams:
                     print("Warning: hparams from config and from checkpoint are not equal")
-                    print("In config:")
-                    YAML(typ='safe').dump(exp.hparams, sys.stdout)
-                    print("In checkpoint:")
-                    YAML(typ='safe').dump(resume_hparams, sys.stdout)
-                    ans = raw_input("Continue (y|n)? ")
-                    if ans != "y":
-                        sys.exit(0)
+                    if not args.ignore_hparams_differ:
+                        print("In config:")
+                        YAML(typ='safe').dump(exp.hparams, sys.stdout)
+                        print("In checkpoint:")
+                        YAML(typ='safe').dump(resume_hparams, sys.stdout)
+                        ans = raw_input("Continue (y|n)? ")
+                        if ans != "y":
+                            sys.exit(0)
+                    else:
+                        print("Difference ignored")
             print("=> loading checkpoint '{}'".format(resume_full))
             checkpoint = torch.load(resume_full)
             exp.hparams['start_epoch'] = checkpoint['epoch']
@@ -341,8 +355,11 @@ def validate(val_loader, exp, epoch, cur_step, store_pred=True):
     preces = AverageMeter()
 
     predictions = None
-    image_ids = []
-    annotates = []
+    image_ids = None
+    annotates = None
+    pred_lim = config.pred_lim
+    if pred_lim is None:
+        pred_lim = len(val_loader.dataset)
 
     # switch to evaluate mode
     exp.model.eval()
@@ -368,9 +385,13 @@ def validate(val_loader, exp, epoch, cur_step, store_pred=True):
             detail["summary"] = store_pred
 
         result = exp.process(batch, False, detail=detail)
-        if "img_index" in result:
+        if "img_index" in result and result["img_index"] is not None:
+            if image_ids is None:
+                image_ids = []
             image_ids += result["img_index"]
-        if "annotate" in result:
+        if "annotate" in result and result["annotate"] is not None:
+            if annotates is None:
+                annotates = []
             annotates += result["annotate"]
         loss = result["loss"]
         loss = loss.data[0] if loss is not None else None
@@ -385,14 +406,16 @@ def validate(val_loader, exp, epoch, cur_step, store_pred=True):
         if pred is not None and store_pred:
             if predictions is None:
                 if isinstance(pred, torch._TensorBase):
-                    predictions = torch.zeros((config.pred_lim,) + pred.size()[1:])
+                    predictions = torch.zeros((pred_lim,) + pred.size()[1:])
+                elif isinstance(pred, np.ndarray):
+                    predictions = np.zeros((pred_lim,) + pred.shape[1:])
                 elif isinstance(pred, collections.Sequence):
                     predictions = dict()
                 else:
                     raise TypeError("Not valid pred type")
 
             for n in range(len(pred)):
-                if index[n] >= config.pred_lim:
+                if index[n] >= pred_lim:
                     continue
                 predictions[index[n]] = pred[n]
 
@@ -436,7 +459,7 @@ def validate(val_loader, exp, epoch, cur_step, store_pred=True):
             print("Fast Pass!")
             break
 
-    if hasattr(exp, "evaluate"):
+    if hasattr(exp, "evaluate") and image_ids is not None and annotates is not None:
         exp.evaluate(image_ids, annotates)
 
     return losses.avg, acces.avg, preces.avg, predictions
@@ -447,13 +470,18 @@ def get_args():
     argp.add_argument('EXP', type=str)
     argp.add_argument('-r', dest='resume_file', type=str, default='model_best.pth.tar')
     argp.add_argument('--ptvsd', action='store_true')
+    argp.add_argument('--ignore-hparams-differ', action='store_true')
+    argp.add_argument('--override', nargs=2, metavar=('var', 'value'), action='append')
+    argp.add_argument('--config', nargs=2, metavar=('var', 'value'), action='append')
     return argp.parse_args()
 
-def init_config(conf_name):
+def init_config(conf_name, config_override):
     with open('experiments/config.yaml', 'r') as f:
         conf = YAML(typ='safe').load(f)
     conf_data = conf[conf_name]
     config.__dict__.update(conf_data.items())
+    if config_override:
+        config.__dict__.update(dict(map(lambda x: (x[0], eval(str(x[1]))), config_override)))
 
 def get_hparams(exp_name, hp_file='experiments/hparams.yaml'):
     with open(hp_file, 'r') as f:
@@ -470,5 +498,5 @@ if __name__ == '__main__':
             ptvsd.wait_for_attach()
             print("Debugger attached!")
 
-    init_config(args.CONF)
+    init_config(args.CONF, args.config)
     main(args)
