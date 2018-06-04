@@ -446,6 +446,84 @@ class AE2DLoss(torch.nn.Module):
 
         return loss_push, loss_pull
 
+def Log(logstr):
+    if False:
+        print(logstr)
+
+class PairCollection(object):
+    class DictList(object):
+        def __init__(self):
+            self._arrdict = dict()
+        def __getitem__(self, key):
+            if key not in self._arrdict:
+                self._arrdict[key] = list()
+            return self._arrdict[key]
+        def __delitem__(self, key):
+            if isinstance(key, int) or (isinstance(key, tuple) and len(key) == 1):
+                if key in self._arrdict:
+                    del self._arrdict[key]
+            elif isinstance(key, tuple) and len(key) == 2:
+                if key[0] in self._arrdict and key[1] < len(self._arrdict[key[0]]):
+                    del self._arrdict[key[0]][key[1]]
+            else:
+                raise ValueError()
+
+    def __init__(self):
+        self.collection = []
+        self.collection_reverse_dict = PairCollection.DictList()
+
+    def append(self, elem1, elem2):
+        assert elem1 != -1 and elem2 != -1
+        self.collection.append((elem1, elem2))
+        self.collection_reverse_dict[elem1].append((len(self.collection) - 1, 0))
+        self.collection_reverse_dict[elem2].append((len(self.collection) - 1, 1))
+
+    def contain(self, elem1, elem2):
+        assert elem1 != -1 and elem2 != -1
+        try:
+            self.index(elem1, elem2)
+            return True
+        except ValueError:
+            return False
+
+    def __contains__(self, elems):
+        assert len(elems) == 2
+        return self.contain(elems[0], elems[1])
+
+    def index(self, elem1, elem2):
+        assert elem1 != -1 and elem2 != -1
+        inds = self.collection_reverse_dict[elem1]
+        for col_ind, pair_ind in inds:
+            if self.collection[col_ind][1-pair_ind] == elem2:
+                return col_ind
+        raise ValueError("Not exist")
+
+    def modify(self, src_elem, dest_elem):
+        assert src_elem != dest_elem
+        inds_src = self.collection_reverse_dict[src_elem]
+        for col_ind, pair_ind in inds_src:
+            oppo_elem = self.collection[col_ind][1-pair_ind]
+            assert oppo_elem != -1
+            assert dest_elem != oppo_elem
+
+            if (dest_elem, oppo_elem) not in self:
+                if pair_ind == 0:
+                    self.collection[col_ind] = (dest_elem, oppo_elem)
+                    self.collection_reverse_dict[dest_elem].append((col_ind, 0))
+                else:
+                    self.collection[col_ind] = (oppo_elem, dest_elem)
+                    self.collection_reverse_dict[dest_elem].append((col_ind, 1))
+            else:
+                rev_ind_rem = -1
+                for col_rev_ind, (col_ind_oppo, pair_ind_oppo) in enumerate(self.collection_reverse_dict[oppo_elem]):
+                    if col_ind_oppo == col_ind:
+                        rev_ind_rem = col_rev_ind
+                        break
+                assert rev_ind_rem != -1
+                del self.collection_reverse_dict[oppo_elem, rev_ind_rem]
+                self.collection[col_ind] = (-1, -1)
+        del self.collection_reverse_dict[src_elem]
+
 class AE2DParser(object):
     def __init__(self, pair, joint_dis, joint_spdis_mean_file, joint_spdis_std_file, joint_norm_spdis_std_file, detection_thres=0.1, group_thres=0.1, max_num_people=30):
         self.pair = pair
@@ -720,84 +798,6 @@ class AE2DParser(object):
             #     sim_neg_clone[:, idet2] = 1e10
 
             # for idet1, idet2 in pairs_det:
-
-            def Log(logstr):
-                if False:
-                    print(logstr)
-
-            class PairCollection(object):
-                class DictList(object):
-                    def __init__(self):
-                        self._arrdict = dict()
-                    def __getitem__(self, key):
-                        if key not in self._arrdict:
-                            self._arrdict[key] = list()
-                        return self._arrdict[key]
-                    def __delitem__(self, key):
-                        if isinstance(key, int) or (isinstance(key, tuple) and len(key) == 1):
-                            if key in self._arrdict:
-                                del self._arrdict[key]
-                        elif isinstance(key, tuple) and len(key) == 2:
-                            if key[0] in self._arrdict and key[1] < len(self._arrdict[key[0]]):
-                                del self._arrdict[key[0]][key[1]]
-                        else:
-                            raise ValueError()
-
-                def __init__(self):
-                    self.collection = []
-                    self.collection_reverse_dict = PairCollection.DictList()
-
-                def append(self, elem1, elem2):
-                    assert elem1 != -1 and elem2 != -1
-                    self.collection.append((elem1, elem2))
-                    self.collection_reverse_dict[elem1].append((len(self.collection) - 1, 0))
-                    self.collection_reverse_dict[elem2].append((len(self.collection) - 1, 1))
-
-                def contain(self, elem1, elem2):
-                    assert elem1 != -1 and elem2 != -1
-                    try:
-                        self.index(elem1, elem2)
-                        return True
-                    except ValueError:
-                        return False
-
-                def __contains__(self, elems):
-                    assert len(elems) == 2
-                    return self.contain(elems[0], elems[1])
-
-                def index(self, elem1, elem2):
-                    assert elem1 != -1 and elem2 != -1
-                    inds = self.collection_reverse_dict[elem1]
-                    for col_ind, pair_ind in inds:
-                        if self.collection[col_ind][1-pair_ind] == elem2:
-                            return col_ind
-                    raise ValueError("Not exist")
-
-                def modify(self, src_elem, dest_elem):
-                    assert src_elem != dest_elem
-                    inds_src = self.collection_reverse_dict[src_elem]
-                    for col_ind, pair_ind in inds_src:
-                        oppo_elem = self.collection[col_ind][1-pair_ind]
-                        assert oppo_elem != -1
-                        assert dest_elem != oppo_elem
-
-                        if (dest_elem, oppo_elem) not in self:
-                            if pair_ind == 0:
-                                self.collection[col_ind] = (dest_elem, oppo_elem)
-                                self.collection_reverse_dict[dest_elem].append((col_ind, 0))
-                            else:
-                                self.collection[col_ind] = (oppo_elem, dest_elem)
-                                self.collection_reverse_dict[dest_elem].append((col_ind, 1))
-                        else:
-                            rev_ind_rem = -1
-                            for col_rev_ind, (col_ind_oppo, pair_ind_oppo) in enumerate(self.collection_reverse_dict[oppo_elem]):
-                                if col_ind_oppo == col_ind:
-                                    rev_ind_rem = col_rev_ind
-                                    break
-                            assert rev_ind_rem != -1
-                            del self.collection_reverse_dict[oppo_elem, rev_ind_rem]
-                            self.collection[col_ind] = (-1, -1)
-                    del self.collection_reverse_dict[src_elem]
 
             blocked_pair = PairCollection()
             blocked_person_pair = PairCollection()
