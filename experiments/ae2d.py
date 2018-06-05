@@ -158,7 +158,7 @@ class Experiment(object):
                                              keypoint_label_outsider=True,
                                              keypoint_filter=True)
 
-        self.parser = AE2DParser(PAIR, DISTANCE_MAT, detection_thres=self.hparams["eval"]["detection_thres"], group_thres=self.hparams["eval"]["group_thres"], max_num_people=self.hparams["model"]["max_num_people"])
+        self.parser = AE2DParser(PAIR, DISTANCE_MAT, "experiments/mean_length.npy", "experiments/std_length.npy", "experiments/norm_std_length.npy", detection_thres=self.hparams["eval"]["detection_thres"], group_thres=self.hparams["eval"]["group_thres"], max_num_people=self.hparams["model"]["max_num_people"])
 
         self.train_collate_fn = datasets.COCOPose.collate_function
         self.test_collate_fn = datasets.COCOPose.collate_function
