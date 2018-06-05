@@ -724,11 +724,7 @@ class AE2DParser(object):
                 topkind_samp_thr.append(topkind[isamp, ijoint][sel_topk_joint_thr])
                 ijoint_idet_2_iperson.append([-1] * topkind_samp_thr[ijoint].shape[0])
 
-            sim_all_pair = []
-            ijoint_idet_all_pair = []
-            force_mag_all_pair = []
-            det_mag_all_pair = []
-
+            sim_neg_all = list()
             for ipair, pr in enumerate(self.pair):
                 ijoint1 = pr[0]
                 ijoint2 = pr[1]
@@ -737,6 +733,7 @@ class AE2DParser(object):
                 topkind_joint2 = topkind_samp_thr[ijoint2]
 
                 if topkind_joint1.shape[0] == 0 or topkind_joint2.shape[0] == 0:
+                    sim_neg_all.append(np.zeros((0, 0), dtype=np.float32))
                     continue
 
                 x1 = field[isamp, ipair*2, topkind_joint1][:, np.newaxis]
@@ -755,110 +752,84 @@ class AE2DParser(object):
                 det_mag_mul = det_mag1[:, np.newaxis] * det_mag2[np.newaxis, :]
 
                 # TODO: situation: magnitude too small
-                sim = (-(x1 * x2 + y1 * y2) / mag_mul + 1) / 2
+                sim_neg = (-(x1 * x2 + y1 * y2) / mag_mul + 1) / 2
 
-                sim_all_pair.append(sim.ravel())
-                force_mag_all_pair.append(mag_mul.ravel())
-                det_mag_all_pair.append(det_mag_mul.ravel())
-                ijoint_idet = np.zeros((sim.size, 5), dtype=np.int32)
-                ijoint_idet[:, 0] = ijoint1
-                ijoint_idet[:, 2] = ijoint2
-                ijdet1, ijdet2 = np.meshgrid(np.arange(topkind_joint1.shape[0]), np.arange(topkind_joint2.shape[0]), indexing='ij')
-                ijoint_idet[:, 1] = ijdet1.ravel()
-                ijoint_idet[:, 3] = ijdet2.ravel()
-                ijoint_idet[:, 4] = ipair
-                ijoint_idet_all_pair.append(ijoint_idet)
-            
-            if len(sim_all_pair) > 0:
-                sim_all_pair = np.concatenate(sim_all_pair, axis=0)
-                force_mag_all_pair = np.concatenate(force_mag_all_pair, axis=0)
-                det_mag_all_pair = np.concatenate(det_mag_all_pair, axis=0)
-                ind_sort = sim_all_pair.argsort()
-                ijoint_idet_all_pair = np.concatenate(ijoint_idet_all_pair, axis=0)
-                sim_all_pair = sim_all_pair[ind_sort]
-                force_mag_all_pair = force_mag_all_pair[ind_sort]
-                det_mag_all_pair = det_mag_all_pair[ind_sort]
-                ijoint_idet_all_pair = ijoint_idet_all_pair[ind_sort]
-            else:
-                sim_all_pair = np.zeros(0, dtype=np.float32)
-                force_mag_all_pair = np.zeros(0, dtype=np.float32)
-                det_mag_all_pair = np.zeros(0, dtype=np.float32)
-                ijoint_idet_all_pair = np.zeros((0, 5), dtype=np.int32)
+                sim_neg_all.append(sim_neg)
 
-            # pairs_det = []
-            # sim_neg_clone = sim_rev.copy()
-            # while True:
-            #     sim_neg_min_ind = sim_neg_clone.argmin()
-            #     idet1 = sim_neg_min_ind / sim_neg_clone.shape[1]
-            #     idet2 = sim_neg_min_ind % sim_neg_clone.shape[1]
-            #     if sim_neg_clone[idet1, idet2] > self.group_thres:
-            #         break
-            #     pairs_det.append((idet1, idet2))
-            #     sim_neg_clone[idet1] = 1e10
-            #     sim_neg_clone[:, idet2] = 1e10
-
-            # for idet1, idet2 in pairs_det:
 
             blocked_pair = PairCollection()
             blocked_person_pair = PairCollection()
             # Loop for connecting and disconnecting
-            for iconndis in range(2):
-                for idetpair in range(len(ijoint_idet_all_pair)):
-                    if sim_all_pair[idetpair] > self.group_thres:
-                        continue
-                    ijoint1 = ijoint_idet_all_pair[idetpair, 0]
-                    idet1 = ijoint_idet_all_pair[idetpair, 1]
-                    ijoint2 = ijoint_idet_all_pair[idetpair, 2]
-                    idet2 = ijoint_idet_all_pair[idetpair, 3]
+            CONNECT_TIMES = 2
+            for iconndis in range(CONNECT_TIMES):
+                for ipair, pr in enumerate(self.pair):
+                    ijoint1 = pr[0]
+                    ijoint2 = pr[1]
 
-                    if ((ijoint1, idet1), (ijoint2, idet2)) in blocked_pair:
-                        Log("Blocked (%d, %d, %d, %d)" % (ijoint1, idet1, ijoint2, idet2))
+                    pairs_det = []
+                    sim_neg_clone = sim_neg_all[ipair].copy()
+                    if sim_neg_clone.shape[0] == 0:
                         continue
 
-                    iperson1 = ijoint_idet_2_iperson[ijoint1][idet1]
-                    iperson2 = ijoint_idet_2_iperson[ijoint2][idet2]
-                    if iperson1 != -1 and iperson2 == -1:
-                        # assigning joint2
-                        ijoint_idet_2_iperson[ijoint2][idet2] = iperson1
-                        iperson_ijoint_2_idet[iperson1][ijoint2] = idet2
-                    elif iperson1 == -1 and iperson2 != -1:
-                        # assigning joint1
-                        ijoint_idet_2_iperson[ijoint1][idet1] = iperson2
-                        iperson_ijoint_2_idet[iperson2][ijoint1] = idet1
-                    elif iperson1 == -1 and iperson2 == -1:
-                        # assigning both
-                        ijoint_idet_2_iperson[ijoint1][idet1] = person_counter
-                        ijoint_idet_2_iperson[ijoint2][idet2] = person_counter
-                        iperson_ijoint_2_idet.append([-1] * num_joint)
-                        iperson_ijoint_2_idet[person_counter][ijoint1] = idet1
-                        iperson_ijoint_2_idet[person_counter][ijoint2] = idet2
-                        person_counter += 1
-                    elif iperson1 != iperson2:
-                        if (iperson1, iperson2) in blocked_person_pair:
-                            Log("Blocked person (%d, %d)" % (iperson1, iperson2))
+                    while True:
+                        sim_neg_min_ind = sim_neg_clone.argmin()
+                        idet1 = sim_neg_min_ind / sim_neg_clone.shape[1]
+                        idet2 = sim_neg_min_ind % sim_neg_clone.shape[1]
+                        if sim_neg_clone[idet1, idet2] > self.group_thres:
+                            break
+                        pairs_det.append((idet1, idet2))
+                        sim_neg_clone[idet1] = 1e10
+                        sim_neg_clone[:, idet2] = 1e10
+
+                    for idet1, idet2 in pairs_det:
+                        if ((ijoint1, idet1), (ijoint2, idet2)) in blocked_pair:
+                            Log("Blocked (%d, %d, %d, %d)" % (ijoint1, idet1, ijoint2, idet2))
                             continue
-                        # combine
-                        person1 = np.array(iperson_ijoint_2_idet[iperson1], dtype=np.int32)
-                        person2 = np.array(iperson_ijoint_2_idet[iperson2], dtype=np.int32)
-                        mask_person2 = (person2 >= 0)
-                        if ((person1 >= 0) & mask_person2).any():
-                            # TODO: conflict
-                            pass
-                        else:
-                            Log("Joining %d and %d" % (iperson1, iperson2))
-                            person1[mask_person2] = person2[mask_person2]
-                            iperson_ijoint_2_idet[iperson1] = person1.tolist()
-                            iperson_ijoint_2_idet[iperson2] = [-1] * num_joint
-                            for _ijoint_person2, _idet_person2 in enumerate(person2):
-                                if _idet_person2 >= 0:
-                                    ijoint_idet_2_iperson[_ijoint_person2][_idet_person2] = iperson1
 
-                            blocked_person_pair.modify(iperson2, iperson1)
-                
+                        iperson1 = ijoint_idet_2_iperson[ijoint1][idet1]
+                        iperson2 = ijoint_idet_2_iperson[ijoint2][idet2]
+                        if iperson1 != -1 and iperson2 == -1:
+                            # assigning joint2
+                            ijoint_idet_2_iperson[ijoint2][idet2] = iperson1
+                            iperson_ijoint_2_idet[iperson1][ijoint2] = idet2
+                        elif iperson1 == -1 and iperson2 != -1:
+                            # assigning joint1
+                            ijoint_idet_2_iperson[ijoint1][idet1] = iperson2
+                            iperson_ijoint_2_idet[iperson2][ijoint1] = idet1
+                        elif iperson1 == -1 and iperson2 == -1:
+                            # assigning both
+                            ijoint_idet_2_iperson[ijoint1][idet1] = person_counter
+                            ijoint_idet_2_iperson[ijoint2][idet2] = person_counter
+                            iperson_ijoint_2_idet.append([-1] * num_joint)
+                            iperson_ijoint_2_idet[person_counter][ijoint1] = idet1
+                            iperson_ijoint_2_idet[person_counter][ijoint2] = idet2
+                            person_counter += 1
+                        elif iperson1 != iperson2:
+                            if (iperson1, iperson2) in blocked_person_pair:
+                                Log("Blocked person (%d, %d)" % (iperson1, iperson2))
+                                continue
+                            # combine
+                            person1 = np.array(iperson_ijoint_2_idet[iperson1], dtype=np.int32)
+                            person2 = np.array(iperson_ijoint_2_idet[iperson2], dtype=np.int32)
+                            mask_person2 = (person2 >= 0)
+                            if ((person1 >= 0) & mask_person2).any():
+                                # TODO: conflict
+                                pass
+                            else:
+                                Log("Joining %d and %d" % (iperson1, iperson2))
+                                person1[mask_person2] = person2[mask_person2]
+                                iperson_ijoint_2_idet[iperson1] = person1.tolist()
+                                iperson_ijoint_2_idet[iperson2] = [-1] * num_joint
+                                for _ijoint_person2, _idet_person2 in enumerate(person2):
+                                    if _idet_person2 >= 0:
+                                        ijoint_idet_2_iperson[_ijoint_person2][_idet_person2] = iperson1
+
+                                blocked_person_pair.modify(iperson2, iperson1)
+                    
                 breaked_any = False
                 # Loop for break too long person parts
                 while True:
-                    if iconndis == 1:
+                    if iconndis == CONNECT_TIMES - 1:
                         break
                     # 'breaked' is used for break to this loop and check for if continue this loop
                     breaked = False
