@@ -673,7 +673,7 @@ class AE2DParser(object):
                     scale_norm += 1. / (joint_spdis_std[ijoint1, ijoint2] / joint_spdis_mean[ijoint1, ijoint2])
                     scale_counter += 1
 
-            if scale_counter > 3 and scale > 0 and scale_norm > 0:
+            if scale_counter > 5 and scale > 0 and scale_norm > 0:
                 scale = scale / scale_norm
 
                 for ipair, (ijoint1, ijoint2) in enumerate(pair):
@@ -683,7 +683,7 @@ class AE2DParser(object):
                         ijoint2 = tmp
                     if person_kp[ijoint1, 2] > 0 and person_kp[ijoint2, 2] > 0:
                         size_norm = np.linalg.norm(person_kp[ijoint1, :2] - person_kp[ijoint2, :2]) / scale
-                        if size_norm < joint_spdis_mean[ijoint1, ijoint2] - 7*joint_norm_spdis_std[ijoint1, ijoint2] or size_norm > joint_spdis_mean[ijoint1, ijoint2] + 7*joint_norm_spdis_std[ijoint1, ijoint2]:
+                        if size_norm < joint_spdis_mean[ijoint1, ijoint2] - 5*joint_norm_spdis_std[ijoint1, ijoint2] or size_norm > joint_spdis_mean[ijoint1, ijoint2] + 5*joint_norm_spdis_std[ijoint1, ijoint2]:
                             outsider.append(ipair)
             return outsider
 
