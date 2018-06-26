@@ -131,14 +131,14 @@ ae2d:
     lr_gamma: 0.5
     epochs: 200
     schedule: [100]
-    train_batch: 12
-    test_batch: 12
+    train_batch: 8
+    test_batch: 8
     model:
         nstack: 4
         hg_dim: 256
         increase: 128
         inp_res: 512
-        inp_res_ms: [512, 256, 1024]
+        inp_res_ms: [512]
         out_res: 128
         bn: false
         max_num_people: 30
