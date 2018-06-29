@@ -195,7 +195,8 @@ def main(args):
             break
 
         cur_step = len(train_loader) * (epoch + 1)
-        exp.summary_histogram(cur_step)
+        if "summary_histogram" in exp.__dict__:
+            exp.summary_histogram(cur_step)
 
         # evaluate on validation set
         if config.skip_val > 0 and (epoch + 1) % config.skip_val == 0:

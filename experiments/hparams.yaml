@@ -148,3 +148,23 @@ ae2d:
     eval:
         detection_thres: 0.05
         group_thres: 0.1
+
+baybase:
+    <<: *DEFAULT
+    id: 0
+    name: baybase
+    learning_rate: 5.e-4
+    lr_gamma: 0.5
+    epochs: 200
+    schedule: [100]
+    train_batch: 32
+    test_batch: 32
+    model:
+        inp_shape: [192, 256]
+        out_shape: [48, 64]
+        gaussian_kernels: [15, 11, 9, 7]
+    dataset:
+        ext_border: [0.1, 0.15]
+        scale_factor: 0.25
+        rotate_factor: 30
+        translation_factor: 0.05

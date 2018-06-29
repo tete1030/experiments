@@ -6,6 +6,7 @@ import json
 import math
 import cv2
 import copy
+from scipy.stats import truncnorm
 
 import torch
 import torch.utils.data as data
@@ -39,7 +40,7 @@ class COCOPose(data.Dataset):
                  keypoint_extender=None,
                  scale_factor=0.25, rot_factor=30, person_random_selection=False,
                  custom_generator=None):
-        assert not single_person
+        assert not single_person # not supported in this class
         self.img_folder = img_folder    # root image folders
         self.is_train = train           # training set or test set
         self.single_person = single_person
@@ -408,3 +409,257 @@ class COCOPose(data.Dataset):
             return len(self.train)
         else:
             return len(self.valid)
+
+class COCOSinglePose(data.Dataset):
+    def __init__(self, img_folder, anno, split_file, meanstd_file,
+                 is_train, img_res=(192, 256), minus_mean=True,
+                 ext_border=(0., 0.),
+                 kpmap_res=(48, 64), keypoint_res=None,
+                 kpmap_sigma=1, scale_factor=0.25, rot_factor=30, trans_factor=0.05):
+        self.img_folder = img_folder    # root image folders
+        self.is_train = is_train           # training set or test set
+        self.img_res = tuple(img_res)
+        self.minus_mean = minus_mean
+        self.ext_border = tuple(ext_border) if ext_border else None
+        self.kpmap_res = tuple(kpmap_res) if kpmap_res else None
+        assert isinstance(kpmap_sigma, (int, long, float, list))
+        self.kpmap_sigma = kpmap_sigma
+        self.keypoint_res = tuple(keypoint_res) if keypoint_res else None
+        self.scale_factor = scale_factor
+        self.rot_factor = rot_factor
+        self.trans_factor = trans_factor
+
+        if self.kpmap_res is not None:
+            assert float(self.img_res[0]) / float(self.img_res[1]) == float(self.kpmap_res[0]) / float(self.kpmap_res[1])
+        
+        if self.keypoint_res is not None:
+            assert float(self.img_res[0]) / float(self.img_res[1]) == float(self.keypoint_res[0]) / float(self.keypoint_res[1])
+
+        self.heatmap_gen = HeatmapGenerator(out_res=self.kpmap_res)
+
+        self.debug = False
+
+        # create train/val split
+        if isinstance(anno, COCO):
+            self.coco = anno
+        else:
+            self.coco = COCO(anno)
+
+        self.train, self.valid = self._split(split_file)
+        if self.minus_mean:
+            self.mean, self.std = self._compute_mean(meanstd_file)
+
+    def _split(self, split_file):
+        if split_file is not None and os.path.isfile(split_file):
+            split = torch.load(split_file)
+            train = split["train"]
+            valid = split["valid"]
+        else:
+            raise ValueError("%s not found" % (split_file,))
+
+        return train, valid
+
+    def _compute_mean(self, meanstd_file):
+        if meanstd_file is None:
+            print("Warning: not using mean_std")
+            return np.array([0.]*3), np.array([1.]*3)
+
+        if os.path.isfile(meanstd_file):
+            meanstd = torch.load(meanstd_file)
+        else:
+            raise ValueError("meanstd_file does not exist")
+
+        print('    Mean: %.4f, %.4f, %.4f' % \
+                (meanstd['mean'][0], meanstd['mean'][1], meanstd['mean'][2]))
+        print('    Std:  %.4f, %.4f, %.4f' % \
+                (meanstd['std'][0], meanstd['std'][1], meanstd['std'][2]))
+
+        assert type(meanstd['mean']) is np.ndarray
+        return meanstd['mean'].astype(np.float32)/255, meanstd['std'].astype(np.float32)/255
+
+    def restore_image(self, img):
+        if not isinstance(img, np.ndarray):
+            img = img.numpy()
+        img = img.astype(np.float32)
+        if img.ndim == 4:
+            img = img.transpose(0, 2, 3, 1)
+        elif img.ndim == 3:
+            img = img.transpose(1, 2, 0)
+        else:
+            raise ValueError("Unrecognized image shape")
+        return ((img + self.mean) * 255).round().clip(0, 255).astype(np.uint8)
+
+    def __len__(self):
+        if self.is_train:
+            return len(self.train)
+        else:
+            return len(self.valid)
+
+    def _load_image(self, img_index, bgr=True):
+        img_info = self.coco.loadImgs(img_index)[0]
+        path = img_info['file_name']
+        img_file = os.path.join(self.img_folder, path)
+        img_bgr = cv2.imread(img_file)
+        return img_bgr if bgr else img_bgr[..., ::-1]
+
+    def _draw_label(self, points, target_map, sigma=None):
+        # Generate ground truth
+        kwargs = dict()
+        if sigma is not None:
+            kwargs['sigma'] = sigma
+        for ijoint in range(points.shape[0]):
+            if points[ijoint, 2] > 0:
+                self.heatmap_gen(points[ijoint, :2], ijoint, target_map, **kwargs)
+
+    def __getitem__(self, index):
+        sf = float(self.scale_factor)
+        rf = float(self.rot_factor)
+
+        if self.is_train:
+            img_index, ann_index = self.train[index]
+        else:
+            img_index, ann_index = self.valid[index]
+
+        img_bgr = self._load_image(img_index, bgr=True)
+        ann = self.coco.anns[ann_index]
+
+        img_size = np.array(list(img_bgr.shape[:2][::-1]), dtype=np.float32) # W, H
+        img_res_np = np.array(self.img_res, dtype=np.float32)
+        bbox = np.array(ann['bbox']).reshape(4).astype(np.float32)
+        crop_size = bbox[2:] * (1 + np.array(self.ext_border, dtype=np.float32))
+
+        center = bbox[:2] + bbox[2:] / 2
+
+        crop_ratio = crop_size / img_res_np
+        if crop_ratio[0] > crop_ratio[1]:
+            scale = crop_size[0]
+            arg_min_shape = 0
+        else:
+            scale = crop_size[1]
+            arg_min_shape = 1
+        min_crop_size = crop_size.min()
+        rotate = 0
+        flip_status = False
+
+        if self.is_train:
+            scale_aug = truncnorm.rvs(-1, 1, loc=1, scale=sf)
+            scale = scale * scale_aug
+            rotate = truncnorm.rvs(-1, 1, loc=0, scale=rf) \
+                    if np.random.rand() <= 0.6 else 0
+
+            center_aug_off = truncnorm.rvs(-2, 2, loc=0, scale=self.trans_factor * min_crop_size, size=2)
+            center += center_aug_off
+
+            # Color distort
+            img_bgr = (img_bgr.astype(np.float32) * (np.random.rand(3) * 0.4 + 0.8)).round().clip(0, 255).astype(np.uint8)
+
+            # Flip
+            if np.random.rand() <= 0.5:
+                flip_status = True
+                img_bgr = cv2.flip(img_bgr, 1)
+                center[0] = img_size[0] - center[0]
+
+        img_transform_mat = get_transform(center, None, (self.img_res[0], self.img_res[1]), rot=rotate, scale=float(self.img_res[arg_min_shape]) / scale)
+        img_bgr_warp = cv2.warpAffine(img_bgr, img_transform_mat[:2], dsize=(self.img_res[0], self.img_res[1]), flags=cv2.INTER_LINEAR)
+        img = img_bgr_warp[..., ::-1].astype(np.float32) / 255
+
+        if self.minus_mean:
+            img -= self.mean
+        img = img.transpose(2, 0, 1)
+
+        keypoints = np.array(ann["keypoints"], dtype=np.float32).reshape((NUM_PARTS, 3))
+
+        if flip_status:
+            keypoints_tf = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
+        else:
+            keypoints_tf = keypoints.copy()
+        
+        keypoints_tf = np.c_[
+                transform(keypoints_tf[:, :2], center, None, (self.kpmap_res[0], self.kpmap_res[1]), rot=rotate, scale=float(self.kpmap_res[arg_min_shape]) / scale),
+                keypoints_tf[:, [2]]
+            ]
+
+        keypoints_tf_ret = keypoints_tf.copy()
+        if self.keypoint_res and self.keypoint_res != self.kpmap_res:
+            keypoints_tf_ret[..., :2] = keypoints_tf_ret[..., :2] * (float(self.keypoint_res) / self.kpmap_res)
+
+        if not isinstance(self.kpmap_sigma, list):
+            kp_map = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
+            self._draw_label(keypoints_tf, kp_map, sigma=self.kpmap_sigma)
+        else:
+            kp_map = list()
+            for kpmsigma in self.kpmap_sigma:
+                kpm = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
+                self._draw_label(keypoints_tf, kpm, sigma=kpmsigma)
+                kp_map.append(kpm)
+
+        if self.debug:
+            # print("Aug Setting: scale_fac %.2f , rotate_fac %.2f, trans_fac %.2f" % (sf, rf, self.trans_factor))
+            print("Aug: rescale %.2f , rot %.2f , center_off (%.2f, %.2f), flip %s" % (
+                scale_aug, rotate, center_aug_off[0], center_aug_off[1], "Y" if flip_status else "N"))
+
+            import matplotlib.pyplot as plt
+            if flip_status:
+                bbox[0] = img_size[0] - bbox[0] - bbox[2]
+            cv2.rectangle(img_bgr, (bbox[0], bbox[1]), ((bbox[0] + bbox[2]), (bbox[1] + bbox[3])), (255, 0, 0), thickness=2)
+
+            plt.figure()
+            plt.imshow(img_bgr[..., ::-1])
+            plt.title("Original Image")
+            plt.figure()
+            plt.imshow(img_bgr_warp[..., ::-1])
+            plt.title("Cropped Image")
+
+            if not isinstance(kp_map, list):
+                kp_map_list = [kp_map]
+            else:
+                kp_map_list = kp_map
+            img_small = cv2.resize(img_bgr_warp, (kp_map_list[0].shape[2], kp_map_list[0].shape[1]))
+            for i, kpm in enumerate([kp_map_list[-1]]):
+                fig, axes = plt.subplots(nrows=3, ncols=6, figsize=(18,12), gridspec_kw={"hspace": 0, "wspace": 0})
+                for iax in range(axes.size):
+                    ax = axes.flat[iax]
+                    ax.tick_params(bottom="off", left="off", labelbottom="off", labelleft="off")
+                    if iax < kpm.shape[0]:
+                        ax.imshow(cv2.addWeighted(img_small, 1.0, cv2.applyColorMap((kpm[iax].clip(0., 1.) * 255).round().astype(np.uint8), cv2.COLORMAP_HOT), 0.4, 0)[..., ::-1])
+                    else:
+                        ax.axis("off")
+                fig.suptitle("kernel: %d x %d" % (self.kpmap_sigma[i], self.kpmap_sigma[i]))
+
+            plt.show()
+
+        result = {
+            "index": index,
+            "img_index": img_index,
+            "ann_index": ann_index,
+            "img": torch.from_numpy(img),
+            "center": torch.from_numpy(center),
+            "scale": scale,
+            "keypoint_ori": torch.from_numpy(keypoints),
+            "keypoint": torch.from_numpy(keypoints_tf_ret),
+            "img_transform": torch.from_numpy(img_transform_mat),
+            "img_flipped": flip_status,
+            "img_ori_size": torch.from_numpy(img_size.astype(np.int32)),
+            "keypoint_map": [torch.from_numpy(kpm) for kpm in kp_map] if isinstance(kp_map, list) else torch.from_numpy(kp_map)
+        }
+
+        return result
+
+    def __len__(self):
+        if self.is_train:
+            return len(self.train)
+        else:
+            return len(self.valid)
+
+    @classmethod
+    def collate_function(cls, batch):
+        NON_COLLATE_KEYS = ["img_flipped"]
+        collate_fn = data.dataloader.default_collate
+        all_keys = batch[0].keys()
+        result = dict()
+        for k in all_keys:
+            if k in NON_COLLATE_KEYS:
+                result[k] = [sample[k] for sample in batch]
+            else:
+                result[k] = collate_fn([sample[k] for sample in batch])
+        return result

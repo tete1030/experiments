@@ -11,6 +11,9 @@ runs
 sftp-config.json
 pose/models/ae_loss/lib
 
+# Pretrained models
+pretrained/*.pth
+
 __pycache__/
 *.py[cod]
 *$py.class
