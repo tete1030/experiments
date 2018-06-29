@@ -207,7 +207,7 @@ class COCOPose(data.Dataset):
         img_size = np.array(list(img_bgr.shape[:2][::-1]), dtype=np.float32) # W, H
 
         center = img_size / 2
-        scale = float(img_size.max()) / 200
+        scale = float(img_size.max())
         rotate = 0
         flip_status = False
 
@@ -217,7 +217,7 @@ class COCOPose(data.Dataset):
             rotate = (np.random.randn(1) * rf).clip(-2*rf, 2*rf)[0] \
                     if np.random.rand() <= 0.6 else 0
 
-            center += np.random.randint(-40 * scale, 40 * scale, size=2)
+            center += np.random.randint(-0.02 * scale, 0.02 * scale, size=2)
 
             # Color distort
             img_bgr = (img_bgr.astype(np.float32) * (np.random.rand(3) * 0.4 + 0.8)).round().clip(0, 255).astype(np.uint8)

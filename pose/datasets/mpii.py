@@ -114,7 +114,7 @@ class MPII(data.Dataset):
         img_size = np.array(list(img_bgr.shape[:2][::-1]), dtype=np.float32) # W, H
 
         center = np.array(ann["objpos"], dtype=np.float32)
-        scale = ann["scale"]
+        scale = ann["scale"] * 200
         rotate = 0
         flip = False
 
@@ -124,7 +124,7 @@ class MPII(data.Dataset):
             rotate = (np.random.randn(1) * rf).clip(-2*rf, 2*rf)[0] \
                     if np.random.rand() <= 0.6 else 0
 
-            center += np.random.randint(-40 * scale, 40 * scale, size=2)
+            center += np.random.randint(-0.02 * scale, 0.02 * scale, size=2)
 
             # Flip
             if np.random.rand() <= 0.5:
@@ -170,7 +170,7 @@ class MPII(data.Dataset):
         extra = {
             'index': index,
             'center': torch.from_numpy(center),
-            'scale': scale, 
+            'scale': scale,
             'keypoints': torch.from_numpy(keypoints) if keypoints.shape[0] > 1 else None,
             'keypoints_tf': torch.from_numpy(keypoints_tf) if keypoints.shape[0] > 1 else None
         }
@@ -196,7 +196,7 @@ class MPII(data.Dataset):
         img_size = np.array(list(img_bgr.shape[:2][::-1]), dtype=np.float32) # W, H
 
         center = img_size / 2
-        scale = float(img_size.max()) / 200
+        scale = float(img_size.max())
         rotate = 0
         flip = False
 
@@ -206,7 +206,7 @@ class MPII(data.Dataset):
             rotate = (np.random.randn(1) * rf).clip(-2*rf, 2*rf)[0] \
                     if np.random.rand() <= 0.6 else 0
 
-            center += np.random.randint(-40 * scale, 40 * scale, size=2)
+            center += np.random.randint(-0.02 * scale, 0.02 * scale, size=2)
 
             # Flip
             if np.random.rand() <= 0.5:
