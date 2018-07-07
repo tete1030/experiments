@@ -164,7 +164,8 @@ def main(args):
         num_workers=config.workers,
         shuffle=True,
         pin_memory=True,
-        drop_last=exp.train_drop_last if hasattr(exp, "train_drop_last") else False)
+        drop_last=exp.train_drop_last if hasattr(exp, "train_drop_last") else False,
+        worker_init_fn=exp.worker_init_fn if hasattr(exp, "worker_init_fn") else None)
 
     val_loader = torch.utils.data.DataLoader(
         exp.val_dataset,
@@ -172,7 +173,8 @@ def main(args):
         batch_size=exp.hparams['test_batch'],
         num_workers=config.workers,
         shuffle=False,
-        pin_memory=True)
+        pin_memory=True,
+        worker_init_fn=exp.worker_init_fn if hasattr(exp, "worker_init_fn") else None)
 
     if config.evaluate:
         print('\nEvaluation-only mode')
