@@ -1,9 +1,9 @@
 #!python3
 import torch
+import numpy as np
 import torch.nn as nn
 from torch.nn import DataParallel
 from torch.nn import MSELoss
-from torch.autograd import Variable
 from pycocotools.coco import COCO
 
 import math
@@ -69,13 +69,13 @@ class Experiment(object):
         keypoint = batch["keypoint"]
         volatile = not train
 
-        det_map_gt_vars = [Variable(dm.cuda(), volatile=volatile) for dm in det_maps_gt]
-        output_vars = self.model(Variable(img, volatile=volatile))
+        det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
+        output_vars = self.model(img)
 
         loss = 0.
         for ilabel, (outv, gtv) in enumerate(zip(output_vars, det_map_gt_vars)):
             if ilabel < len(det_map_gt_vars) - 1:
-                gtv *= Variable((keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda())
+                gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
             loss += self.criterion(outv, gtv)
         loss = loss / len(det_map_gt_vars)
 
@@ -314,7 +314,7 @@ class globalNet(nn.Module):
 
         layers = []
 
-        layers.append(torch.nn.Upsample(scale_factor=2, mode='bilinear'))
+        layers.append(torch.nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True))
         layers.append(torch.nn.Conv2d(256, 256,
             kernel_size=1, stride=1, bias=True))
 
@@ -332,7 +332,7 @@ class globalNet(nn.Module):
         layers.append(nn.Conv2d(256, num_points,
             kernel_size=3, stride=1, padding=1, bias=False))
         layers.append(nn.BatchNorm2d(num_points))
-        layers.append(nn.Upsample(size=output_shape, mode='bilinear'))
+        layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
 
         return nn.Sequential(*layers)
 

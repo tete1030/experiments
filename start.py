@@ -260,91 +260,92 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
 
     iter_length = len(train_loader)
 
-    for i, batch in enumerate(train_loader):
-        em_valid = False
-        if em_valid_int > 0 and (i+1) % em_valid_int == 0 and iter_length - (i+1) >= max(em_valid_int/2, 1):
-            em_valid = True
+    with torch.autograd.enable_grad():
+        for i, batch in enumerate(train_loader):
+            em_valid = False
+            if em_valid_int > 0 and (i+1) % em_valid_int == 0 and iter_length - (i+1) >= max(em_valid_int/2, 1):
+                em_valid = True
 
-        # measure data loading time
-        data_time.update(time.time() - end)
+            # measure data loading time
+            data_time.update(time.time() - end)
 
-        cur_step = iter_length * epoch + i
+            cur_step = iter_length * epoch + i
 
-        detail = {
-            "epoch": epoch,
-            "iter": i,
-            "iter_len": iter_length,
-            "step": cur_step,
-            "summary": False
-        }
-        if em_valid or (i == iter_length - 1) or (config.fast_pass > 0 and i == config.fast_pass - 1):
-            detail["summary"] = True
+            detail = {
+                "epoch": epoch,
+                "iter": i,
+                "iter_len": iter_length,
+                "step": cur_step,
+                "summary": False
+            }
+            if em_valid or (i == iter_length - 1) or (config.fast_pass > 0 and i == config.fast_pass - 1):
+                detail["summary"] = True
 
-        result = exp.process(batch, True, detail=detail)
-        loss = result["loss"]
-        acc = result["acc"]
-        prec = result["prec"]
+            result = exp.process(batch, True, detail=detail)
+            loss = result["loss"]
+            acc = result["acc"]
+            prec = result["prec"]
 
-        if not (hasattr(exp, "step_process") and exp.step_process is True):
-            exp.optimizer.zero_grad()
-            loss.backward()
-            exp.optimizer.step()
+            if not (hasattr(exp, "step_process") and exp.step_process is True):
+                exp.optimizer.zero_grad()
+                loss.backward()
+                exp.optimizer.step()
 
-        batch_size = len(batch["index"])
-        loss = loss.data[0] if loss is not None else None
-        # measure accuracy and record loss
-        if loss is not None:
-            losses.update(loss, batch_size)
-            config.tb_writer.add_scalars(config.exp_name + "/loss", {"train": loss}, cur_step)
-        if acc is not None:
-            acces.update(acc, batch_size)
-            config.tb_writer.add_scalars(config.exp_name + "/acc", {"train": acc}, cur_step)
-        if prec is not None:
-            preces.update(prec, batch_size)
-            config.tb_writer.add_scalars(config.exp_name + "/prec", {"train": prec}, cur_step)
+            batch_size = len(batch["index"])
+            loss = loss.item() if loss is not None else None
+            # measure accuracy and record loss
+            if loss is not None:
+                losses.update(loss, batch_size)
+                config.tb_writer.add_scalars(config.exp_name + "/loss", {"train": loss}, cur_step)
+            if acc is not None:
+                acces.update(acc, batch_size)
+                config.tb_writer.add_scalars(config.exp_name + "/acc", {"train": acc}, cur_step)
+            if prec is not None:
+                preces.update(prec, batch_size)
+                config.tb_writer.add_scalars(config.exp_name + "/prec", {"train": prec}, cur_step)
 
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
-
-        loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n" +
-                   "\tLoss: {loss:.4f} | Acc: {acc:7.4f} | Prec: {prec:7.4f}\n" +
-                   "\tLos_: {avgloss:.4f} | Ac_: {avgacc:7.4f} | Pre_: {avgprec:7.4f}").format(
-            epoch=epoch + 1,
-            batch=i + 1,
-            size_width=len(str(iter_length)),
-            size=iter_length,
-            data=data_time.val,
-            bt=batch_time.val,
-            total=time.time() - start_time,
-            loss=loss if loss is not None else -1.,
-            acc=acc if acc is not None else -1.,
-            prec=prec if prec is not None else -1.,
-            avgloss=losses.avg,
-            avgacc=acces.avg,
-            avgprec=preces.avg
-        )
-        print(loginfo)
-
-        if config.sigint_triggered:
-            break
-
-        if em_valid:
-            print("\nEmbeded Validation:")
-            valid_loss, valid_acc, valid_prec, _ = validate(val_loader, exp, epoch, cur_step + 1, store_pred=True)
-            config.tb_writer.add_scalars(config.exp_name + "/loss", {"valid": valid_loss}, cur_step + 1)
-            config.tb_writer.add_scalars(config.exp_name + "/acc", {"valid": valid_acc}, cur_step + 1)
-            config.tb_writer.add_scalars(config.exp_name + "/prec", {"valid": valid_prec}, cur_step + 1)
-            print("")
-            exp.model.train()
+            # measure elapsed time
+            batch_time.update(time.time() - end)
             end = time.time()
 
-        if config.sigint_triggered:
-            break
+            loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n" +
+                    "\tLoss: {loss:.4f} | Acc: {acc:7.4f} | Prec: {prec:7.4f}\n" +
+                    "\tLos_: {avgloss:.4f} | Ac_: {avgacc:7.4f} | Pre_: {avgprec:7.4f}").format(
+                epoch=epoch + 1,
+                batch=i + 1,
+                size_width=len(str(iter_length)),
+                size=iter_length,
+                data=data_time.val,
+                bt=batch_time.val,
+                total=time.time() - start_time,
+                loss=loss if loss is not None else -1.,
+                acc=acc if acc is not None else -1.,
+                prec=prec if prec is not None else -1.,
+                avgloss=losses.avg,
+                avgacc=acces.avg,
+                avgprec=preces.avg
+            )
+            print(loginfo)
 
-        if config.fast_pass > 0 and (i+1) >= config.fast_pass:
-            print("Fast Pass!")
-            break
+            if config.sigint_triggered:
+                break
+
+            if em_valid:
+                print("\nEmbeded Validation:")
+                valid_loss, valid_acc, valid_prec, _ = validate(val_loader, exp, epoch, cur_step + 1, store_pred=True)
+                config.tb_writer.add_scalars(config.exp_name + "/loss", {"valid": valid_loss}, cur_step + 1)
+                config.tb_writer.add_scalars(config.exp_name + "/acc", {"valid": valid_acc}, cur_step + 1)
+                config.tb_writer.add_scalars(config.exp_name + "/prec", {"valid": valid_prec}, cur_step + 1)
+                print("")
+                exp.model.train()
+                end = time.time()
+
+            if config.sigint_triggered:
+                break
+
+            if config.fast_pass > 0 and (i+1) >= config.fast_pass:
+                print("Fast Pass!")
+                break
 
     return losses.avg, acces.avg, preces.avg
 
@@ -369,96 +370,97 @@ def validate(val_loader, exp, epoch, cur_step, store_pred=True):
     start_time = time.time()
     iter_length = len(val_loader)
     data_counter = 0
-    for i, batch in enumerate(val_loader):
-        # measure data loading time
-        data_time.update(time.time() - end)
+    with torch.autograd.no_grad():
+        for i, batch in enumerate(val_loader):
+            # measure data loading time
+            data_time.update(time.time() - end)
 
-        batch_size = len(batch["index"])
+            batch_size = len(batch["index"])
 
-        detail = {
-            "epoch": epoch,
-            "iter": i,
-            "iter_len": iter_length,
-            "step": cur_step,
-            "summary": False
-        }
-        if i == 0:
-            detail["summary"] = store_pred
+            detail = {
+                "epoch": epoch,
+                "iter": i,
+                "iter_len": iter_length,
+                "step": cur_step,
+                "summary": False
+            }
+            if i == 0:
+                detail["summary"] = store_pred
 
-        result = exp.process(batch, False, detail=detail)
-        if "img_index" in result and result["img_index"] is not None:
-            if image_ids is None:
-                image_ids = []
-            image_ids += result["img_index"]
-        if "annotate" in result and result["annotate"] is not None:
-            if annotates is None:
-                annotates = []
-            annotates += result["annotate"]
-        loss = result["loss"]
-        loss = loss.data[0] if loss is not None else None
-        acc = result["acc"]
-        prec = result["prec"]
-        index = result["index"] if "index" in result else None
-        pred = result["pred"] if "pred" in result else None
+            result = exp.process(batch, False, detail=detail)
+            if "img_index" in result and result["img_index"] is not None:
+                if image_ids is None:
+                    image_ids = []
+                image_ids += result["img_index"]
+            if "annotate" in result and result["annotate"] is not None:
+                if annotates is None:
+                    annotates = []
+                annotates += result["annotate"]
+            loss = result["loss"]
+            loss = loss.item() if loss is not None else None
+            acc = result["acc"]
+            prec = result["prec"]
+            index = result["index"] if "index" in result else None
+            pred = result["pred"] if "pred" in result else None
 
-        if index is None:
-            index = list(range(data_counter, data_counter+batch_size))
+            if index is None:
+                index = list(range(data_counter, data_counter+batch_size))
 
-        if pred is not None and store_pred:
-            if predictions is None:
-                if isinstance(pred, torch._TensorBase):
-                    predictions = torch.zeros((pred_lim,) + pred.size()[1:])
-                elif isinstance(pred, np.ndarray):
-                    predictions = np.zeros((pred_lim,) + pred.shape[1:])
-                elif isinstance(pred, collections.Sequence):
-                    predictions = dict()
-                else:
-                    raise TypeError("Not valid pred type")
+            if pred is not None and store_pred:
+                if predictions is None:
+                    if isinstance(pred, torch._TensorBase):
+                        predictions = torch.zeros((pred_lim,) + pred.size()[1:])
+                    elif isinstance(pred, np.ndarray):
+                        predictions = np.zeros((pred_lim,) + pred.shape[1:])
+                    elif isinstance(pred, collections.Sequence):
+                        predictions = dict()
+                    else:
+                        raise TypeError("Not valid pred type")
 
-            for n in range(len(pred)):
-                if index[n] >= pred_lim:
-                    continue
-                predictions[index[n]] = pred[n]
+                for n in range(len(pred)):
+                    if index[n] >= pred_lim:
+                        continue
+                    predictions[index[n]] = pred[n]
 
-        # measure accuracy and record loss
-        if loss is not None:
-            losses.update(loss, batch_size)
-        if acc is not None:
-            acces.update(acc, batch_size)
-        if prec is not None:
-            preces.update(prec, batch_size)
+            # measure accuracy and record loss
+            if loss is not None:
+                losses.update(loss, batch_size)
+            if acc is not None:
+                acces.update(acc, batch_size)
+            if prec is not None:
+                preces.update(prec, batch_size)
 
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
 
-        data_counter += len(index)
+            data_counter += len(index)
 
-        loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n" +
-                   "\tLoss: {loss:.4f} | Acc: {acc:7.4f} | Prec: {prec:7.4f}\n" +
-                   "\tLos_: {avgloss:.4f} | Ac_: {avgacc:7.4f} | Pre_: {avgprec:7.4f}").format(
-            epoch=epoch + 1,
-            batch=i + 1,
-            size_width=len(str(iter_length)),
-            size=iter_length,
-            data=data_time.val,
-            bt=batch_time.val,
-            total=time.time() - start_time,
-            loss=loss if loss is not None else -1.,
-            acc=acc if acc is not None else -1.,
-            prec=prec if prec is not None else -1.,
-            avgloss=losses.avg,
-            avgacc=acces.avg,
-            avgprec=preces.avg
-        )
-        print(loginfo)
+            loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n" +
+                    "\tLoss: {loss:.4f} | Acc: {acc:7.4f} | Prec: {prec:7.4f}\n" +
+                    "\tLos_: {avgloss:.4f} | Ac_: {avgacc:7.4f} | Pre_: {avgprec:7.4f}").format(
+                epoch=epoch + 1,
+                batch=i + 1,
+                size_width=len(str(iter_length)),
+                size=iter_length,
+                data=data_time.val,
+                bt=batch_time.val,
+                total=time.time() - start_time,
+                loss=loss if loss is not None else -1.,
+                acc=acc if acc is not None else -1.,
+                prec=prec if prec is not None else -1.,
+                avgloss=losses.avg,
+                avgacc=acces.avg,
+                avgprec=preces.avg
+            )
+            print(loginfo)
 
-        if config.sigint_triggered:
-            break
+            if config.sigint_triggered:
+                break
 
-        if config.fast_pass > 0 and (i+1) >= config.fast_pass:
-            print("Fast Pass!")
-            break
+            if config.fast_pass > 0 and (i+1) >= config.fast_pass:
+                print("Fast Pass!")
+                break
 
     if hasattr(exp, "evaluate") and image_ids is not None and annotates is not None:
         exp.evaluate(image_ids, annotates)
