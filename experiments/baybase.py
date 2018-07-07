@@ -29,8 +29,8 @@ class Experiment(object):
 
         self.train_dataset = datasets.COCOSinglePose("data/mscoco/images",
                                                self.coco,
-                                               "data/mscoco/sp_split.pth",
-                                               "data/mscoco/mean_std.pth",
+                                               "data/mscoco/sp_split_3.pth",
+                                               "data/mscoco/mean_std_3.pth",
                                                True,
                                                img_res=self.hparams["model"]["inp_shape"],
                                                ext_border=self.hparams["dataset"]["ext_border"],
@@ -43,8 +43,8 @@ class Experiment(object):
 
         self.val_dataset = datasets.COCOSinglePose("data/mscoco/images",
                                              self.coco,
-                                             "data/mscoco/sp_split.pth",
-                                             "data/mscoco/mean_std.pth",
+                                             "data/mscoco/sp_split_3.pth",
+                                             "data/mscoco/mean_std_3.pth",
                                              False,
                                              img_res=self.hparams["model"]["inp_shape"],
                                              ext_border=self.hparams["dataset"]["ext_border"],
