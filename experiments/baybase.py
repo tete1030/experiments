@@ -19,7 +19,7 @@ class Experiment(object):
         self.num_parts = datasets.mscoco.NUM_PARTS
         self.hparams = hparams
         use_pretrained = (config.resume is not None)
-        self.model = DataParallel(BayBaseline(hparams["model"]["out_shape"], self.num_parts, pretrained=use_pretrained).cuda())
+        self.model = DataParallel(BayBaseline(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=use_pretrained).cuda())
         self.criterion = MSELoss().cuda()
         self.optimizer = torch.optim.Adam(list(self.model.parameters()),
                                           lr=hparams['learning_rate'],

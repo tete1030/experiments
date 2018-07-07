@@ -1018,13 +1018,14 @@ class AE2DParser(object):
 
         return preds, scores
 
-def batch_resize(im, res):
+def batch_resize(im, new_shape):
+    assert isinstance(new_shape, tuple) and len(new_shape) == 2 and isinstance(new_shape[0], int) and isinstance(new_shape[1], int)
     im_pre_shape = im.shape[:-2]
     im_post_shape = im.shape[-2:]
-    if im_post_shape == res:
+    if im_post_shape == new_shape:
         return im
     im = im.reshape((-1,) + im_post_shape)
-    return np.array([cv2.resize(im[i], res) for i in range(im.shape[0])]).reshape(im_pre_shape + res)
+    return np.array([cv2.resize(im[i], (new_shape[1], new_shape[0])) for i in range(im.shape[0])]).reshape(im_pre_shape + new_shape)
 
 def kpt_affine(kpt, mat):
     kpt = np.array(kpt)

@@ -177,7 +177,8 @@ def main(args):
     if config.evaluate:
         print('\nEvaluation-only mode')
         loss, acc, prec, predictions = validate(val_loader, exp, 0, 0)
-        save_pred(predictions, checkpoint=config.checkpoint)
+        if predictions is not None:
+            save_pred(predictions, checkpoint=config.checkpoint)
         return
 
     if config.handle_sig:
