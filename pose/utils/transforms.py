@@ -52,24 +52,25 @@ def fliplr_chwimg(x):
     assert x.ndim in [2, 3, 4]
     return x[..., ::-1].copy()
 
+# python3-fized
 def get_transform(center, ori_size, new_size, rot=0, scale=None):
     """
     General image processing functions
     """
     # Generate transformation matrix
     assert (ori_size is not None and scale is None) or (ori_size is None and scale is not None)
-    if isinstance(new_size, (int, long, float)):
+    if isinstance(new_size, (int, float)):
         new_size = (new_size, new_size)
     assert len(new_size) == 2
 
     if ori_size is not None:
-        if isinstance(ori_size, (int, long, float)):
+        if isinstance(ori_size, (int, float)):
             scale = (float(new_size[0]) / ori_size, float(new_size[1]) / ori_size)
         else:
             assert len(ori_size) == 2
             scale = (float(new_size[0]) / ori_size[0], float(new_size[1]) / ori_size[1])
     else:
-        if isinstance(scale, (int, long, float)):
+        if isinstance(scale, (int, float)):
             scale = (float(scale), float(scale))
         assert len(scale) == 2
 

@@ -1,4 +1,4 @@
-from __future__ import print_function, absolute_import
+#!python3
 
 # Handle matplotlib backend error when DISPLAY is wrong
 # the error originates from Tk used in matplotlib
@@ -6,13 +6,13 @@ import matplotlib
 if matplotlib.get_backend() != "module://ipykernel.pylab.backend_inline":
     matplotlib_backend = "TkAgg"
     try:
-        import Tkinter
-        Tkinter.Tk().destroy()
-    except Tkinter.TclError:
+        import tkinter
+        tkinter.Tk().destroy()
+    except tkinter.TclError:
         print("Cannot use TkAgg for matplotlib, using Agg")
         matplotlib_backend = "Agg"
-    finally:
-        del Tkinter
+    else:
+        del tkinter
     matplotlib.use(matplotlib_backend)
 
 import os
@@ -91,7 +91,7 @@ def main(args):
             detect_checkpoint(checkpoint=config.checkpoint) or \
             os.path.isfile(hparams_cp_file)):
         print("Exist files in %s" % config.checkpoint)
-        ans_del = raw_input("Do you want to delete files in %s (yes|n): " % config.checkpoint)
+        ans_del = input("Do you want to delete files in %s (yes|n): " % config.checkpoint)
         if ans_del not in ["yes", "n"]:
             print("Wrong answer. Exit.")
             sys.exit(1)
@@ -126,7 +126,7 @@ def main(args):
                         YAML(typ='safe').dump(exp.hparams, sys.stdout)
                         print("In checkpoint:")
                         YAML(typ='safe').dump(resume_hparams, sys.stdout)
-                        ans = raw_input("Continue (y|n)? ")
+                        ans = input("Continue (y|n)? ")
                         if ans != "y":
                             sys.exit(0)
                     else:

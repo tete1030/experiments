@@ -5,9 +5,12 @@ from torch.autograd import Function
 from torch import nn
 import importlib
 
-import lib as _lib
+from .lib import ae_loss_forward, ae_loss_backward
+
+__all__ = ["AELossFunction", "AELoss"]
 
 class AELossFunction(Function):
+    @staticmethod
     def forward(self, tags, keypoints):
         # tags: #batch x (17*h*w) x 1
         # inter-person loss, intra-person loss
@@ -20,6 +23,7 @@ class AELossFunction(Function):
         self.save_for_backward(tags, keypoints)
         return output
 
+    @staticmethod
     def backward(self, grad_output):
         tags, keypoints = self.saved_tensors
         grad_input = torch.zeros(tags.size()).cuda(tags.get_device())
@@ -32,5 +36,5 @@ class AELoss(nn.Module):
     def forward(self, input, input1):
         if not input.is_cuda:
             input = input.cuda()
-        output = AELossFunction()(input, input1)
+        output = AELossFunction.apply(input, input1)
         return output

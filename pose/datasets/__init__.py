@@ -1,2 +1,2 @@
-from mpii import MPII
-from mscoco import COCOPose, COCOSinglePose
+from .mpii import MPII
+from .mscoco import COCOPose, COCOSinglePose

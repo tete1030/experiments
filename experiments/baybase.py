@@ -1,4 +1,4 @@
-from __future__ import print_function
+#!python3
 import torch
 import torch.nn as nn
 from torch.nn import DataParallel

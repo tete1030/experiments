@@ -1,4 +1,4 @@
-from __future__ import print_function, absolute_import
+#!python3
 
 import os
 import numpy as np
@@ -422,7 +422,7 @@ class COCOSinglePose(data.Dataset):
         self.minus_mean = minus_mean
         self.ext_border = tuple(ext_border) if ext_border else None
         self.kpmap_res = tuple(kpmap_res) if kpmap_res else None
-        assert isinstance(kpmap_sigma, (int, long, float, list))
+        assert isinstance(kpmap_sigma, (int, float, list))
         self.kpmap_sigma = kpmap_sigma
         self.keypoint_res = tuple(keypoint_res) if keypoint_res else None
         self.scale_factor = scale_factor
