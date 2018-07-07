@@ -5,14 +5,21 @@ import torch.nn as nn
 from torch.nn import DataParallel
 from torch.nn import MSELoss
 from pycocotools.coco import COCO
+from pycocotools.cocoeval import COCOeval
 
 import math
 import torch.utils.model_zoo as model_zoo
 
+import pose.models as models
 import pose.datasets as datasets
 import pose.utils.config as config
+from pose.utils.transforms import fliplr_pts
 
 from pose.utils.misc import adjust_learning_rate
+
+import cv2
+
+FACTOR = 4
 
 class Experiment(object):
     def __init__(self, hparams):
@@ -57,17 +64,32 @@ class Experiment(object):
 
         self.train_collate_fn = datasets.COCOSinglePose.collate_function
         self.test_collate_fn = datasets.COCOSinglePose.collate_function
+        self.worker_init_fn = datasets.mscoco.worker_init
+
+    def evaluate(self, image_ids, ans):
+        if len(ans) > 0:
+            coco_dets = self.coco.loadRes(ans)
+            coco_eval = COCOeval(self.coco, coco_dets, "keypoints")
+            coco_eval.params.imgIds = list(image_ids)
+            coco_eval.params.catIds = [1]
+            coco_eval.evaluate()
+            coco_eval.accumulate()
+            coco_eval.summarize()
+        else:
+            print("No points")
 
     def epoch(self, epoch):
         self.hparams['learning_rate'] = adjust_learning_rate(self.optimizer, epoch, self.hparams['learning_rate'], self.hparams['schedule'], self.hparams['lr_gamma'])
 
     def process(self, batch, train, detail=None):
+        image_ids = batch["img_index"].tolist()
         img = batch["img"]
         det_maps_gt = batch["keypoint_map"]
         transform_mat = batch["img_transform"]
         img_flipped = batch["img_flipped"]
+        img_ori_size = batch["img_ori_size"]
         keypoint = batch["keypoint"]
-        volatile = not train
+        batch_size = img.size(0)
 
         det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
         output_vars = self.model(img)
@@ -82,15 +104,48 @@ class Experiment(object):
         if (loss.data != loss.data).any():
             import pdb; pdb.set_trace()
 
+        if not train or config.vis:
+            pred, score = parse_map(output_vars[-1])
+            pred_affined = pred.copy()
+            for samp_i in range(batch_size):
+                pred_affined[samp_i, :, :2] = kpt_affine(pred_affined[samp_i, :, :2] * FACTOR, np.linalg.pinv(transform_mat[samp_i])[:2])
+                if img_flipped[samp_i]:
+                    pred_affined[samp_i] = fliplr_pts(pred_affined[samp_i], datasets.mscoco.FLIP_INDEX, width=img_ori_size[isamp, 0])
+            ans = generate_ans(image_ids, pred_affined, score)
+        else:
+            pred = None
+            ans = None
+
+        if config.vis:
+            import matplotlib.pyplot as plt
+            nrows = int(np.sqrt(float(batch_size)))
+            ncols = (batch_size + nrows - 1) // nrows
+            fig, axes = plt.subplots(nrows, ncols, squeeze=False)
+            for ax in axes.flat:
+                ax.axis("off")
+            img_restored = np.ascontiguousarray(self.train_dataset.restore_image(img.data.cpu().numpy())[..., ::-1])
+            pred_resized = batch_resize((output_vars[-1].data.cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8) , img.size()[-2:])
+            for i in range(batch_size):
+                # draw_img = cv2.addWeighted(img_restored[i], 1, cv2.applyColorMap(pred_resized[i, 0, :, :, None], cv2.COLORMAP_HOT), 0.5, 0)
+                draw_img = img_restored[i]
+                for j in range(self.num_parts):
+                    pt = pred[i, j]
+                    if pt[2] > 0:
+                        cv2.circle(draw_img, (int(pt[0] * FACTOR), int(pt[1] * FACTOR)), radius=2, color=(0, 0, 255), thickness=-1)
+                axes.flat[i].imshow(draw_img[..., ::-1])
+            plt.show()
+
         phase_str = "train" if train else "valid"
-        config.tb_writer.add_scalars(config.exp_name + "/loss", {phase_str: loss.data.cpu()[0]}, detail["step"])
+        config.tb_writer.add_scalars(config.exp_name + "/loss", {phase_str: loss.item()}, detail["step"])
         result = {
             "loss": loss,
             "acc": 0,
             "recall": 0,
             "prec": None,
             "index": batch["index"],
-            "pred": None
+            "pred": None,
+            "img_index": image_ids,
+            "annotate": ans
         }
 
         return result
@@ -141,7 +196,6 @@ class BasicBlock(nn.Module):
         out = self.relu(out)
 
         return out
-
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -354,6 +408,76 @@ class globalNet(nn.Module):
         x4_3 = self.layer4_3(x4_1)
 
         return [x4_1, x3_1, x2_1, x1_1], [x4_3, x3_3, x2_3, x1_3]
+
+def parse_map(det_map, thres=0.1, factor=4):
+    det_map = det_map.detach()
+    if det_map.is_cuda:
+        det_map = det_map.cpu()
+    det_map = det_map.numpy()
+    num_batch = det_map.shape[0]
+    num_part = det_map.shape[1]
+    height = det_map.shape[2]
+    width = det_map.shape[3]
+
+    pred = np.zeros((num_batch, num_part, 3), dtype=np.float32)
+    score = np.zeros((num_batch, num_part), dtype=np.float32)
+    for sample_i in range(num_batch):
+        for part_i in range(num_part):
+            loc = det_map[sample_i, part_i].argmax().item()
+            y = loc // width
+            x = loc % width
+            score_sp = det_map[sample_i, part_i, y, x]
+            # TODO: test always 1 and always store score
+            if score_sp > thres:
+                pred[sample_i, part_i, 2] = 1
+                score[sample_i, part_i] = score_sp
+            if det_map[sample_i, part_i, y, max(0, x-1)] < det_map[sample_i, part_i, y, min(width-1, x+1)]:
+                off_x = 0.25
+            else:
+                off_x = -0.25
+            if det_map[sample_i, part_i, max(0, y-1), x] < det_map[sample_i, part_i, min(height-1, y+1), x]:
+                off_y = 0.25
+            else:
+                off_y = -0.25
+            pred[sample_i, part_i, 0] = x + 0.5 + off_x
+            pred[sample_i, part_i, 1] = y + 0.5 + off_y
+    return pred, score
+
+def generate_ans(image_ids, preds, scores):
+    ans = []
+    for sample_i in range(len(preds)):
+        image_id = image_ids[sample_i]
+
+        val = preds[sample_i]
+        score = scores[sample_i].mean()
+        if val[:, 2].max()>0:
+            tmp = {'image_id':int(image_id), "category_id": 1, "keypoints": [], "score":float(score)}
+            # # p: average detected locations
+            # p = val[val[:, 2] > 0][:, :2].mean(axis = 0)
+            # for j in val:
+            #     if j[2]>0.:
+            #         tmp["keypoints"] += [float(j[0]), float(j[1]), 1]
+            #     else:
+            #         # TRICK: for not detected points, place them at the average point
+            #         tmp["keypoints"] += [float(p[0]), float(p[1]), 0]
+            tmp["keypoints"] = val.ravel().tolist()
+            ans.append(tmp)
+    return ans
+
+def kpt_affine(kpt, mat):
+    kpt = np.array(kpt)
+    shape = kpt.shape
+    kpt = kpt.reshape(-1, 2)
+    return np.dot( np.concatenate((kpt, kpt[:, 0:1]*0+1), axis = 1), mat.T ).reshape(shape)
+
+def batch_resize(im, new_shape):
+    assert isinstance(new_shape, tuple) and len(new_shape) == 2 and isinstance(new_shape[0], int) and isinstance(new_shape[1], int)
+    im_pre_shape = im.shape[:-2]
+    im_post_shape = im.shape[-2:]
+    if im_post_shape == new_shape:
+        return im
+    im = im.reshape((-1,) + im_post_shape)
+    return np.array([cv2.resize(im[i], (new_shape[1], new_shape[0])) for i in range(im.shape[0])]).reshape(im_pre_shape + new_shape)
 
 if __name__ == "__main__":
     def test_main():

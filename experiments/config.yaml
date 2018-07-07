@@ -10,6 +10,7 @@ default: &DEFAULT
     checkpoint: 'checkpoint/{exp}/{id}'
     resume: null
     pred_lim: 10
+    vis: false
 
 profile: &PROFILE
     <<: *DEFAULT
@@ -25,6 +26,7 @@ evaluate: &EVALUATE
     <<: *DEFAULT
     resume: 'checkpoint/{exp}/{id}'
     evaluate: true
+    vis: true
 
 fast: &FAST
     <<: *DEFAULT
