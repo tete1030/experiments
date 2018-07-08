@@ -21,12 +21,12 @@ debug: &DEBUG
     <<: *DEFAULT
     workers: 0
     debug: true
+    vis: true
 
 evaluate: &EVALUATE
     <<: *DEFAULT
     resume: 'checkpoint/{exp}/{id}'
     evaluate: true
-    vis: true
 
 fast: &FAST
     <<: *DEFAULT
