@@ -118,22 +118,37 @@ class Experiment(object):
 
         if config.vis:
             import matplotlib.pyplot as plt
-            nrows = int(np.sqrt(float(batch_size)))
-            ncols = (batch_size + nrows - 1) // nrows
-            fig, axes = plt.subplots(nrows, ncols, squeeze=False)
-            for ax in axes.flat:
-                ax.axis("off")
             img_restored = np.ascontiguousarray(self.train_dataset.restore_image(img.data.cpu().numpy())[..., ::-1])
-            pred_resized = batch_resize((output_vars[-1].data.cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8) , img.size()[-2:])
-            for i in range(batch_size):
-                # draw_img = cv2.addWeighted(img_restored[i], 1, cv2.applyColorMap(pred_resized[i, 0, :, :, None], cv2.COLORMAP_HOT), 0.5, 0)
-                draw_img = img_restored[i]
-                for j in range(self.num_parts):
-                    pt = pred[i, j]
-                    if pt[2] > 0:
-                        cv2.circle(draw_img, (int(pt[0] * FACTOR), int(pt[1] * FACTOR)), radius=2, color=(0, 0, 255), thickness=-1)
-                axes.flat[i].imshow(draw_img[..., ::-1])
-            plt.show()
+            
+            if False:
+                nrows = int(np.sqrt(float(batch_size)))
+                ncols = (batch_size + nrows - 1) // nrows
+                fig, axes = plt.subplots(nrows, ncols, squeeze=False)
+                for ax in axes.flat:
+                    ax.axis("off")
+                for i in range(batch_size):
+                    draw_img = img_restored[i].copy()
+                    for j in range(self.num_parts):
+                        pt = pred[i, j]
+                        if pt[2] > 0:
+                            cv2.circle(draw_img, (int(pt[0] * FACTOR), int(pt[1] * FACTOR)), radius=2, color=(0, 0, 255), thickness=-1)
+                    axes.flat[i].imshow(draw_img[..., ::-1])
+
+                plt.show()
+
+            if True:
+                pred_resized = batch_resize((det_map_gt_vars[-1].data.cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8) , img.size()[-2:])
+                nrows = 3; ncols = 6
+                for i in range(batch_size):
+                    fig, axes = plt.subplots(nrows, ncols, squeeze=False)
+                    for ax in axes.flat:
+                        ax.axis("off")
+                    for j in range(self.num_parts):
+                        ax = axes.flat[j]
+                        draw_img = cv2.addWeighted(img_restored[i], 1, cv2.applyColorMap(pred_resized[i, j, :, :, None], cv2.COLORMAP_HOT), 0.5, 0)
+                        ax.imshow(draw_img[..., ::-1])
+                        ax.set_title(datasets.mscoco.PART_LABELS[j])
+                    plt.show()
 
         phase_str = "train" if train else "valid"
         config.tb_writer.add_scalars(config.exp_name + "/loss", {phase_str: loss.item()}, detail["step"])
