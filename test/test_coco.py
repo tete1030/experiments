@@ -39,7 +39,7 @@ for i in range(50):
     masked_img[mask > 0.5] = np.array([0, 0, 1], dtype=np.float32)
     axs.flat[0].imshow(masked_img, vmin=0, vmax=1)
     for ijoint in range(target.shape[0]):
-        axs.flat[1+ijoint].set_title(datasets.mscoco.part_labels[ijoint], fontdict={"fontsize": 8})
+        axs.flat[1+ijoint].set_title(datasets.mscoco.PART_LABELS[ijoint], fontdict={"fontsize": 8})
         axs.flat[1+ijoint].imshow(img, vmin=0, vmax=1)
         axs.flat[1+ijoint].imshow(target_tf[ijoint], vmin=0, vmax=1, alpha=0.5)
 
