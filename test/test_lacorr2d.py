@@ -1,0 +1,135 @@
+#!python3
+
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+from pose.models.lacorr2d import LocalAutoCorr2DCUDA, LocalAutoCorr2D
+import argparse
+import datetime
+
+def zero_grad(t):
+    if t.grad is not None:
+        t.grad.detach_()
+        t.grad.zero_()
+
+def main(args):
+    REPEAT_TIMES = 100
+    
+    BATCH_SIZE = 8
+    CHANNEL_SIZE = 16
+    WIDTH = 64
+    HEIGHT = 64
+    KERNEL_WIDTH = 8
+    KERNEL_HEIGHT = 8
+    STRIDE_WIDTH = 4
+    STRIDE_HEIGHT = 4
+    # BATCH_SIZE = 8
+    # CHANNEL_SIZE = 16
+    # WIDTH = 55
+    # HEIGHT = 89
+    # KERNEL_WIDTH = 10
+    # KERNEL_HEIGHT = 17
+    # STRIDE_WIDTH = 3
+    # STRIDE_HEIGHT = 5
+
+    n_corr_w = int(WIDTH - KERNEL_WIDTH) // int(STRIDE_WIDTH) + 1;
+    n_corr_h = int(HEIGHT - KERNEL_HEIGHT) // int(STRIDE_HEIGHT) + 1;
+
+    model_constructors = list()
+    models = list()
+
+    assert not (args.model == "all" and (args.memory or args.time))
+
+    if args.model == "normal":
+        model_constructors.append(LocalAutoCorr2D)
+    elif args.model == "cuda":
+        model_constructors.append(LocalAutoCorr2DCUDA)
+    elif args.model == "all":
+        model_constructors.extend([LocalAutoCorr2D, LocalAutoCorr2DCUDA])
+
+    for mc in model_constructors:
+        models.append(mc((KERNEL_WIDTH, KERNEL_HEIGHT), (STRIDE_WIDTH, STRIDE_HEIGHT)).cuda())
+
+    if args.time:
+        start_time = datetime.datetime.now()
+
+    for i in range(REPEAT_TIMES):
+        img = torch.rand(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=torch.float32, device="cuda", requires_grad=True)
+        label = torch.rand(BATCH_SIZE, CHANNEL_SIZE, n_corr_h, n_corr_w, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=torch.float32, device="cuda")
+        
+        # img = torch.zeros(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=torch.float32, device="cuda", requires_grad=True)
+        # for isamp in range(BATCH_SIZE):
+        #     for ichan in range(CHANNEL_SIZE):
+        #         randX = torch.randint(WIDTH, size=(100,), dtype=torch.long)
+        #         randY = torch.randint(HEIGHT, size=(100,), dtype=torch.long)
+        #         img.data[isamp, ichan, randY, randX] = 1
+        # label = torch.zeros(BATCH_SIZE, CHANNEL_SIZE, n_corr_h, n_corr_w, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=torch.float32, device="cuda")
+        
+        first_output = None
+        first_grad = None
+
+        for md in models:
+            output = md(img)
+
+            assert output.size() == label.size()
+            loss = (output - label).pow(2).mean().sqrt()
+            zero_grad(img)
+            loss.backward()
+
+            if args.model == "all":
+                grad = img.grad.detach().clone()
+
+                # for isamp in range(1):
+                #     plt.figure()
+                #     plt.imshow(img[isamp, 0].data.cpu())
+                #     plt.figure()
+                #     plt.imshow(normal_grad[isamp, 0].data.cpu())
+                #     plt.figure()
+                #     plt.imshow(cuda_grad[isamp, 0].data.cpu())
+                #     fig, axes = plt.subplots(n_corr_h, n_corr_w, squeeze=False)
+                #     for iy in range(n_corr_h):
+                #         for ix in range(n_corr_w):
+                #             ax = axes[iy, ix]
+                #             ax.axis("off")
+                #             ax.imshow(normal_output[isamp, 0, iy, ix].data.cpu())
+                #     fig, axes = plt.subplots(n_corr_h, n_corr_w, squeeze=False)
+                #     for iy in range(n_corr_h):
+                #         for ix in range(n_corr_w):
+                #             ax = axes[iy, ix]
+                #             ax.axis("off")
+                #             ax.imshow(cuda_output[isamp, 0, iy, ix].data.cpu())
+
+                if first_output is None:
+                    first_output = output.detach().cpu()
+                    first_grad = grad.detach().cpu()
+                else:
+                    assert ((output.detach().cpu() - first_output).abs() <= np.finfo(np.float32).eps.item() * 2. ** 8).all()
+                    assert ((grad.detach().cpu() - first_grad).abs() < np.finfo(np.float32).eps.item()).all()
+        
+        # plt.show()
+        print("%d test pass" % (i+1,))
+
+    if args.time:
+        end_time = datetime.datetime.now()
+        avg_time = float((end_time - start_time).total_seconds()) / REPEAT_TIMES
+        print("Average time: %.4f" % (avg_time,))
+
+    if args.memory:
+        import subprocess
+        import os
+        mem_usage_str = subprocess.check_output(["/usr/bin/nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"])
+        mem_usage_str = mem_usage_str.decode()
+        mem_total = 0
+        for l in mem_usage_str.split("\n"):
+            if l.strip():
+                pid, mem = l.split(", ")
+                if int(pid) == os.getpid():
+                    mem_total += int(mem)
+        print("Mem usage: %d MB" % (mem_total,))
+
+if __name__ == "__main__":
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument("--model", choices=["normal", "cuda", "all"])
+    argparser.add_argument("--time", action="store_true")
+    argparser.add_argument("--memory", action="store_true")
+    main(argparser.parse_args())
