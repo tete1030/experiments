@@ -16,51 +16,51 @@ __global__ void lacorr2d_forward_cuda_kernel(
     const int channel_size,
     const int height,
     const int width,
-    const int64_t state_size) {
-        const int64_t cudakernel_id = blockIdx.x * blockDim.x + threadIdx.x;
+    const int state_size) {
+        const int cudakernel_id = blockIdx.x * blockDim.x + threadIdx.x;
         if (cudakernel_id < state_size) {
-            const int corr_size = kernel_height * kernel_width;
             // ith sample in batch
-            const int i_samp = blockIdx.z;
-            // number of corr
-            const int n_corr = n_corr_h * n_corr_w;
-            // number of total pixels of corrs in each channel
-            const int all_corr_size =  n_corr * corr_size;
-            // ith channel
-            const int i_channel = cudakernel_id / all_corr_size;
-            // ith pixel in each channel
-            const int i_all_corr = cudakernel_id % all_corr_size;
-            // ith corr map in each channel
-            const int i_corr = i_all_corr / corr_size;
-            const int i_corr_h = i_corr / n_corr_w;
-            const int i_corr_w = i_corr % n_corr_w;
-            // left and top conner of current corr in input image
-            const int left = stride_width * i_corr_w;
-            const int top = stride_height * i_corr_h;
+            int i_samp = blockIdx.z;
+            int rem = cudakernel_id;
 
-            // ith flatten pixel in each corr
-            const int pos_kernel = i_all_corr % corr_size;
-            // location in output
-            const int y_out = pos_kernel / kernel_width + top;
-            const int x_out = pos_kernel % kernel_width + left;
+            int x_out = rem % kernel_width;
+            rem = rem / kernel_width;
+            int y_out = rem % kernel_height;
+            rem = rem / kernel_height;
+            int i_corr_w = rem % n_corr_w;
+            rem = rem / n_corr_w;
+            int i_corr_h = rem % n_corr_h;
+            rem = rem / n_corr_h;
+            int i_channel = rem % channel_size;
+
+            // left and top conner of current corr in input image
+            int left = stride_width * i_corr_w;
+            int top = stride_height * i_corr_h;
+
             // location in input for kernel use
-            const int y_inp_k = blockIdx.y / kernel_width + top;
-            const int x_inp_k = blockIdx.y % kernel_width + left;
+            int y_inp_k = blockIdx.y / kernel_width + top;
+            int x_inp_k = blockIdx.y % kernel_width + left;
 
             // location in input for multiplicand of kernel
             // (*_out - kernel_* / 2) : left/top conner of kernel projected on the input
-            // (*_inp_k - top/left) : x/y inside kernel
-            const int y_inp_bg = y_out - kernel_height / 2 + y_inp_k - top;
-            const int x_inp_bg = x_out - kernel_width / 2 + x_inp_k - left;
+            // *_inp_k : x/y of current k
+            int y_inp_bg = y_out - kernel_height / 2 + y_inp_k;
+            int x_inp_bg = x_out - kernel_width / 2 + x_inp_k;
+
+            x_out += left;
+            y_out += top;
 
             // pad 0 for multiplicand of kernel
             if (y_inp_bg < 0 || y_inp_bg >= height || x_inp_bg < 0 || x_inp_bg >= width) {
                 return;
             }
 
-            const int64_t index_out = i_samp * state_size + cudakernel_id;
-            const int64_t index_bg = i_samp * channel_size * height * width + i_channel * height * width + y_inp_bg * width + x_inp_bg;
-            const int64_t index_k = i_samp * channel_size * height * width + i_channel * height * width + y_inp_k * width + x_inp_k;
+            int num_px_per_ch = height * width;
+            int idx_com = i_samp * channel_size * num_px_per_ch + i_channel * num_px_per_ch;
+
+            int index_out = i_samp * state_size + cudakernel_id;
+            int index_bg = idx_com + y_inp_bg * width + x_inp_bg;
+            int index_k = idx_com + y_inp_k * width + x_inp_k;
             auto out = output + index_out;
             auto bg_val = *(input + index_bg);
             auto k_val = *(input + index_k);
@@ -92,12 +92,27 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
 
     // working on pytorch 0.4.0 , have been changed in master 07/20/2018
     auto output = at::zeros(input.type(), std::vector<int64_t>{batch_size, channel_size, n_corr_h, n_corr_w, kernel_height, kernel_width});
-    const int64_t state_size = (int64_t)channel_size * n_corr * corr_size;
+    const int state_size = channel_size * n_corr * corr_size;
 
-    const int threads = 1024;
-    const dim3 blocks((state_size + threads - 1) / threads, corr_size, batch_size);
+    // cc61:
+    // - maximum threads 1024 per block
+    // - maximum resident threads 2048 per SM
+    // - maximum resident blocks 32 per SM
+    // - maximum resident warps 64 per SM
+    // 
+    // gtx1080: 20 SM
+    //
+    // batch_size maximum 8 for cc61
+    // for batch_size <= 2, total resident threads only reached 1024 (maximum 2048 for cc61) occupancy only 50%
+    // corr_size has to be
+
+    // const int block_dimx = 64;
+    // const dim3 threadsPerBlock(block_dimx, batch_size);
+    // const dim3 blocks((corr_size + block_dimx - 1) / block_dimx, n_corr, channel_size);
+    const int threadsPerBlock = 1024;
+    const dim3 blocks((state_size + threadsPerBlock - 1) / threadsPerBlock, corr_size, batch_size);
     AT_DISPATCH_FLOATING_TYPES(input.type(), "lacorr2d_forward_cuda", ([&] {
-        lacorr2d_forward_cuda_kernel<scalar_t><<<blocks, threads>>>(
+        lacorr2d_forward_cuda_kernel<scalar_t><<<blocks, threadsPerBlock>>>(
             input.data<scalar_t>(),
             output.data<scalar_t>(),
             kernel_height,
@@ -128,57 +143,59 @@ __global__ void lacorr2d_backward_cuda_kernel(
     const int channel_size,
     const int height,
     const int width,
-    const int64_t state_size) {
-        const int64_t cudakernel_id = blockIdx.x * blockDim.x + threadIdx.x;
+    const int state_size) {
+        int cudakernel_id = blockIdx.x * blockDim.x + threadIdx.x;
+        
         if (cudakernel_id < state_size) {
-            const int corr_size = kernel_height * kernel_width;
             // ith sample in batch
-            const int i_samp = blockIdx.z;
-            // number of corr
-            const int n_corr = n_corr_h * n_corr_w;
-            // number of total pixels of corrs in each channel
-            const int all_corr_size =  n_corr * corr_size;
-            // ith channel
-            const int i_channel = cudakernel_id / all_corr_size;
-            // ith pixel in each channel
-            const int i_all_corr = cudakernel_id % all_corr_size;
-            // ith corr map in each channel
-            const int i_corr = i_all_corr / corr_size;
-            const int i_corr_h = i_corr / n_corr_w;
-            const int i_corr_w = i_corr % n_corr_w;
-            // left and top conner of current corr in input image
-            const int left = stride_width * i_corr_w;
-            const int top = stride_height * i_corr_h;
+            int i_samp = blockIdx.z;
+            int rem = cudakernel_id;
 
-            // ith flatten pixel in each corr
-            const int pos_kernel = i_all_corr % corr_size;
-            // location in output
-            const int y_out = pos_kernel / kernel_width + top;
-            const int x_out = pos_kernel % kernel_width + left;
+            int x_out = rem % kernel_width;
+            rem = rem / kernel_width;
+            int y_out = rem % kernel_height;
+            rem = rem / kernel_height;
+            int i_corr_w = rem % n_corr_w;
+            rem = rem / n_corr_w;
+            int i_corr_h = rem % n_corr_h;
+            rem = rem / n_corr_h;
+            int i_channel = rem % channel_size;
+
+            // left and top conner of current corr in input image
+            int left = stride_width * i_corr_w;
+            int top = stride_height * i_corr_h;
+
             // location in input for kernel use
-            const int y_inp_k = blockIdx.y / kernel_width + top;
-            const int x_inp_k = blockIdx.y % kernel_width + left;
+            int y_inp_k = blockIdx.y / kernel_width + top;
+            int x_inp_k = blockIdx.y % kernel_width + left;
 
             // location in input for multiplicand of kernel
             // (*_out - kernel_* / 2) : left/top conner of kernel projected on the input
-            // (*_inp_k - top/left) : x/y inside kernel
-            const int y_inp_bg = y_out - kernel_height / 2 + y_inp_k - top;
-            const int x_inp_bg = x_out - kernel_width / 2 + x_inp_k - left;
+            // *_inp_k : x/y of current k
+            int y_inp_bg = y_out - kernel_height / 2 + y_inp_k;
+            int x_inp_bg = x_out - kernel_width / 2 + x_inp_k;
+
+            x_out += left;
+            y_out += top;
 
             // pad 0 for multiplicand of kernel
             if (y_inp_bg < 0 || y_inp_bg >= height || x_inp_bg < 0 || x_inp_bg >= width) {
                 return;
             }
 
-            const int64_t index_out = i_samp * state_size + cudakernel_id;
-            const int64_t index_bg = i_samp * channel_size * height * width + i_channel * height * width + y_inp_bg * width + x_inp_bg;
-            const int64_t index_k = i_samp * channel_size * height * width + i_channel * height * width + y_inp_k * width + x_inp_k;
+            int num_px_per_ch = height * width;
+            int idx_com = i_samp * channel_size * num_px_per_ch + i_channel * num_px_per_ch;
+
+            int index_out = i_samp * state_size + cudakernel_id;
+            int index_bg = idx_com + y_inp_bg * width + x_inp_bg;
+            int index_k = idx_com + y_inp_k * width + x_inp_k;
+
             auto grad_out_val = *(grad_output + index_out);
             auto inp_bg_val = *(input + index_bg);
             auto inp_k_val = *(input + index_k);
             auto grad_inp_bg = grad_input + index_bg;
             auto grad_inp_k = grad_input + index_k;
-            
+
             atomicAdd(grad_inp_bg, grad_out_val * inp_k_val);
             atomicAdd(grad_inp_k, grad_out_val * inp_bg_val);
         }
@@ -206,7 +223,7 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
     const int n_corr = n_corr_w * n_corr_h;
     const int corr_size = kernel_height * kernel_width;
 
-    const int64_t state_size = (int64_t)channel_size * n_corr * corr_size;
+    const int state_size = channel_size * n_corr * corr_size;
 
     auto grad_input = at::zeros_like(input);
 
