@@ -96,10 +96,9 @@ class Experiment(object):
 
         loss = 0.
         for ilabel, (outv, gtv) in enumerate(zip(output_vars, det_map_gt_vars)):
-            if ilabel < len(det_map_gt_vars) - 1:
-                gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
-            loss += self.criterion(outv, gtv)
-        loss = loss / len(det_map_gt_vars)
+            # if ilabel < len(det_map_gt_vars) - 1:
+            #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
+            loss += self.criterion(outv, gtv) / self.hparams["model"]["gaussian_kernels"][ilabel]
 
         if (loss.data != loss.data).any():
             import pdb; pdb.set_trace()
@@ -137,7 +136,7 @@ class Experiment(object):
                 plt.show()
 
             if True:
-                pred_resized = batch_resize((det_map_gt_vars[-1].data.cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8) , img.size()[-2:])
+                pred_resized = batch_resize((output_vars[-1].data.cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8) , img.size()[-2:])
                 nrows = 3; ncols = 6
                 for i in range(batch_size):
                     fig, axes = plt.subplots(nrows, ncols, squeeze=False)

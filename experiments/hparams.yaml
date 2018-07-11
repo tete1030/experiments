@@ -162,7 +162,7 @@ baybase:
     model:
         inp_shape: [192, 256]
         out_shape: [48, 64]
-        gaussian_kernels: [8, 4, 2, 1]
+        gaussian_kernels: [8, 5, 3, 2]
     dataset:
         ext_border: [0.1, 0.15]
         scale_factor: 0.25
