@@ -6,6 +6,13 @@
 
 #define INDEX2D(X, Y, WIDTH) ((Y) * (WIDTH) + (X))
 #define FLOAT_ONLY 1
+// CC61
+#define NUM_BANK 32
+#define HALF_WARP 16
+
+#define CONDITION_INSIDE(X, Y, W, H) ((Y) >= 0 && (Y) < (H) && (X) >= 0 && (X) < (W))
+#define CONDITION_UP_true(OFFSET, UBOUND) ((OFFSET) < (UBOUND)) &&
+#define CONDITION_UP_false(OFFSET, UBOUND)
 
 template <typename scalar_t>
 __global__ void lacorr2d_forward_cuda_kernel(
@@ -22,57 +29,83 @@ __global__ void lacorr2d_forward_cuda_kernel(
     const int width) {
         extern __shared__ unsigned char s[];
 
-        int i_channel = blockIdx.x * blockDim.y + threadIdx.y;
-        if (i_channel < total_channel) {
-            int i_out_rel = threadIdx.x;
-            int i_corr = blockIdx.y;
+        int ichan = blockIdx.x * blockDim.y + threadIdx.y;
+        
+        int ithread = threadIdx.x;
+        int icorr = blockIdx.y;
 
-            int y_out_rel = i_out_rel / kernel_width;
-            int x_out_rel = i_out_rel % kernel_width;
+        int y_k = ithread / kernel_width;
+        int x_k = ithread % kernel_width;
 
-            int y_corr = i_corr / n_corr_w;
-            int x_corr = i_corr % n_corr_w;
+        int y_corr = icorr / n_corr_w;
+        int x_corr = icorr % n_corr_w;
 
-            // left and top conner of current corr in input image
-            int left = stride_width * x_corr;
-            int top = stride_height * y_corr;
+        // left and top conner of current corr in input image
+        int left_k = stride_width * x_corr;
+        int top_k = stride_height * y_corr;
 
-            int half_kh = kernel_height / 2;
-            int half_kw = kernel_width / 2;
+        int half_kh = kernel_height / 2;
+        int half_kw = kernel_width / 2;
 
-            int i_inp_smem = INDEX2D(2*x_out_rel, 2*y_out_rel, 2*kernel_width);
-            int y_inp = top - half_kh + 2*y_out_rel;
-            int x_inp = left - half_kw + 2*x_out_rel;
+        int bg_width = kernel_width * 2 - kernel_width % 2;
+        int bg_height = kernel_height * 2 - kernel_height % 2;
+
+        input += ichan * height * width;
+
+        scalar_t *inp_smem = reinterpret_cast<scalar_t*>(s) + threadIdx.y * bg_width * bg_height;
+
+        if (ichan < total_channel) {
+            int i_inp_smem = INDEX2D(2*x_k, 2*y_k, bg_width);
+            int y_inp = top_k - half_kh + 2*y_k;
+            int x_inp = left_k - half_kw + 2*x_k;
             int i_inp = INDEX2D(x_inp, y_inp, width);
 
-            input += i_channel * height * width;
-
-            scalar_t *inp_smem = reinterpret_cast<scalar_t*>(s) + threadIdx.y * 2*kernel_height * 2*kernel_width;
-
-            for (char y_off = 0; y_off < 2; y_off++) {
-                for (char x_off = 0; x_off < 2; x_off++) {
-                    if ((y_inp + y_off) < 0 || (y_inp + y_off) >= height || (x_inp + x_off) < 0 || (x_inp + x_off) >= width) {
-                        inp_smem[i_inp_smem + y_off * 2*kernel_width + x_off] = 0;
-                    } else {
-                        inp_smem[i_inp_smem + y_off * 2*kernel_width + x_off] = input[i_inp + y_off * width + x_off];
-                    }
+            #define INIT_INP(X_INP, Y_INP, COND_X, COND_Y) \
+                if(CONDITION_UP_##COND_X(X_INP, left_k-half_kw+bg_width) CONDITION_UP_##COND_Y(Y_INP, top_k-half_kh+bg_height) true) { \
+                    if (CONDITION_INSIDE((X_INP), (Y_INP), width, height)) { \
+                        inp_smem[i_inp_smem] = input[i_inp]; \
+                    } else { \
+                        inp_smem[i_inp_smem] = 0.; \
+                    } \
                 }
-            }
 
-            __syncthreads();
+            INIT_INP(x_inp, y_inp, false, false)
+            i_inp += 1;
+            i_inp_smem += 1;
+            INIT_INP(x_inp+1, y_inp, true, false)
+            i_inp += width - 1;
+            i_inp_smem += bg_width - 1;
+            INIT_INP(x_inp, y_inp+1, false, true)
+            i_inp += 1;
+            i_inp_smem += 1;
+            INIT_INP(x_inp+1, y_inp+1, true, true)
+            i_inp -= width + 1;
+            i_inp_smem -= bg_width + 1;
 
+            #undef INIT_INP
+
+        }
+
+        __syncthreads();
+
+        if (ichan < total_channel) {
             scalar_t out_reg = 0.;
-            for (y_inp=0; y_inp < kernel_height; y_inp++) {
-                for (x_inp=0; x_inp < kernel_width; x_inp++) {
-                    out_reg += inp_smem[INDEX2D(x_out_rel+x_inp, y_out_rel+y_inp, 2*kernel_width)] * inp_smem[INDEX2D(half_kw+x_inp, half_kh+y_inp, 2*kernel_width)];
+
+            int i_bg = INDEX2D(x_k, y_k, bg_width);
+            int i_k = INDEX2D(half_kw, half_kh, bg_width);
+            for (int y_off=0; y_off < kernel_height; y_off++) {
+                for (int x_off=0; x_off < kernel_width; x_off++) {
+                    out_reg += inp_smem[i_bg] * inp_smem[i_k];
+                    i_bg += 1;
+                    i_k += 1;
                 }
+                i_bg += bg_width - kernel_width;
+                i_k += bg_width - kernel_width;
             }
 
-            output += (((i_channel * n_corr_h + y_corr) * n_corr_w + x_corr) * kernel_height + y_out_rel) * kernel_width + x_out_rel;
+            output += (((ichan * n_corr_h + y_corr) * n_corr_w + x_corr) * kernel_height + y_k) * kernel_width + x_k;
 
             *output = out_reg;
-        } else {
-            __syncthreads();
         }
 }
 
@@ -108,6 +141,8 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
     const int n_corr_h = (height - kernel_height) / stride_height + 1;
     const int n_corr = n_corr_w * n_corr_h;
     const int kernel_size = kernel_height * kernel_width;
+    const int bg_width = kernel_width * 2 - kernel_width % 2;
+    const int bg_height = kernel_height * 2 - kernel_height % 2;
 
     // work on pytorch 0.4.0 , have been changed in master 07/20/2018
     auto output = at::zeros(input.type(), std::vector<int64_t>{batch_size, channel_size, n_corr_h, n_corr_w, kernel_height, kernel_width});
@@ -125,9 +160,10 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
 
     const dim3 threads_per_block(kernel_size, n_channel_per_block);
     const dim3 blocks((total_channel + n_channel_per_block - 1) / n_channel_per_block, n_corr);
+    const int shared_memory_size = n_channel_per_block * bg_width * bg_height;
 
 #define CALL_FORWARD() \
-    lacorr2d_forward_cuda_kernel<scalar_t><<<blocks, threads_per_block, n_channel_per_block*4*kernel_size*sizeof(scalar_t)>>>( \
+    lacorr2d_forward_cuda_kernel<scalar_t><<<blocks, threads_per_block, shared_memory_size*sizeof(scalar_t)>>>( \
         input.data<scalar_t>(), \
         output.data<scalar_t>(), \
         kernel_height, \
@@ -172,77 +208,117 @@ __global__ void lacorr2d_backward_cuda_kernel(
     const int width) {
         extern __shared__ unsigned char s[];
 
-        int i_channel = blockIdx.x * blockDim.y + threadIdx.y;
+        int ichan = blockIdx.x * blockDim.y + threadIdx.y;
         
-        int i_out_rel = threadIdx.x;
-        int i_corr = blockIdx.y;
+        int ithread = threadIdx.x;
+        int icorr = blockIdx.y;
 
-        int y_out_rel = i_out_rel / kernel_width;
-        int x_out_rel = i_out_rel % kernel_width;
+        int y_k = ithread / kernel_width;
+        int x_k = ithread % kernel_width;
 
-        int y_corr = i_corr / n_corr_w;
-        int x_corr = i_corr % n_corr_w;
+        int y_corr = icorr / n_corr_w;
+        int x_corr = icorr % n_corr_w;
 
         // left and top conner of current corr in input image
-        int left = stride_width * x_corr;
-        int top = stride_height * y_corr;
+        int left_k = stride_width * x_corr;
+        int top_k = stride_height * y_corr;
 
         int half_kh = kernel_height / 2;
         int half_kw = kernel_width / 2;
 
-        int i_inp_smem = INDEX2D(2*x_out_rel, 2*y_out_rel, 2*kernel_width);
-        int y_inp = top - half_kh + 2*y_out_rel;
-        int x_inp = left - half_kw + 2*x_out_rel;
+        int bg_width = kernel_width * 2 - kernel_width % 2;
+        int bg_height = kernel_height * 2 - kernel_height % 2;
+        int bg_size = bg_width * bg_height;
+
+        int i_inp_smem = INDEX2D(2*x_k, 2*y_k, bg_width);
+        int y_inp = top_k - half_kh + 2*y_k;
+        int x_inp = left_k - half_kw + 2*x_k;
         int i_inp = INDEX2D(x_inp, y_inp, width);
 
-        input += i_channel * height * width;
-        grad_input += i_channel * height * width;
+        input += ichan * height * width;
+        grad_input += ichan * height * width;
 
-        scalar_t *inp_smem = reinterpret_cast<scalar_t*>(s) + threadIdx.y * 2*kernel_height * 2*kernel_width;
-        scalar_t *grad_inp_smem = inp_smem + blockDim.y * 2*kernel_height * 2*kernel_width;
+        scalar_t *inp_smem = reinterpret_cast<scalar_t*>(s) + threadIdx.y * bg_size;
+        scalar_t *grad_inp_smem = inp_smem + blockDim.y * bg_size;
 
-        char y_off, x_off;
-        if (i_channel < total_channel) {
-            for (y_off = 0; y_off < 2; y_off++) {
-                for (x_off = 0; x_off < 2; x_off++) {
-                    if ((y_inp + y_off) < 0 || (y_inp + y_off) >= height || (x_inp + x_off) < 0 || (x_inp + x_off) >= width) {
-                        inp_smem[i_inp_smem + y_off * 2*kernel_width + x_off] = 0.;
-                    } else {
-                        inp_smem[i_inp_smem + y_off * 2*kernel_width + x_off] = input[i_inp + y_off * width + x_off];
-                        grad_inp_smem[i_inp_smem + y_off * 2*kernel_width + x_off] = 0.;
-                    }
+        if (ichan < total_channel) {
+
+            #define INIT_INP_GINP(X_INP, Y_INP, COND_X, COND_Y) \
+                if(CONDITION_UP_##COND_X(X_INP, left_k-half_kw+bg_width) CONDITION_UP_##COND_Y(Y_INP, top_k-half_kh+bg_height) true) { \
+                    if (CONDITION_INSIDE((X_INP), (Y_INP), width, height)) { \
+                        inp_smem[i_inp_smem] = input[i_inp]; \
+                        grad_inp_smem[i_inp_smem] = 0.; \
+                    } else { \
+                        inp_smem[i_inp_smem] = 0.; \
+                    } \
                 }
-            }
+
+            INIT_INP_GINP(x_inp, y_inp, false, false)
+            i_inp += 1;
+            i_inp_smem += 1;
+            INIT_INP_GINP(x_inp+1, y_inp, true, false)
+            i_inp += width - 1;
+            i_inp_smem += bg_width - 1;
+            INIT_INP_GINP(x_inp, y_inp+1, false, true)
+            i_inp += 1;
+            i_inp_smem += 1;
+            INIT_INP_GINP(x_inp+1, y_inp+1, true, true)
+            i_inp -= width + 1;
+            i_inp_smem -= bg_width + 1;
+
+            #undef INIT_INP_GINP
 
         }
 
         __syncthreads();
+
+        // # Updating background grad
 
         scalar_t grad_out_reg;
 
-        if (i_channel < total_channel) {
-            grad_out_reg = *(grad_output + (((i_channel * n_corr_h + y_corr) * n_corr_w + x_corr) * kernel_height + y_out_rel) * kernel_width + x_out_rel);
+        if (ichan < total_channel) {
+            grad_out_reg = *(grad_output + (((ichan * n_corr_h + y_corr) * n_corr_w + x_corr) * kernel_height + y_k) * kernel_width + x_k);
 
-            for (int y_inp_k=0; y_inp_k < kernel_height; y_inp_k++) {
-                for (int x_inp_k=0; x_inp_k < kernel_width; x_inp_k++) {
+            grad_inp_smem += y_k * bg_width + x_k;
+            inp_smem += half_kh * bg_width + half_kw;
+            // *_off respect to input/grad_input location, output location is fixed
+            for (int y_off=0; y_off < kernel_height; y_off++) {
+                for (int x_off=0; x_off < kernel_width; x_off++) {
                     // atomicAdd is in case of overlapping maps
-                    atomicAdd(&grad_inp_smem[INDEX2D(x_out_rel+x_inp_k, y_out_rel+y_inp_k, 2*kernel_width)], grad_out_reg * inp_smem[INDEX2D(half_kw+x_inp_k, half_kh+y_inp_k, 2*kernel_width)]);
-                    // grad_inp_smem[INDEX2D(x_out_rel+x_inp_k, y_out_rel+y_inp_k, 2*kernel_width)] += grad_out_reg * inp_smem[INDEX2D(half_kw+x_inp_k, half_kh+y_inp_k, 2*kernel_width)];
+                    atomicAdd(grad_inp_smem, grad_out_reg * (*inp_smem));
+                    grad_inp_smem += 1;
+                    inp_smem += 1;
                 }
+                grad_inp_smem += bg_width - kernel_width;
+                inp_smem += bg_width - kernel_width;
             }
+            grad_inp_smem -= (kernel_height + y_k) * bg_width + x_k;
+            inp_smem -= (kernel_height + half_kh) * bg_width + half_kw;
         }
 
         __syncthreads();
 
-        if (i_channel < total_channel) {
-            for (y_off = 0; y_off < 2; y_off++) {
-                for (x_off = 0; x_off < 2; x_off++) {
-                    if ((y_inp + y_off) >= 0 && (y_inp + y_off) < height && (x_inp + x_off) >= 0 && (x_inp + x_off) < width) {
-                        //grad_input[i_inp + y_off * width + x_off] = grad_inp_smem[i_inp_smem + y_off * 2*kernel_width + x_off];
-                        atomicAdd(&grad_input[i_inp + y_off * width + x_off], grad_inp_smem[i_inp_smem + y_off * 2*kernel_width + x_off]);
-                    }
+        if (ichan < total_channel) {
+
+            #define STORE_GRADINP(X_INP, Y_INP, COND_X, COND_Y) \
+                if (CONDITION_UP_##COND_X(X_INP, left_k-half_kw+bg_width) CONDITION_UP_##COND_Y(Y_INP, top_k-half_kh+bg_height) CONDITION_INSIDE((X_INP), (Y_INP), width, height)) { \
+                    atomicAdd(&grad_input[i_inp], grad_inp_smem[i_inp_smem]); \
                 }
-            }
+            
+            STORE_GRADINP(x_inp, y_inp, false, false)
+            i_inp += 1;
+            i_inp_smem += 1;
+            STORE_GRADINP(x_inp+1, y_inp, true, false)
+            i_inp += width - 1;
+            i_inp_smem += bg_width - 1;
+            STORE_GRADINP(x_inp, y_inp+1, false, true)
+            i_inp += 1;
+            i_inp_smem += 1;
+            STORE_GRADINP(x_inp+1, y_inp+1, true, true)
+            i_inp -= width + 1;
+            i_inp_smem -= bg_width + 1;
+
+            #undef STORE_GRADINP
         }
 
         __syncthreads();
@@ -250,22 +326,33 @@ __global__ void lacorr2d_backward_cuda_kernel(
         // Use grad_inp_smem as grad_out_smem
         #define grad_out_smem grad_inp_smem
 
-        if (i_channel < total_channel) {
-            grad_out_smem[i_out_rel] = grad_out_reg;
+        if (ichan < total_channel) {
+            grad_out_smem[ithread] = grad_out_reg;
         }
 
         __syncthreads();
         
         scalar_t grad_inp_reg = 0.;
-        if (i_channel < total_channel) {
-            for (int y_inp_k=0; y_inp_k < kernel_height; y_inp_k++) {
-                for (int x_inp_k=0; x_inp_k < kernel_width; x_inp_k++) {
-                    grad_inp_reg += grad_out_smem[INDEX2D(x_inp_k, y_inp_k, kernel_width)] * inp_smem[INDEX2D(x_inp_k+x_out_rel, y_inp_k+y_out_rel, 2*kernel_width)];
+        if (ichan < total_channel) {
+            inp_smem += y_k * bg_width + x_k;
+            // *_off respect to output_location/input_patch_location, input offset inside each patch is fixed (input)
+            for (int y_off=0; y_off < kernel_height; y_off++) {
+                for (int x_off=0; x_off < kernel_width; x_off++) {
+                    grad_inp_reg += (*grad_out_smem) * (*inp_smem);
+                    inp_smem += 1;
+                    grad_out_smem += 1;
                 }
+                inp_smem += bg_width - kernel_width;
+                // grad_out_smem += kernel_width - kernel_width;
             }
-            // atomicAdd is in case of overlapping maps
-            atomicAdd(&grad_input[INDEX2D(left+x_out_rel, top+y_out_rel, width)], grad_inp_reg);
+            inp_smem -= (kernel_height + y_k) * bg_width + x_k;
+            grad_out_smem -= kernel_height * kernel_width;
+
+            // atomicAdd is used because of potential overlapping maps
+            atomicAdd(&grad_input[INDEX2D(left_k+x_k, top_k+y_k, width)], grad_inp_reg);
         }
+
+        #undef grad_out_smem
 }
 
 std::vector<at::Tensor> lacorr2d_backward_cuda(
@@ -294,6 +381,8 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
     const int n_corr_h = (height - kernel_height) / stride_height + 1;
     const int n_corr = n_corr_w * n_corr_h;
     const int kernel_size = kernel_height * kernel_width;
+    const int bg_width = kernel_width * 2 - kernel_width % 2;
+    const int bg_height = kernel_height * 2 - kernel_height % 2;
 
     auto grad_input = at::zeros_like(input);
 
@@ -312,9 +401,10 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
 
     const dim3 threads_per_block(kernel_size, n_channel_per_block);
     const dim3 blocks((total_channel + n_channel_per_block - 1) / n_channel_per_block, n_corr);
+    const int shared_memory_size = 2 * n_channel_per_block * bg_width * bg_height;
 
 #define CALL_BACKWARD() \
-    lacorr2d_backward_cuda_kernel<scalar_t><<<blocks, threads_per_block, 2*n_channel_per_block*4*kernel_size*sizeof(scalar_t)>>>( \
+    lacorr2d_backward_cuda_kernel<scalar_t><<<blocks, threads_per_block, shared_memory_size*sizeof(scalar_t)>>>( \
         input.data<scalar_t>(), \
         grad_output.data<scalar_t>(), \
         grad_input.data<scalar_t>(), \
