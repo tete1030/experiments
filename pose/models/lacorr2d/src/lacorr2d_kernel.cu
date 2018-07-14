@@ -4,8 +4,10 @@
 #include <cuda_runtime.h>
 #include <iostream>
 
-#define INDEX2D(X, Y, WIDTH) ((Y) * (WIDTH) + (X))
-#define FLOAT_ONLY 1
+#include "lacorr2d_kernel.cuh"
+
+using std::cout;
+
 // CC61
 #define NUM_BANK 32
 #define HALF_WARP 16
@@ -47,8 +49,8 @@ __global__ void lacorr2d_forward_cuda_kernel(
         int half_kh = kernel_height / 2;
         int half_kw = kernel_width / 2;
 
-        int bg_width = kernel_width * 2 - kernel_width % 2;
-        int bg_height = kernel_height * 2 - kernel_height % 2;
+        int bg_width = kernel_width * 2 - 1;
+        int bg_height = kernel_height * 2 - 1;
 
         input += ichan * height * width;
 
@@ -87,6 +89,13 @@ __global__ void lacorr2d_forward_cuda_kernel(
         }
 
         __syncthreads();
+
+        // This loop respect to
+        // - [offset inside a kernel],
+        // - [offset in a kernel projection on background].
+        //
+        // - [offset in a output],
+        // - [location of whole kernel projection on background]
 
         if (ichan < total_channel) {
             scalar_t out_reg = 0.;
@@ -141,8 +150,8 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
     const int n_corr_h = (height - kernel_height) / stride_height + 1;
     const int n_corr = n_corr_w * n_corr_h;
     const int kernel_size = kernel_height * kernel_width;
-    const int bg_width = kernel_width * 2 - kernel_width % 2;
-    const int bg_height = kernel_height * 2 - kernel_height % 2;
+    const int bg_width = kernel_width * 2 - 1;
+    const int bg_height = kernel_height * 2 - 1;
 
     // work on pytorch 0.4.0 , have been changed in master 07/20/2018
     auto output = at::zeros(input.type(), std::vector<int64_t>{batch_size, channel_size, n_corr_h, n_corr_w, kernel_height, kernel_width});
@@ -150,17 +159,21 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
     // ASSUME: kernel_size less than 1024, should be factor of 1024
     const int n_channel_per_block = 1024 / kernel_size;
 
-    // std::cout << "kernel_size: " << kernel_size << std::endl;
-    // std::cout << "n_channel_per_block: " << n_channel_per_block << std::endl;
-    // std::cout << "blocks.x: " << ((total_channel + n_channel_per_block - 1) / n_channel_per_block) << std::endl;
-    // std::cout << "blocks.y: " << n_corr << std::endl;
-
-    // n_channel_per_block*4*kernel_size*sizeof(scalar_t) is guaranteed to be less than or equal to 32768
-    // when block per SM == 2
+    // n_channel_per_block*bg_width*bg_height*sizeof(scalar_t)
+    // should be less than or equal to 32768
+    // when block_per_SM == 2 to maxmize occupancy
 
     const dim3 threads_per_block(kernel_size, n_channel_per_block);
     const dim3 blocks((total_channel + n_channel_per_block - 1) / n_channel_per_block, n_corr);
     const int shared_memory_size = n_channel_per_block * bg_width * bg_height;
+
+    D(
+        cout << "kernel_size: " << kernel_size << std::endl;
+        cout << "n_channel_per_block: " << n_channel_per_block << std::endl;
+        cout << "blocks.x: " << ((total_channel + n_channel_per_block - 1) / n_channel_per_block) << std::endl;
+        cout << "blocks.y: " << n_corr << std::endl;
+        cout << "shared_memory_size: " << shared_memory_size << std::endl;
+    )
 
 #define CALL_FORWARD() \
     lacorr2d_forward_cuda_kernel<scalar_t><<<blocks, threads_per_block, shared_memory_size*sizeof(scalar_t)>>>( \
@@ -187,10 +200,6 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
 
     return {output};
 }
-
-// align thread id with warp/halfwarp
-// align lines of images ?
-// avoid bank confilict
 
 template <typename scalar_t>
 __global__ void lacorr2d_backward_cuda_kernel(
@@ -226,9 +235,8 @@ __global__ void lacorr2d_backward_cuda_kernel(
         int half_kh = kernel_height / 2;
         int half_kw = kernel_width / 2;
 
-        int bg_width = kernel_width * 2 - kernel_width % 2;
-        int bg_height = kernel_height * 2 - kernel_height % 2;
-        int bg_size = bg_width * bg_height;
+        int bg_width = kernel_width * 2 - 1;
+        int bg_height = kernel_height * 2 - 1;
 
         int i_inp_smem = INDEX2D(2*x_k, 2*y_k, bg_width);
         int y_inp = top_k - half_kh + 2*y_k;
@@ -238,8 +246,8 @@ __global__ void lacorr2d_backward_cuda_kernel(
         input += ichan * height * width;
         grad_input += ichan * height * width;
 
-        scalar_t *inp_smem = reinterpret_cast<scalar_t*>(s) + threadIdx.y * bg_size;
-        scalar_t *grad_inp_smem = inp_smem + blockDim.y * bg_size;
+        scalar_t *inp_smem = reinterpret_cast<scalar_t*>(s) + threadIdx.y * bg_width * bg_height;
+        scalar_t *grad_inp_smem = inp_smem + blockDim.y * bg_width * bg_height;
 
         if (ichan < total_channel) {
 
@@ -272,7 +280,15 @@ __global__ void lacorr2d_backward_cuda_kernel(
 
         __syncthreads();
 
-        // # Updating background grad
+        // Calculate background grad
+        // We separate background grad and kernel grad to avoid severe Bank Conflict.
+        // This loop respect to
+        // - [offset inside a kernel],
+        // - [offset in a kernel projection on background].
+        //
+        // - [offset in a output],
+        // - [location of whole kernel projection on background]
+        // is fixed in this thread.
 
         scalar_t grad_out_reg;
 
@@ -281,7 +297,7 @@ __global__ void lacorr2d_backward_cuda_kernel(
 
             grad_inp_smem += y_k * bg_width + x_k;
             inp_smem += half_kh * bg_width + half_kw;
-            // *_off respect to input/grad_input location, output location is fixed
+
             for (int y_off=0; y_off < kernel_height; y_off++) {
                 for (int x_off=0; x_off < kernel_width; x_off++) {
                     // atomicAdd is in case of overlapping maps
@@ -297,6 +313,8 @@ __global__ void lacorr2d_backward_cuda_kernel(
         }
 
         __syncthreads();
+
+        // Store background grad, reuse its shared memory for storing output_grad
 
         if (ichan < total_channel) {
 
@@ -323,7 +341,9 @@ __global__ void lacorr2d_backward_cuda_kernel(
 
         __syncthreads();
 
-        // Use grad_inp_smem as grad_out_smem
+        // Store read grad_out into shared memory
+
+        // Use grad_inp_smem as grad_out_smem (try to reuse register)
         #define grad_out_smem grad_inp_smem
 
         if (ichan < total_channel) {
@@ -331,11 +351,24 @@ __global__ void lacorr2d_backward_cuda_kernel(
         }
 
         __syncthreads();
-        
-        scalar_t grad_inp_reg = 0.;
+
+        // Calculate kernel grad and store it into global memory
+        // We separate background grad and kernel grad to avoid severe Bank Conflict
+        // The following loop is different from the loop above in their meaning.
+        // The loop respect to
+        // - [location of whole kernel projection on background],
+        // - [offset in a output].
+        //
+        // - [offset in a kernel],
+        // - [offset in a kernel projection on background]
+        // is fixed in this thread.
+
+        // Mannually reuse grad_out_reg register (though probabaly could be auto-optimized)
+        #define grad_inp_reg grad_out_reg
+        grad_inp_reg = 0.;
+
         if (ichan < total_channel) {
             inp_smem += y_k * bg_width + x_k;
-            // *_off respect to output_location/input_patch_location, input offset inside each patch is fixed (input)
             for (int y_off=0; y_off < kernel_height; y_off++) {
                 for (int x_off=0; x_off < kernel_width; x_off++) {
                     grad_inp_reg += (*grad_out_smem) * (*inp_smem);
@@ -352,6 +385,7 @@ __global__ void lacorr2d_backward_cuda_kernel(
             atomicAdd(&grad_input[INDEX2D(left_k+x_k, top_k+y_k, width)], grad_inp_reg);
         }
 
+        #undef grad_inp_reg
         #undef grad_out_smem
 }
 
@@ -381,27 +415,31 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
     const int n_corr_h = (height - kernel_height) / stride_height + 1;
     const int n_corr = n_corr_w * n_corr_h;
     const int kernel_size = kernel_height * kernel_width;
-    const int bg_width = kernel_width * 2 - kernel_width % 2;
-    const int bg_height = kernel_height * 2 - kernel_height % 2;
+    const int bg_width = kernel_width * 2 - 1;
+    const int bg_height = kernel_height * 2 - 1;
 
     auto grad_input = at::zeros_like(input);
 
     // ASSUME: kernel_size less than 1024, should be factor of 1024
     const int n_channel_per_block = 1024 / kernel_size;
 
-    // std::cout << "kernel_size: " << kernel_size << std::endl;
-    // std::cout << "n_channel_per_block: " << n_channel_per_block << std::endl;
-    // std::cout << "blocks.x: " << ((total_channel + n_channel_per_block - 1) / n_channel_per_block) << std::endl;
-    // std::cout << "blocks.y: " << n_corr << std::endl;
-
-    // n_channel_per_block*4*kernel_size*sizeof(scalar_t) is guaranteed to be less than or equal to 32768
-    // when block per SM == 2
+    // 2*n_channel_per_block*bg_width*bg_height*sizeof(scalar_t)
+    // should be less than or equal to 32768
+    // when block_per_SM == 2 to maxmize occupancy
 
     // WARN: there is not sufficient shared memory for double as scalar_t
 
     const dim3 threads_per_block(kernel_size, n_channel_per_block);
     const dim3 blocks((total_channel + n_channel_per_block - 1) / n_channel_per_block, n_corr);
     const int shared_memory_size = 2 * n_channel_per_block * bg_width * bg_height;
+
+    D(
+        cout << "kernel_size: " << kernel_size << std::endl;
+        cout << "n_channel_per_block: " << n_channel_per_block << std::endl;
+        cout << "blocks.x: " << ((total_channel + n_channel_per_block - 1) / n_channel_per_block) << std::endl;
+        cout << "blocks.y: " << n_corr << std::endl;
+        cout << "shared_memory_size: " << shared_memory_size << std::endl;
+    )
 
 #define CALL_BACKWARD() \
     lacorr2d_backward_cuda_kernel<scalar_t><<<blocks, threads_per_block, shared_memory_size*sizeof(scalar_t)>>>( \

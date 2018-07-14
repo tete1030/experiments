@@ -53,17 +53,34 @@ def main(args):
     if args.time:
         start_time = datetime.datetime.now()
 
+    if args.double:
+        DTYPE = torch.float64
+    else:
+        DTYPE = torch.float32
+
+    if args.thr == "0":
+        threshold = 0.
+    elif args.thr == "eps32":
+        threshold = np.finfo(np.float32).eps.item()
+    elif args.thr == "eps64":
+        threshold = np.finfo(np.float64).eps.item()
+
     for i in range(REPEAT_TIMES):
-        img = torch.rand(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=torch.float32, device="cuda", requires_grad=True)
-        label = torch.rand(BATCH_SIZE, CHANNEL_SIZE, n_corr_h, n_corr_w, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=torch.float32, device="cuda")
+        # img = torch.rand(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
+        # img.data += 1
+        # label = torch.rand(BATCH_SIZE, CHANNEL_SIZE, n_corr_h, n_corr_w, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
+        # label.data += 2
+
+        img = torch.ones(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
+        label = torch.ones(BATCH_SIZE, CHANNEL_SIZE, n_corr_h, n_corr_w, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
         
-        # img = torch.zeros(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=torch.float32, device="cuda", requires_grad=True)
+        # img = torch.zeros(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
         # for isamp in range(BATCH_SIZE):
         #     for ichan in range(CHANNEL_SIZE):
         #         randX = torch.randint(WIDTH, size=(100,), dtype=torch.long)
         #         randY = torch.randint(HEIGHT, size=(100,), dtype=torch.long)
         #         img.data[isamp, ichan, randY, randX] = 1
-        # label = torch.zeros(BATCH_SIZE, CHANNEL_SIZE, n_corr_h, n_corr_w, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=torch.float32, device="cuda")
+        # label = torch.zeros(BATCH_SIZE, CHANNEL_SIZE, n_corr_h, n_corr_w, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
         
         first_output = None
         first_grad = None
@@ -103,8 +120,17 @@ def main(args):
                     first_output = output.detach().cpu()
                     first_grad = grad.detach().cpu()
                 else:
-                    assert ((output.detach().cpu() - first_output).abs() <= np.finfo(np.float32).eps.item() * 2. ** 8).all()
-                    assert ((grad.detach().cpu() - first_grad).abs() < np.finfo(np.float32).eps.item()).all()
+                    max_error_out = (output.detach().cpu() - first_output).abs().max()
+                    max_error_grad = (grad.detach().cpu() - first_grad).abs().max()
+                    if args.raise_ and max_error_out > threshold:
+                        raise ValueError("Max Output Error: %e" % (max_error_out))
+                    elif max_error_out > 0:
+                        print("Max Output Error: %e" % (max_error_out))
+
+                    if args.raise_ and max_error_grad > threshold:
+                        raise ValueError("Max Grad Error: %e" % (max_error_grad))
+                    elif max_error_grad > 0:
+                        print("Max Grad Error: %e" % (max_error_grad))
         
         # plt.show()
         print("%d test pass" % (i+1,))
@@ -130,6 +156,9 @@ def main(args):
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser()
     argparser.add_argument("--model", choices=["normal", "cuda", "all"])
+    argparser.add_argument("--raise", dest="raise_", action="store_true")
+    argparser.add_argument("--double", action="store_true")
+    argparser.add_argument("--thr", choices=["0", "eps32", "eps64"], default="0")
     argparser.add_argument("--time", action="store_true")
     argparser.add_argument("--memory", action="store_true")
     main(argparser.parse_args())

@@ -1,20 +1,6 @@
 #include <torch/torch.h>
 #include <vector>
-
-std::vector<at::Tensor> lacorr2d_forward_cuda(
-    at::Tensor input,
-    int kernel_height,
-    int kernel_width,
-    int stride_height,
-    int stride_width);
-
-std::vector<at::Tensor> lacorr2d_backward_cuda(
-    at::Tensor input,
-    at::Tensor grad_output,
-    int kernel_height,
-    int kernel_width,
-    int stride_height,
-    int stride_width);
+#include "lacorr2d_kernel.cuh"
 
 #define CHECK_CUDA(x) AT_ASSERT(x.type().is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x) AT_ASSERT(x.is_contiguous(), #x " must be contiguous")
