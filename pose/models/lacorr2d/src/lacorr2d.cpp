@@ -11,10 +11,22 @@ std::vector<at::Tensor> lacorr2d_forward(
     int kernel_height,
     int kernel_width,
     int stride_height,
-    int stride_width) {
+    int stride_width,
+    int padding_top,
+    int padding_bottom,
+    int padding_left,
+    int padding_right) {
         CHECK_INPUT(input);
 
-        return lacorr2d_forward_cuda(input, kernel_height, kernel_width, stride_height, stride_width);
+        return lacorr2d_forward_cuda(input,
+                                     kernel_height,
+                                     kernel_width,
+                                     stride_height,
+                                     stride_width,
+                                     padding_top,
+                                     padding_bottom,
+                                     padding_left,
+                                     padding_right);
 }
 
 std::vector<at::Tensor> lacorr2d_backward(
@@ -23,11 +35,24 @@ std::vector<at::Tensor> lacorr2d_backward(
     int kernel_height,
     int kernel_width,
     int stride_height,
-    int stride_width) {
+    int stride_width,
+    int padding_top,
+    int padding_bottom,
+    int padding_left,
+    int padding_right) {
         CHECK_INPUT(input);
         CHECK_INPUT(grad_output);
 
-        return lacorr2d_backward_cuda(input, grad_output, kernel_height, kernel_width, stride_height, stride_width);
+        return lacorr2d_backward_cuda(input,
+                                      grad_output,
+                                      kernel_height,
+                                      kernel_width,
+                                      stride_height,
+                                      stride_width,
+                                      padding_top,
+                                      padding_bottom,
+                                      padding_left,
+                                      padding_right);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

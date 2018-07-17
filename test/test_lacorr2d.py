@@ -3,7 +3,7 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from pose.models.lacorr2d import LocalAutoCorr2DCUDA, LocalAutoCorr2D
+from pose.models.lacorr2d import LocalAutoCorr2DCUDA, LocalAutoCorr2D, PadInfo
 import argparse
 import datetime
 
@@ -32,8 +32,13 @@ def main(args):
     # STRIDE_WIDTH = 3
     # STRIDE_HEIGHT = 5
 
-    n_corr_w = int(WIDTH - KERNEL_WIDTH) // int(STRIDE_WIDTH) + 1;
-    n_corr_h = int(HEIGHT - KERNEL_HEIGHT) // int(STRIDE_HEIGHT) + 1;
+    PAD_TOP = 4
+    PAD_BOTTOM = 3
+    PAD_LEFT = 4
+    PAD_RIGHT = 3
+
+    n_corr_w = int(WIDTH + PAD_LEFT + PAD_RIGHT - KERNEL_WIDTH) // int(STRIDE_WIDTH) + 1;
+    n_corr_h = int(HEIGHT + PAD_TOP + PAD_BOTTOM - KERNEL_HEIGHT) // int(STRIDE_HEIGHT) + 1;
 
     model_constructors = list()
     models = list()
@@ -48,7 +53,7 @@ def main(args):
         model_constructors.extend([LocalAutoCorr2D, LocalAutoCorr2DCUDA])
 
     for mc in model_constructors:
-        models.append(mc((KERNEL_WIDTH, KERNEL_HEIGHT), (STRIDE_WIDTH, STRIDE_HEIGHT)).cuda())
+        models.append(mc((KERNEL_HEIGHT, KERNEL_WIDTH), (STRIDE_HEIGHT, STRIDE_WIDTH), PadInfo(PAD_TOP, PAD_BOTTOM, PAD_LEFT, PAD_RIGHT)).cuda())
 
     if args.time:
         start_time = datetime.datetime.now()
@@ -66,13 +71,13 @@ def main(args):
         threshold = np.finfo(np.float64).eps.item()
 
     for i in range(REPEAT_TIMES):
-        # img = torch.rand(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
-        # img.data += 1
-        # label = torch.rand(BATCH_SIZE, n_corr_h, n_corr_w, CHANNEL_SIZE, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
-        # label.data += 2
+        img = torch.rand(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
+        img.data += 1
+        label = torch.rand(BATCH_SIZE, n_corr_h, n_corr_w, CHANNEL_SIZE, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
+        label.data += 1
 
-        img = torch.ones(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
-        label = torch.ones(BATCH_SIZE, n_corr_h, n_corr_w, CHANNEL_SIZE, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
+        # img = torch.ones(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
+        # label = torch.ones(BATCH_SIZE, n_corr_h, n_corr_w, CHANNEL_SIZE, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
         
         # img = torch.zeros(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
         # for isamp in range(BATCH_SIZE):
@@ -91,10 +96,12 @@ def main(args):
             assert output.size() == label.size()
             loss = (output - label).pow(2).mean().sqrt()
             zero_grad(img)
+            # output.backward(gradient=label)
             loss.backward()
 
             if args.model == "all":
-                grad = img.grad.detach().clone()
+                grad = img.grad.detach().cpu()
+                output = output.detach().cpu()
 
                 # for isamp in range(1):
                 #     plt.figure()
@@ -117,11 +124,11 @@ def main(args):
                 #             ax.imshow(cuda_output[isamp, 0, iy, ix].data.cpu())
 
                 if first_output is None:
-                    first_output = output.detach().cpu()
-                    first_grad = grad.detach().cpu()
+                    first_output = output
+                    first_grad = grad
                 else:
-                    max_error_out = (output.detach().cpu() - first_output).abs().max()
-                    max_error_grad = (grad.detach().cpu() - first_grad).abs().max()
+                    max_error_out = (output - first_output).abs().max()
+                    max_error_grad = (grad - first_grad).abs().max()
                     if args.raise_ and max_error_out > threshold:
                         raise ValueError("Max Output Error: %e" % (max_error_out))
                     elif max_error_out > 0:

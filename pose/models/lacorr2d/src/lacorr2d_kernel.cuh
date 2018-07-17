@@ -33,6 +33,8 @@ __global__ void lacorr2d_forward_cuda_kernel(
     const int kernel_width,
     const int stride_height,
     const int stride_width,
+    const int corr_off_y,
+    const int corr_off_x,
     const int n_corr_h,
     const int n_corr_w,
     const int total_channel,
@@ -45,7 +47,11 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
     int kernel_height,
     int kernel_width,
     int stride_height,
-    int stride_width);
+    int stride_width,
+    int padding_top,
+    int padding_bottom,
+    int padding_left,
+    int padding_right);
 
 template <typename scalar_t>
 __global__ void lacorr2d_backward_cuda_kernel(
@@ -56,6 +62,8 @@ __global__ void lacorr2d_backward_cuda_kernel(
     const int kernel_width,
     const int stride_height,
     const int stride_width,
+    const int corr_off_y,
+    const int corr_off_x,
     const int n_corr_h,
     const int n_corr_w,
     const int total_channel,
@@ -69,5 +77,9 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
     int kernel_height,
     int kernel_width,
     int stride_height,
-    int stride_width);
+    int stride_width,
+    int padding_top,
+    int padding_bottom,
+    int padding_left,
+    int padding_right);
 #endif

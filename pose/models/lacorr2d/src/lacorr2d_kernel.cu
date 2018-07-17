@@ -17,10 +17,10 @@ using std::cout;
 #define MAX_NUM_REGISTERS_PER_BLOCK 32768 //65536
 
 // -ptxas-options=-v
-#define NUM_REGISTER_FORWARD_FLOAT 29
+#define NUM_REGISTER_FORWARD_FLOAT 28
 #define NUM_REGISTER_BACKWARD_FLOAT 32
-#define NUM_REGISTER_FORWARD_DOUBLE 31
-#define NUM_REGISTER_BACKWARD_DOUBLE 38
+#define NUM_REGISTER_FORWARD_DOUBLE 30
+#define NUM_REGISTER_BACKWARD_DOUBLE 32
 
 #define NUM_REGISTER(NAME, DIR, TYPE)                                           \
   [&] {                                                                         \
@@ -67,6 +67,8 @@ __global__ void lacorr2d_forward_cuda_kernel(
     const int kernel_width,
     const int stride_height,
     const int stride_width,
+    const int corr_off_y,
+    const int corr_off_x,
     const int n_corr_h,
     const int n_corr_w,
     const int total_channel,
@@ -87,8 +89,8 @@ __global__ void lacorr2d_forward_cuda_kernel(
         int x_corr = icorr % n_corr_w;
 
         // left and top conner of current corr in input image
-        int left_k = stride_width * x_corr;
-        int top_k = stride_height * y_corr;
+        int left_k = corr_off_x + stride_width * x_corr;
+        int top_k = corr_off_y + stride_height * y_corr;
 
         int half_kh = kernel_height / 2;
         int half_kw = kernel_width / 2;
@@ -112,7 +114,7 @@ __global__ void lacorr2d_forward_cuda_kernel(
                     if (CONDITION_INSIDE((X_INP), (Y_INP), width, height)) { \
                         inp_smem[i_inp_smem] = input[i_inp]; \
                     } else { \
-                        inp_smem[i_inp_smem] = 0.; \
+                        inp_smem[i_inp_smem] = 0; \
                     } \
                 }
 
@@ -174,7 +176,11 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
     int kernel_height,
     int kernel_width,
     int stride_height,
-    int stride_width) {
+    int stride_width,
+    int padding_top,
+    int padding_bottom,
+    int padding_left,
+    int padding_right) {
     const int batch_size = input.size(0);
     const int channel_size = input.size(1);
     const int total_channel = batch_size * channel_size;
@@ -189,8 +195,8 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
     AT_ASSERT(input.type().scalarType() == at::ScalarType::Float, "input.scalarType must be float")
 #endif
 
-    const int n_corr_w = (width - kernel_width) / stride_width + 1;
-    const int n_corr_h = (height - kernel_height) / stride_height + 1;
+    const int n_corr_w = (width + padding_left + padding_right - kernel_width) / stride_width + 1;
+    const int n_corr_h = (height + padding_top + padding_bottom - kernel_height) / stride_height + 1;
     const int n_corr = n_corr_w * n_corr_h;
     const int kernel_size = kernel_height * kernel_width;
     const int bg_width = kernel_width * 2 - 1;
@@ -230,6 +236,8 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
         kernel_width, \
         stride_height, \
         stride_width, \
+        -padding_top, \
+        -padding_left, \
         n_corr_h, \
         n_corr_w, \
         total_channel, \
@@ -259,6 +267,8 @@ __global__ void lacorr2d_backward_cuda_kernel(
     const int kernel_width,
     const int stride_height,
     const int stride_width,
+    const int corr_off_y,
+    const int corr_off_x,
     const int n_corr_h,
     const int n_corr_w,
     const int total_channel,
@@ -279,8 +289,8 @@ __global__ void lacorr2d_backward_cuda_kernel(
         int x_corr = icorr % n_corr_w;
 
         // left and top conner of current corr in input image
-        int left_k = stride_width * x_corr;
-        int top_k = stride_height * y_corr;
+        int left_k = corr_off_x + stride_width * x_corr;
+        int top_k = corr_off_y + stride_height * y_corr;
 
         int half_kh = kernel_height / 2;
         int half_kw = kernel_width / 2;
@@ -306,10 +316,10 @@ __global__ void lacorr2d_backward_cuda_kernel(
                 if(CONDITION_UP_##COND_X(X_INP, left_k-half_kw+bg_width) CONDITION_UP_##COND_Y(Y_INP, top_k-half_kh+bg_height) true) { \
                     if (CONDITION_INSIDE((X_INP), (Y_INP), width, height)) { \
                         inp_smem[i_inp_smem] = input[i_inp]; \
-                        grad_inp_smem[i_inp_smem] = 0.; \
                     } else { \
                         inp_smem[i_inp_smem] = 0.; \
                     } \
+                    grad_inp_smem[i_inp_smem] = 0.; \
                 }
 
             INIT_INP_GINP(x_inp, y_inp, false, false)
@@ -416,7 +426,7 @@ __global__ void lacorr2d_backward_cuda_kernel(
 
         scalar_t grad_inp_reg = 0.;
 
-        if (ichan < total_channel) {
+        if (ichan < total_channel && CONDITION_INSIDE(left_k+x_k, top_k+y_k, width, height)) {
             inp_smem += y_k * bg_width + x_k;
             for (int y_off=0; y_off < kernel_height; y_off++) {
                 for (int x_off=0; x_off < kernel_width; x_off++) {
@@ -442,7 +452,11 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
     int kernel_height,
     int kernel_width,
     int stride_height,
-    int stride_width) {
+    int stride_width,
+    int padding_top,
+    int padding_bottom,
+    int padding_left,
+    int padding_right) {
     const int batch_size = input.size(0);
     const int channel_size = input.size(1);
     const int total_channel = batch_size * channel_size;
@@ -458,8 +472,8 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
     AT_ASSERT(grad_output.type().scalarType() == at::ScalarType::Float, "grad_output.scalarType must be float")
 #endif
 
-    const int n_corr_w = (width - kernel_width) / stride_width + 1;
-    const int n_corr_h = (height - kernel_height) / stride_height + 1;
+    const int n_corr_w = (width + padding_left + padding_right - kernel_width) / stride_width + 1;
+    const int n_corr_h = (height + padding_top + padding_bottom - kernel_height) / stride_height + 1;
     const int n_corr = n_corr_w * n_corr_h;
     const int kernel_size = kernel_height * kernel_width;
     const int bg_width = kernel_width * 2 - 1;
@@ -499,6 +513,8 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
         kernel_width, \
         stride_height, \
         stride_width, \
+        -padding_top, \
+        -padding_left, \
         n_corr_h, \
         n_corr_w, \
         total_channel, \
