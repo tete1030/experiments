@@ -98,7 +98,8 @@ class Experiment(object):
         for ilabel, (outv, gtv) in enumerate(zip(output_vars, det_map_gt_vars)):
             # if ilabel < len(det_map_gt_vars) - 1:
             #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
-            loss += self.criterion(outv, gtv) / self.hparams["model"]["gaussian_kernels"][ilabel]
+            loss += ((outv - gtv).pow(2) * \
+                (((keypoint[:, :, 2] > 1) | (keypoint[:, :, 2] < 1)).float().view(-1, self.num_parts, 1, 1).cuda() if ilabel < len(det_map_gt_vars) - 1 else 1)).mean().sqrt() / self.hparams["model"]["gaussian_kernels"][ilabel]
 
         if (loss.data != loss.data).any():
             import pdb; pdb.set_trace()
@@ -136,18 +137,24 @@ class Experiment(object):
                 plt.show()
 
             if True:
-                pred_resized = batch_resize((output_vars[-1].data.cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8) , img.size()[-2:])
-                nrows = 3; ncols = 6
                 for i in range(batch_size):
-                    fig, axes = plt.subplots(nrows, ncols, squeeze=False)
-                    for ax in axes.flat:
-                        ax.axis("off")
-                    for j in range(self.num_parts):
-                        ax = axes.flat[j]
-                        draw_img = cv2.addWeighted(img_restored[i], 1, cv2.applyColorMap(pred_resized[i, j, :, :, None], cv2.COLORMAP_HOT), 0.5, 0)
-                        ax.imshow(draw_img[..., ::-1])
-                        ax.set_title(datasets.mscoco.PART_LABELS[j])
+                    nrows = 3; ncols = 6
+                    for i_out in range(len(output_vars)):
+                        pred_resized = batch_resize((output_vars[i_out][i].data.cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8) , img.size()[-2:])
+                        
+                        fig, axes = plt.subplots(nrows, ncols, squeeze=False)
+                        fig.suptitle("%d" % (i_out,))
+                        for ax in axes.flat:
+                            ax.axis("off")
+                        for j in range(self.num_parts):
+                            ax = axes.flat[j]
+                            draw_img = cv2.addWeighted(img_restored[i], 1, cv2.applyColorMap(pred_resized[j, :, :, None], cv2.COLORMAP_HOT), 0.5, 0)
+                            ax.imshow(draw_img[..., ::-1])
+                            ax.set_title(datasets.mscoco.PART_LABELS[j])
                     plt.show()
+
+            # if loss.item() > 0.1:
+            #     import pdb; pdb.set_trace()
 
         phase_str = "train" if train else "valid"
         config.tb_writer.add_scalars(config.exp_name + "/loss", {phase_str: loss.item()}, detail["step"])
