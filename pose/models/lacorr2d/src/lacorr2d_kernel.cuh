@@ -36,6 +36,7 @@ __global__ void lacorr2d_forward_cuda_kernel(
     const int n_corr_h,
     const int n_corr_w,
     const int total_channel,
+    const int channel_size,
     const int height,
     const int width);
 
@@ -58,6 +59,7 @@ __global__ void lacorr2d_backward_cuda_kernel(
     const int n_corr_h,
     const int n_corr_w,
     const int total_channel,
+    const int channel_size,
     const int height,
     const int width);
 

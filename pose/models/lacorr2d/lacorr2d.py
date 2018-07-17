@@ -70,16 +70,16 @@ class LocalAutoCorr2D(Module):
                 if right_bg > width:
                     bg = torch.cat([bg, torch.zeros((bg.size(0), bg.size(1), bg.size(2), right_bg - width), dtype=x.dtype, device=x.device)], dim=3)
 
-                all_weight.append(weight.view(weight.size(0), weight.size(1), 1, weight.size(2), weight.size(3)))
-                all_bg.append(bg.view(bg.size(0), bg.size(1), 1, bg.size(2), bg.size(3)))
+                all_weight.append(weight.view(weight.size(0), 1, weight.size(1), weight.size(2), weight.size(3)))
+                all_bg.append(bg.view(bg.size(0), 1, bg.size(1), bg.size(2), bg.size(3)))
 
-        all_weight = torch.cat(all_weight, dim=2)
+        all_weight = torch.cat(all_weight, dim=1)
         all_weight = all_weight.view(-1, 1, all_weight.size(3), all_weight.size(4))
-        all_bg = torch.cat(all_bg, dim=2)
+        all_bg = torch.cat(all_bg, dim=1)
         all_bg = all_bg.view(1, -1, all_bg.size(3), all_bg.size(4))
 
-        # nbat*nchannel*n_corr_h*n_corr_w x 1 x kh x kw
+        # nbat*n_corr_h*n_corr_w*nchannel x 1 x kh x kw
         ret = F.conv2d(all_bg, all_weight, None, groups=all_weight.size(0))
-        ret = ret.view(batch_size, channel_size, n_corr_h, n_corr_w, self.kernel_size[1], self.kernel_size[0])
+        ret = ret.view(batch_size, n_corr_h, n_corr_w, channel_size, self.kernel_size[1], self.kernel_size[0])
 
         return ret

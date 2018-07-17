@@ -68,11 +68,11 @@ def main(args):
     for i in range(REPEAT_TIMES):
         # img = torch.rand(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
         # img.data += 1
-        # label = torch.rand(BATCH_SIZE, CHANNEL_SIZE, n_corr_h, n_corr_w, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
+        # label = torch.rand(BATCH_SIZE, n_corr_h, n_corr_w, CHANNEL_SIZE, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
         # label.data += 2
 
         img = torch.ones(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
-        label = torch.ones(BATCH_SIZE, CHANNEL_SIZE, n_corr_h, n_corr_w, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
+        label = torch.ones(BATCH_SIZE, n_corr_h, n_corr_w, CHANNEL_SIZE, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
         
         # img = torch.zeros(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
         # for isamp in range(BATCH_SIZE):
@@ -80,7 +80,7 @@ def main(args):
         #         randX = torch.randint(WIDTH, size=(100,), dtype=torch.long)
         #         randY = torch.randint(HEIGHT, size=(100,), dtype=torch.long)
         #         img.data[isamp, ichan, randY, randX] = 1
-        # label = torch.zeros(BATCH_SIZE, CHANNEL_SIZE, n_corr_h, n_corr_w, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
+        # label = torch.zeros(BATCH_SIZE, n_corr_h, n_corr_w, CHANNEL_SIZE, KERNEL_HEIGHT, KERNEL_WIDTH, dtype=DTYPE, device="cuda")
         
         first_output = None
         first_grad = None

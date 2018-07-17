@@ -70,6 +70,7 @@ __global__ void lacorr2d_forward_cuda_kernel(
     const int n_corr_h,
     const int n_corr_w,
     const int total_channel,
+    const int channel_size,
     const int height,
     const int width) {
         extern __shared__ unsigned char s[];
@@ -96,6 +97,7 @@ __global__ void lacorr2d_forward_cuda_kernel(
         int bg_height = kernel_height * 2 - 1;
 
         input += ichan * height * width;
+        output += (((((ichan / channel_size) * n_corr_h + y_corr) * n_corr_w + x_corr) * channel_size + ichan % channel_size) * kernel_height + y_k) * kernel_width + x_k;
 
         scalar_t *inp_smem = reinterpret_cast<scalar_t*>(s) + threadIdx.y * bg_width * bg_height;
 
@@ -155,8 +157,6 @@ __global__ void lacorr2d_forward_cuda_kernel(
                 i_k += bg_width - kernel_width;
             }
 
-            output += (((ichan * n_corr_h + y_corr) * n_corr_w + x_corr) * kernel_height + y_k) * kernel_width + x_k;
-
             *output = out_reg;
         }
 }
@@ -213,7 +213,7 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
     AT_ASSERT(n_channel_per_block > 0, "shared_memory_size or kernel_size or num_reg exceeds limitation");
 
     // work on pytorch 0.4.0 , have been changed in master 07/10/2018
-    auto output = at::zeros(input.type(), std::vector<int64_t>{batch_size, channel_size, n_corr_h, n_corr_w, kernel_height, kernel_width});
+    auto output = at::zeros(input.type(), std::vector<int64_t>{batch_size, n_corr_h, n_corr_w, channel_size, kernel_height, kernel_width});
 
     // n_channel_per_block*bg_width*bg_height*sizeof(scalar_t)
     // should be less than or equal to 32768
@@ -233,6 +233,7 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
         n_corr_h, \
         n_corr_w, \
         total_channel, \
+        channel_size, \
         height, \
         width);
 
@@ -261,6 +262,7 @@ __global__ void lacorr2d_backward_cuda_kernel(
     const int n_corr_h,
     const int n_corr_w,
     const int total_channel,
+    const int channel_size,
     const int height,
     const int width) {
         extern __shared__ unsigned char s[];
@@ -293,6 +295,7 @@ __global__ void lacorr2d_backward_cuda_kernel(
 
         input += ichan * height * width;
         grad_input += ichan * height * width;
+        grad_output += (((((ichan / channel_size) * n_corr_h + y_corr) * n_corr_w + x_corr) * channel_size + ichan % channel_size) * kernel_height + y_k) * kernel_width + x_k;
 
         scalar_t *inp_smem = reinterpret_cast<scalar_t*>(s) + threadIdx.y * bg_width * bg_height;
         scalar_t *grad_inp_smem = inp_smem + blockDim.y * bg_width * bg_height;
@@ -341,7 +344,7 @@ __global__ void lacorr2d_backward_cuda_kernel(
         scalar_t grad_out_reg;
 
         if (ichan < total_channel) {
-            grad_out_reg = *(grad_output + (((ichan * n_corr_h + y_corr) * n_corr_w + x_corr) * kernel_height + y_k) * kernel_width + x_k);
+            grad_out_reg = *grad_output;
 
             grad_inp_smem += y_k * bg_width + x_k;
             inp_smem += half_kh * bg_width + half_kw;
@@ -499,6 +502,7 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
         n_corr_h, \
         n_corr_w, \
         total_channel, \
+        channel_size, \
         height, \
         width);
 
