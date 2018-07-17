@@ -30,7 +30,7 @@ setup(
                 "lacorr2d_kernel.cu"
             ],
             extra_compile_args={"cxx": [],
-                                "nvcc": ["-gencode=arch=compute_61,code=sm_61"]})
+                                "nvcc": ["-gencode=arch=compute_61,code=sm_61", "--ptxas-options=-v"]})
     ],
     cmdclass={
         "build_ext": MyBuildExtension

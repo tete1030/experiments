@@ -11,10 +11,53 @@ using std::cout;
 // CC61
 #define NUM_BANK 32
 #define HALF_WARP 16
+#define MAX_NUM_THREADS_PER_BLOCK 1024
+#define MAX_SIZE_SMEM_PER_BLOCK 49152
+// we use half to maximize occupancy
+#define MAX_NUM_REGISTERS_PER_BLOCK 32768 //65536
+
+// -ptxas-options=-v
+#define NUM_REGISTER_FORWARD_FLOAT 29
+#define NUM_REGISTER_BACKWARD_FLOAT 32
+#define NUM_REGISTER_FORWARD_DOUBLE 31
+#define NUM_REGISTER_BACKWARD_DOUBLE 38
+
+#define NUM_REGISTER(NAME, DIR, TYPE)                                           \
+  [&] {                                                                         \
+    const at::Type& the_type = TYPE;                                            \
+    switch (the_type.scalarType()) {                                            \
+        case at::ScalarType::Float: return NUM_REGISTER_##DIR##_FLOAT;          \
+        case at::ScalarType::Double: return NUM_REGISTER_##DIR##_DOUBLE;        \
+        default:                                                                \
+          AT_ERROR(#NAME, " not implemented for '", the_type.toString(), "'");  \
+    }                                                                           \
+  }()
 
 #define CONDITION_INSIDE(X, Y, W, H) ((Y) >= 0 && (Y) < (H) && (X) >= 0 && (X) < (W))
 #define CONDITION_UP_true(OFFSET, UBOUND) ((OFFSET) < (UBOUND)) &&
 #define CONDITION_UP_false(OFFSET, UBOUND)
+#define STRINGIFY(X) #X
+
+#define AT_SIZEOF_FLOATING_TYPES(TYPE, NAME)                                  \
+  [&] {                                                                       \
+    const at::Type& the_type = TYPE;                                          \
+    switch (the_type.scalarType()) {                                          \
+      case at::ScalarType::Double: return sizeof(double);                     \
+      case at::ScalarType::Float: return sizeof(float);                       \
+      default:                                                                \
+        AT_ERROR(#NAME, " not implemented for '", the_type.toString(), "'");  \
+    }                                                                         \
+  }()
+
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+    if (code != cudaSuccess)
+    {
+        fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+        if (abort) exit(code);
+    }
+}
 
 template <typename scalar_t>
 __global__ void lacorr2d_forward_cuda_kernel(
@@ -153,11 +196,24 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
     const int bg_width = kernel_width * 2 - 1;
     const int bg_height = kernel_height * 2 - 1;
 
-    // work on pytorch 0.4.0 , have been changed in master 07/20/2018
+    int shared_memory_size = bg_width * bg_height * AT_SIZEOF_FLOATING_TYPES(input.type(), "lacorr2d_forward_cuda");
+    int num_register = NUM_REGISTER("lacorr2d_forward_cuda", FORWARD, input.type()) * kernel_size;
+    const int n_channel_per_block = min(min(MAX_SIZE_SMEM_PER_BLOCK / shared_memory_size, MAX_NUM_THREADS_PER_BLOCK / kernel_size), MAX_NUM_REGISTERS_PER_BLOCK / num_register);
+    D(
+        cout << "smem: " << shared_memory_size << '/' << MAX_SIZE_SMEM_PER_BLOCK << " | thread: " << kernel_size << '/' << MAX_NUM_THREADS_PER_BLOCK << " | register: " << num_register << '/' << MAX_NUM_REGISTERS_PER_BLOCK << std::endl;
+        cout << "kernel_size: " << kernel_size << std::endl;
+        cout << "n_channel_per_block: " << n_channel_per_block << std::endl;
+        cout << "threads_per_block: " << kernel_size * n_channel_per_block << std::endl;
+        cout << "blocks.x: " << (n_channel_per_block > 0? ((total_channel + n_channel_per_block - 1) / n_channel_per_block) : -1) << std::endl;
+        cout << "blocks.y: " << n_corr << std::endl;
+        cout << "shared_memory_size: " << shared_memory_size << std::endl;
+        cout << "register_per_block: " << num_register * n_channel_per_block << std::endl;
+    )
+    shared_memory_size *= n_channel_per_block;
+    AT_ASSERT(n_channel_per_block > 0, "shared_memory_size or kernel_size or num_reg exceeds limitation");
+
+    // work on pytorch 0.4.0 , have been changed in master 07/10/2018
     auto output = at::zeros(input.type(), std::vector<int64_t>{batch_size, channel_size, n_corr_h, n_corr_w, kernel_height, kernel_width});
-    
-    // ASSUME: kernel_size less than 1024, should be factor of 1024
-    const int n_channel_per_block = 1024 / kernel_size;
 
     // n_channel_per_block*bg_width*bg_height*sizeof(scalar_t)
     // should be less than or equal to 32768
@@ -165,18 +221,9 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
 
     const dim3 threads_per_block(kernel_size, n_channel_per_block);
     const dim3 blocks((total_channel + n_channel_per_block - 1) / n_channel_per_block, n_corr);
-    const int shared_memory_size = n_channel_per_block * bg_width * bg_height;
-
-    D(
-        cout << "kernel_size: " << kernel_size << std::endl;
-        cout << "n_channel_per_block: " << n_channel_per_block << std::endl;
-        cout << "blocks.x: " << ((total_channel + n_channel_per_block - 1) / n_channel_per_block) << std::endl;
-        cout << "blocks.y: " << n_corr << std::endl;
-        cout << "shared_memory_size: " << shared_memory_size << std::endl;
-    )
 
 #define CALL_FORWARD() \
-    lacorr2d_forward_cuda_kernel<scalar_t><<<blocks, threads_per_block, shared_memory_size*sizeof(scalar_t)>>>( \
+    lacorr2d_forward_cuda_kernel<scalar_t><<<blocks, threads_per_block, shared_memory_size>>>( \
         input.data<scalar_t>(), \
         output.data<scalar_t>(), \
         kernel_height, \
@@ -197,6 +244,7 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
         CALL_FORWARD()
     }));
 #endif
+    gpuErrchk(cudaPeekAtLastError());
 
     return {output};
 }
@@ -343,8 +391,8 @@ __global__ void lacorr2d_backward_cuda_kernel(
 
         // Store read grad_out into shared memory
 
-        // Use grad_inp_smem as grad_out_smem (try to reuse register)
-        #define grad_out_smem grad_inp_smem
+        // Use grad_inp_smem as grad_out_smem
+        scalar_t *grad_out_smem = grad_inp_smem;
 
         if (ichan < total_channel) {
             grad_out_smem[ithread] = grad_out_reg;
@@ -363,9 +411,7 @@ __global__ void lacorr2d_backward_cuda_kernel(
         // - [offset in a kernel projection on background]
         // is fixed in this thread.
 
-        // Mannually reuse grad_out_reg register (though probabaly could be auto-optimized)
-        #define grad_inp_reg grad_out_reg
-        grad_inp_reg = 0.;
+        scalar_t grad_inp_reg = 0.;
 
         if (ichan < total_channel) {
             inp_smem += y_k * bg_width + x_k;
@@ -385,8 +431,6 @@ __global__ void lacorr2d_backward_cuda_kernel(
             atomicAdd(&grad_input[INDEX2D(left_k+x_k, top_k+y_k, width)], grad_inp_reg);
         }
 
-        #undef grad_inp_reg
-        #undef grad_out_smem
 }
 
 std::vector<at::Tensor> lacorr2d_backward_cuda(
@@ -418,31 +462,33 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
     const int bg_width = kernel_width * 2 - 1;
     const int bg_height = kernel_height * 2 - 1;
 
-    auto grad_input = at::zeros_like(input);
+    int shared_memory_size = 2 * bg_width * bg_height * AT_SIZEOF_FLOATING_TYPES(input.type(), "lacorr2d_backward_cuda");
+    int num_register = NUM_REGISTER("lacorr2d_backward_cuda", BACKWARD, input.type()) * kernel_size;
+    const int n_channel_per_block = min(min(MAX_SIZE_SMEM_PER_BLOCK / shared_memory_size, MAX_NUM_THREADS_PER_BLOCK / kernel_size), MAX_NUM_REGISTERS_PER_BLOCK / num_register);
+    D(
+        cout << "smem: " << shared_memory_size << '/' << MAX_SIZE_SMEM_PER_BLOCK << " | thread: " << kernel_size << '/' << MAX_NUM_THREADS_PER_BLOCK << " | register: " << num_register << '/' << MAX_NUM_REGISTERS_PER_BLOCK << std::endl;
+        cout << "kernel_size: " << kernel_size << std::endl;
+        cout << "n_channel_per_block: " << n_channel_per_block << std::endl;
+        cout << "threads_per_block: " << kernel_size * n_channel_per_block << std::endl;
+        cout << "blocks.x: " << (n_channel_per_block > 0? ((total_channel + n_channel_per_block - 1) / n_channel_per_block) : -1) << std::endl;
+        cout << "blocks.y: " << n_corr << std::endl;
+        cout << "shared_memory_size: " << shared_memory_size << std::endl;
+        cout << "register_per_block: " << num_register * n_channel_per_block << std::endl;
+    )
+    shared_memory_size *= n_channel_per_block;
+    AT_ASSERT(n_channel_per_block > 0, "shared_memory_size or kernel_size or num_reg exceeds limitation");
 
-    // ASSUME: kernel_size less than 1024, should be factor of 1024
-    const int n_channel_per_block = 1024 / kernel_size;
+    auto grad_input = at::zeros_like(input);
 
     // 2*n_channel_per_block*bg_width*bg_height*sizeof(scalar_t)
     // should be less than or equal to 32768
     // when block_per_SM == 2 to maxmize occupancy
 
-    // WARN: there is not sufficient shared memory for double as scalar_t
-
     const dim3 threads_per_block(kernel_size, n_channel_per_block);
     const dim3 blocks((total_channel + n_channel_per_block - 1) / n_channel_per_block, n_corr);
-    const int shared_memory_size = 2 * n_channel_per_block * bg_width * bg_height;
-
-    D(
-        cout << "kernel_size: " << kernel_size << std::endl;
-        cout << "n_channel_per_block: " << n_channel_per_block << std::endl;
-        cout << "blocks.x: " << ((total_channel + n_channel_per_block - 1) / n_channel_per_block) << std::endl;
-        cout << "blocks.y: " << n_corr << std::endl;
-        cout << "shared_memory_size: " << shared_memory_size << std::endl;
-    )
 
 #define CALL_BACKWARD() \
-    lacorr2d_backward_cuda_kernel<scalar_t><<<blocks, threads_per_block, shared_memory_size*sizeof(scalar_t)>>>( \
+    lacorr2d_backward_cuda_kernel<scalar_t><<<blocks, threads_per_block, shared_memory_size>>>( \
         input.data<scalar_t>(), \
         grad_output.data<scalar_t>(), \
         grad_input.data<scalar_t>(), \
@@ -463,7 +509,8 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
     AT_DISPATCH_FLOATING_TYPES(input.type(), "lacorr2d_backward_cuda", ([&] {
         CALL_BACKWARD()
     }));
-#endif    
+#endif
+    gpuErrchk(cudaPeekAtLastError());
 
     return {grad_input};
 }

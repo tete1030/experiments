@@ -28,7 +28,7 @@
 template <typename scalar_t>
 __global__ void lacorr2d_forward_cuda_kernel(
     const scalar_t* __restrict__ input,
-    scalar_t* output,
+    scalar_t* __restrict__ output,
     const int kernel_height,
     const int kernel_width,
     const int stride_height,
@@ -50,7 +50,7 @@ template <typename scalar_t>
 __global__ void lacorr2d_backward_cuda_kernel(
     const scalar_t* __restrict__ input,
     const scalar_t* __restrict__ grad_output,
-    scalar_t* grad_input,
+    scalar_t* __restrict__ grad_input,
     const int kernel_height,
     const int kernel_width,
     const int stride_height,
