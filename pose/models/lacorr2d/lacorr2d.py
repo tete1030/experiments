@@ -7,6 +7,7 @@ from . import lacorr2d_cuda
 
 class PadInfo(object):
     def __init__(self, top=0, bottom=0, left=0, right=0):
+        assert isinstance(top, int) and isinstance(bottom, int) and isinstance(left, int) and isinstance(right, int)
         self.top = top
         self.bottom = bottom
         self.left = left
