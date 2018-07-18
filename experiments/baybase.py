@@ -17,6 +17,8 @@ from pose.utils.transforms import fliplr_pts
 
 from pose.utils.misc import adjust_learning_rate
 
+from pose.models.bayproj import AutoCorr2D
+
 import cv2
 
 FACTOR = 4
@@ -221,7 +223,7 @@ class BasicBlock(nn.Module):
 class Bottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
+    def __init__(self, inplanes, planes, stride=1, downsample=None, acorr2d=False):
         super(Bottleneck, self).__init__()
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
@@ -233,6 +235,10 @@ class Bottleneck(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample 
         self.stride = stride
+        if acorr2d:
+            self.acorr2d = AutoCorr2D(inplanes, inplanes, 32, (7, 7))
+        else:
+            self.acorr2d = None
 
     def forward(self, x):
         residual = x
@@ -250,6 +256,8 @@ class Bottleneck(nn.Module):
 
         if self.downsample is not None:
             residual = self.downsample(x)
+        elif self.acorr2d is not None:
+            residual = self.acorr2d(x) + x
 
         out += residual
         out = self.relu(out)
@@ -269,7 +277,7 @@ class ResNet(nn.Module):
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2, acorr2d=True)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
         for m in self.modules():
@@ -280,7 +288,7 @@ class ResNet(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-    def _make_layer(self, block, planes, blocks, stride=1):
+    def _make_layer(self, block, planes, blocks, stride=1, acorr2d=False):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
@@ -293,7 +301,10 @@ class ResNet(nn.Module):
         layers.append(block(self.inplanes, planes, stride, downsample))
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
+            if acorr2d and i == 1:
+                layers.append(block(self.inplanes, planes, acorr2d=True))
+            else:
+                layers.append(block(self.inplanes, planes))
 
         return nn.Sequential(*layers)
 
