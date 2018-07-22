@@ -39,7 +39,10 @@ class Logger(object):
                 for numbers in self.file:
                     numbers = numbers.rstrip().split('\t')
                     for i in range(0, len(numbers)):
-                        self.numbers[self.names[i]].append(numbers[i])
+                        if numbers[i] == "none":
+                            self.numbers[self.names[i]].append(None)
+                        else:
+                            self.numbers[self.names[i]].append(float(numbers[i]))
                 self.file.close()
                 self.file = open(fpath, 'a')  
             else:
@@ -62,7 +65,10 @@ class Logger(object):
     def append(self, numbers):
         assert len(self.names) == len(numbers), 'Numbers do not match names'
         for index, num in enumerate(numbers):
-            self.file.write("{0:.6f}".format(num))
+            if num is not None:
+                self.file.write("{0:.6f}".format(num))
+            else:
+                self.file.write("none")
             self.file.write('\t')
             self.numbers[self.names[index]].append(num)
         self.file.write('\n')

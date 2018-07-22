@@ -29,8 +29,13 @@ def save_pred(preds, is_best=False, checkpoint='checkpoint', filename='preds_val
 
 def adjust_learning_rate(optimizer, epoch, lr, schedule, gamma):
     """Sets the learning rate to the initial LR decayed by schedule"""
-    if epoch in schedule:
-        lr *= gamma
+    try:
+        lr_deg = schedule.index(epoch) + 1
+    except ValueError:
+        lr_deg = 0
+    if lr_deg > 0:
+        lr *= gamma ** lr_deg
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
+
     return lr

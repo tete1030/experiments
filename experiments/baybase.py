@@ -18,21 +18,23 @@ from pose.utils.transforms import fliplr_pts
 from pose.utils.misc import adjust_learning_rate
 
 from pose.models.bayproj import AutoCorr2D
+from .baseexperiment import BaseExperiment
 
 import cv2
 
 FACTOR = 4
 
-class Experiment(object):
-    def __init__(self, hparams):
+class Experiment(BaseExperiment):
+    def init(self):
         self.num_parts = datasets.mscoco.NUM_PARTS
-        self.hparams = hparams
         use_pretrained = (config.resume is not None)
-        self.model = DataParallel(BayBaseline(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=use_pretrained).cuda())
+        self.model = DataParallel(BayBaseline(self.hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=use_pretrained).cuda())
         self.criterion = MSELoss().cuda()
         self.optimizer = torch.optim.Adam(list(self.model.parameters()),
                                           lr=hparams['learning_rate'],
                                           weight_decay=hparams['weight_decay'])
+
+        self.cur_lr = self.hparams["learning_rate"]
 
         self.coco = COCO("data/mscoco/person_keypoints_train2014.json")
 
@@ -67,8 +69,11 @@ class Experiment(object):
         self.train_collate_fn = datasets.COCOSinglePose.collate_function
         self.test_collate_fn = datasets.COCOSinglePose.collate_function
         self.worker_init_fn = datasets.mscoco.worker_init
+        self.print_iter_start = " | "
 
-    def evaluate(self, image_ids, ans):
+    def evaluate(self, preds):
+        image_ids = preds["image_index"]
+        ans = preds["annotate"]
         if len(ans) > 0:
             coco_dets = self.coco.loadRes(ans)
             coco_eval = COCOeval(self.coco, coco_dets, "keypoints")
@@ -80,10 +85,10 @@ class Experiment(object):
         else:
             print("No points")
 
-    def epoch(self, epoch):
-        self.hparams['learning_rate'] = adjust_learning_rate(self.optimizer, epoch, self.hparams['learning_rate'], self.hparams['schedule'], self.hparams['lr_gamma'])
+    def epoch_start(self, epoch):
+        self.cur_lr = adjust_learning_rate(self.optimizer, epoch, self.hparams['learning_rate'], self.hparams['schedule'], self.hparams['lr_gamma'])
 
-    def process(self, batch, train, detail=None):
+    def iter_process(self, epoch_ctx, batch, is_train, detail=None):
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
         det_maps_gt = batch["keypoint_map"]
@@ -106,7 +111,7 @@ class Experiment(object):
         if (loss.data != loss.data).any():
             import pdb; pdb.set_trace()
 
-        if not train or config.vis:
+        if not is_train or config.vis:
             pred, score = parse_map(output_vars[-1])
             pred_affined = pred.copy()
             for samp_i in range(batch_size):
@@ -157,18 +162,13 @@ class Experiment(object):
 
             # if loss.item() > 0.1:
             #     import pdb; pdb.set_trace()
+        epoch_ctx.add_scalar("loss", loss.item(), detail["iter_len"])
 
-        phase_str = "train" if train else "valid"
-        config.tb_writer.add_scalars(config.exp_name + "/loss", {phase_str: loss.item()}, detail["step"])
         result = {
             "loss": loss,
-            "acc": 0,
-            "recall": 0,
-            "prec": None,
             "index": batch["index"],
-            "pred": None,
-            "img_index": image_ids,
-            "annotate": ans
+            "save": None,
+            "pred": {"image_index": image_ids, "annotate": ans}
         }
 
         return result

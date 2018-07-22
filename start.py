@@ -1,4 +1,29 @@
 #!python3
+import os
+import sys
+import argparse
+import time
+import matplotlib.pyplot as plt
+
+import torch
+import torch.nn.parallel
+import torch.backends.cudnn as cudnn
+import torch.optim
+import torchvision.datasets as datasets
+
+from pose.utils.evaluation import AverageMeter
+from pose.utils.misc import save_checkpoint, detect_checkpoint, save_pred
+from pose.utils.osutils import mkdir_p
+import pose.utils.config as config
+
+import numpy as np
+import importlib
+from ruamel.yaml import YAML
+
+import collections
+from tensorboardX import SummaryWriter
+import datetime
+from experiments.baseexperiment import BaseExperiment, EpochContext
 
 # Handle matplotlib backend error when DISPLAY is wrong
 # the error originates from Tk used in matplotlib
@@ -14,36 +39,6 @@ if matplotlib.get_backend() != "module://ipykernel.pylab.backend_inline":
     else:
         del tkinter
     matplotlib.use(matplotlib_backend)
-
-import os
-import sys
-import argparse
-import time
-import matplotlib.pyplot as plt
-
-import torch
-import torch.nn.parallel
-import torch.backends.cudnn as cudnn
-import torch.optim
-import torchvision.datasets as datasets
-from torch.utils.data.dataloader import default_collate
-
-from pose.utils.logger import Logger, savefig
-from pose.utils.evaluation import AverageMeter
-from pose.utils.misc import save_checkpoint, detect_checkpoint, save_pred
-from pose.utils.osutils import mkdir_p
-from pose.utils.imutils import batch_with_heatmap
-from pose.utils.transforms import fliplr_chwimg, fliplr_map
-import pose.utils.config as config
-import pose.models as models
-import pose.datasets as datasets
-
-import numpy as np
-import importlib
-from ruamel.yaml import YAML
-
-import collections
-from tensorboardX import SummaryWriter
 
 # Handle sigint
 import signal
@@ -83,11 +78,8 @@ def main(args):
     if config.resume is not None:
         config.resume = config.resume.format(**{'exp': exp_name, 'id': hparams['id']})
 
-    title = exp_name
-    logger = None
-    log_file = os.path.join(config.checkpoint, 'log.txt')
     hparams_cp_file = os.path.join(config.checkpoint, 'hparams.yaml')
-    if not config.resume and (os.path.isfile(log_file) or \
+    if not config.resume and ( \
             detect_checkpoint(checkpoint=config.checkpoint) or \
             os.path.isfile(hparams_cp_file)):
         print("Exist files in %s" % config.checkpoint)
@@ -109,6 +101,7 @@ def main(args):
         mkdir_p(config.checkpoint)
 
     exp_module = importlib.import_module('experiments.' + hparams['name'])
+    assert issubclass(exp_module.Experiment, BaseExperiment)
     exp = exp_module.Experiment(hparams)
     del hparams
 
@@ -124,7 +117,7 @@ def main(args):
                     if not args.ignore_hparams_differ:
                         print("In config:")
                         YAML(typ='safe').dump(exp.hparams, sys.stdout)
-                        print("In checkpoint:")
+                        print("<<<<\n>>>>\nIn checkpoint:")
                         YAML(typ='safe').dump(resume_hparams, sys.stdout)
                         ans = input("Continue (y|n)? ")
                         if ans != "y":
@@ -134,14 +127,11 @@ def main(args):
             print("=> loading checkpoint '{}'".format(resume_full))
             checkpoint = torch.load(resume_full)
             exp.hparams['start_epoch'] = checkpoint['epoch']
-            best_acc = checkpoint['best_acc']
             exp.model.load_state_dict(checkpoint['state_dict'])
             exp.criterion.load_state_dict(checkpoint['criterion'])
             exp.optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint (epoch {})"
                   .format(checkpoint['epoch']))
-            if os.path.isfile(log_file):
-                logger = Logger(log_file, title=title, resume=True)
             del checkpoint
         else:
             print("=> no checkpoint found at '{}'".format(config.resume))
@@ -150,110 +140,84 @@ def main(args):
         with open(hparams_cp_file, 'w') as f:
             YAML(typ='safe').dump(exp.hparams, f)
 
-    config.tb_writer = SummaryWriter()
-
-    if logger is None:
-        logger = Logger(log_file, title=title)
-        logger.set_names(['Epoch', 'LR', 'Train Loss', 'Val Loss', 'Train Acc', 'Val Acc', 'Train Prec', 'Val Prec'])
+    config.tb_writer = SummaryWriter(log_dir="runs/{exp_name}_{exp_id}/{datetime}".format(exp_name=exp_name, exp_id=exp.hparams["id"], datetime=datetime.datetime.now().strftime("%b%d_%H-%M-%S")))
 
     # Data loading code
     train_loader = torch.utils.data.DataLoader(
         exp.train_dataset,
-        collate_fn=exp.train_collate_fn if hasattr(exp, "train_collate_fn") else default_collate,
+        collate_fn=exp.train_collate_fn,
         batch_size=exp.hparams['train_batch'],
         num_workers=config.workers,
         shuffle=True,
         pin_memory=True,
-        drop_last=exp.train_drop_last if hasattr(exp, "train_drop_last") else False,
-        worker_init_fn=exp.worker_init_fn if hasattr(exp, "worker_init_fn") else None)
+        drop_last=exp.train_drop_last,
+        worker_init_fn=exp.worker_init_fn)
 
     val_loader = torch.utils.data.DataLoader(
         exp.val_dataset,
-        collate_fn=exp.test_collate_fn if hasattr(exp, "test_collate_fn") else default_collate,
+        collate_fn=exp.valid_collate_fn,
         batch_size=exp.hparams['test_batch'],
         num_workers=config.workers,
         shuffle=False,
         pin_memory=True,
-        worker_init_fn=exp.worker_init_fn if hasattr(exp, "worker_init_fn") else None)
+        worker_init_fn=exp.worker_init_fn)
 
     if config.evaluate:
         print('\nEvaluation-only mode')
-        loss, acc, prec, predictions = validate(val_loader, exp, 0, 0)
-        if predictions is not None:
-            save_pred(predictions, checkpoint=config.checkpoint)
+        result_collection = validate(val_loader, exp, 0, 0)
+        if result_collection is not None:
+            save_pred(result_collection, checkpoint=config.checkpoint)
         return
 
     if config.handle_sig:
         enable_sigint_handler()
 
     for epoch in range(exp.hparams['start_epoch'], exp.hparams['epochs']):
-        exp.epoch(epoch)
+        exp.epoch_start(epoch)
 
-        print('\nEpoch: %d | LR: %.8f' % (epoch + 1, exp.hparams['learning_rate']))
+        print('\nEpoch: %d | LR: %.8f' % (epoch + 1, exp.cur_lr))
 
         # train for one epoch
-        train_loss, train_acc, train_prec = train(train_loader, exp, epoch, em_valid_int=exp.hparams["em_valid_int"], val_loader=val_loader)
+        train(train_loader, exp, epoch, em_valid_int=exp.hparams["em_valid_int"], val_loader=val_loader)
 
         if config.sigint_triggered:
             break
 
         cur_step = len(train_loader) * (epoch + 1)
-        if "summary_histogram" in exp.__dict__:
-            exp.summary_histogram(cur_step)
 
         # evaluate on validation set
         if config.skip_val > 0 and (epoch + 1) % config.skip_val == 0:
             print("Validation:")
-            valid_loss, valid_acc, valid_prec, predictions = validate(val_loader, exp, epoch, cur_step)
-            config.tb_writer.add_scalars(config.exp_name + "/loss", {"valid": valid_loss}, cur_step)
-            config.tb_writer.add_scalars(config.exp_name + "/acc", {"valid": valid_acc}, cur_step)
-            config.tb_writer.add_scalars(config.exp_name + "/prec", {"valid": valid_prec}, cur_step)
-            # remember best acc and save checkpoint
-            is_best = valid_acc > best_acc
-            best_acc = max(valid_acc, best_acc)
+            result_collection = validate(val_loader, exp, epoch, cur_step)
         else:
             print("Skip validation")
-            valid_loss, valid_acc, valid_prec, predictions = 0., 0., None
-            is_best = False
+            result_collection = None
 
         if config.sigint_triggered:
             break
-
-        # append logger file
-        logger.append([epoch + 1, exp.hparams['learning_rate'],
-                       train_loss, valid_loss,
-                       train_acc, valid_acc,
-                       train_prec, valid_prec])
 
         cp_filename = 'checkpoint_{}.pth.tar'.format(epoch + 1)
         checkpoint_dict = {
             'epoch': epoch + 1,
             'state_dict': exp.model.state_dict(),
-            'best_acc': best_acc,
             'optimizer': exp.optimizer.state_dict(),
             'criterion': exp.criterion.state_dict()
         }
-        save_checkpoint(checkpoint_dict, is_best, checkpoint=config.checkpoint, filename=cp_filename)
+        save_checkpoint(checkpoint_dict, False, checkpoint=config.checkpoint, filename=cp_filename)
 
-        if predictions is not None:
+        if result_collection is not None:
             preds_filename = 'preds_{}.npy'.format(epoch + 1)
-            save_pred(predictions, is_best=is_best, checkpoint=config.checkpoint, filename=preds_filename)
+            save_pred(result_collection, is_best=False, checkpoint=config.checkpoint, filename=preds_filename)
+
+        exp.epoch_end(epoch)
 
         if config.sigint_triggered:
             break
 
-    logger.close()
-    logger.plot(['Train Loss', 'Val Loss',
-                 'Train Acc', 'Val Acc',
-                 'Train Prec', 'Val Prec'])
-    savefig(os.path.join(config.checkpoint, 'log.eps'))
-
 def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
     batch_time = AverageMeter()
     data_time = AverageMeter()
-    losses = AverageMeter()
-    acces = AverageMeter()
-    preces = AverageMeter()
+    epoch_ctx = EpochContext()
 
     # switch to train mode
     exp.model.train()
@@ -278,42 +242,21 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
                 "epoch": epoch,
                 "iter": i,
                 "iter_len": iter_length,
-                "step": cur_step,
-                "summary": False
+                "step": cur_step
             }
-            if em_valid or (i == iter_length - 1) or (config.fast_pass > 0 and i == config.fast_pass - 1):
-                detail["summary"] = True
 
-            result = exp.process(batch, True, detail=detail)
+            result = exp.iter_process(epoch_ctx, batch, True, detail=detail)
             loss = result["loss"]
-            acc = result["acc"]
-            prec = result["prec"]
 
-            if not (hasattr(exp, "step_process") and exp.step_process is True):
-                exp.optimizer.zero_grad()
-                loss.backward()
-                exp.optimizer.step()
+            exp.iter_step(loss)
 
-            batch_size = len(batch["index"])
             loss = loss.item() if loss is not None else None
-            # measure accuracy and record loss
-            if loss is not None:
-                losses.update(loss, batch_size)
-                config.tb_writer.add_scalars(config.exp_name + "/loss", {"train": loss}, cur_step)
-            if acc is not None:
-                acces.update(acc, batch_size)
-                config.tb_writer.add_scalars(config.exp_name + "/acc", {"train": acc}, cur_step)
-            if prec is not None:
-                preces.update(prec, batch_size)
-                config.tb_writer.add_scalars(config.exp_name + "/prec", {"train": prec}, cur_step)
 
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
 
-            loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n" +
-                    "\tLoss: {loss:.4f} | Acc: {acc:7.4f} | Prec: {prec:7.4f}\n" +
-                    "\tLos_: {avgloss:.4f} | Ac_: {avgacc:7.4f} | Pre_: {avgprec:7.4f}").format(
+            loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) data: {data:.6f}s | batch: {bt:.3f}s | total: {total:3.1f}s").format(
                 epoch=epoch + 1,
                 batch=i + 1,
                 size_width=len(str(iter_length)),
@@ -321,24 +264,17 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
                 data=data_time.val,
                 bt=batch_time.val,
                 total=time.time() - start_time,
-                loss=loss if loss is not None else -1.,
-                acc=acc if acc is not None else -1.,
-                prec=prec if prec is not None else -1.,
-                avgloss=losses.avg,
-                avgacc=acces.avg,
-                avgprec=preces.avg
             )
-            print(loginfo)
-
+            print(loginfo, end="")
+            exp.print_iter(epoch_ctx)
+            exp.summary_scalar(epoch_ctx, cur_step, "train")
+            
             if config.sigint_triggered:
                 break
 
             if em_valid:
                 print("\nEmbeded Validation:")
-                valid_loss, valid_acc, valid_prec, _ = validate(val_loader, exp, epoch, cur_step + 1, store_pred=True)
-                config.tb_writer.add_scalars(config.exp_name + "/loss", {"valid": valid_loss}, cur_step + 1)
-                config.tb_writer.add_scalars(config.exp_name + "/acc", {"valid": valid_acc}, cur_step + 1)
-                config.tb_writer.add_scalars(config.exp_name + "/prec", {"valid": valid_prec}, cur_step + 1)
+                validate(val_loader, exp, epoch, cur_step + 1, store_result=True)
                 print("")
                 exp.model.train()
                 end = time.time()
@@ -350,21 +286,34 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
                 print("Fast Pass!")
                 break
 
-    return losses.avg, acces.avg, preces.avg
+def combine_result(prev, cur):
+    assert type(prev) == type(cur)
+    if isinstance(prev, dict):
+        assert set(prev.keys()) == set(cur.keys())
+        for key in prev:
+            prev[key] = combine_result(prev[key], cur[key])
+        return prev
+    elif isinstance(prev, list):
+        return prev + cur
+    elif isinstance(prev, torch.Tensor):
+        assert prev.size()[1:] == cur.size()[1:]
+        return torch.cat([prev, cur])
+    elif isinstance(prev, np.ndarray):
+        assert prev.shape[1:] == cur.shape[1:]
+        return torch.concatenate([prev, cur])
+    raise TypeError("Not supported type")        
 
-def validate(val_loader, exp, epoch, cur_step, store_pred=True):
+def validate(val_loader, exp, epoch, cur_step, store_result=True):
     batch_time = AverageMeter()
     data_time = AverageMeter()
-    losses = AverageMeter()
-    acces = AverageMeter()
-    preces = AverageMeter()
+    epoch_ctx = EpochContext()
 
-    predictions = None
-    image_ids = None
-    annotates = None
-    pred_lim = config.pred_lim
-    if pred_lim is None:
-        pred_lim = len(val_loader.dataset)
+    result_collection = None
+    store_lim = config.store_lim
+    if store_lim is None:
+        store_lim = len(val_loader.dataset)
+
+    preds = None
 
     # switch to evaluate mode
     exp.model.eval()
@@ -384,54 +333,40 @@ def validate(val_loader, exp, epoch, cur_step, store_pred=True):
                 "epoch": epoch,
                 "iter": i,
                 "iter_len": iter_length,
-                "step": cur_step,
-                "summary": False
+                "step": cur_step
             }
-            if i == 0:
-                detail["summary"] = store_pred
 
-            result = exp.process(batch, False, detail=detail)
-            if "img_index" in result and result["img_index"] is not None:
-                if image_ids is None:
-                    image_ids = []
-                image_ids += result["img_index"]
-            if "annotate" in result and result["annotate"] is not None:
-                if annotates is None:
-                    annotates = []
-                annotates += result["annotate"]
+            result = exp.iter_process(epoch_ctx, batch, False, detail=detail)
+
+            if result["pred"] is not None:
+                if preds is None:
+                    preds = result["pred"]
+                else:
+                    preds = combine_result(preds, result["pred"])
+
             loss = result["loss"]
-            loss = loss.item() if loss is not None else None
-            acc = result["acc"]
-            prec = result["prec"]
+            
             index = result["index"] if "index" in result else None
-            pred = result["pred"] if "pred" in result else None
 
             if index is None:
                 index = list(range(data_counter, data_counter+batch_size))
 
-            if pred is not None and store_pred:
-                if predictions is None:
-                    if isinstance(pred, torch._TensorBase):
-                        predictions = torch.zeros((pred_lim,) + pred.size()[1:])
-                    elif isinstance(pred, np.ndarray):
-                        predictions = np.zeros((pred_lim,) + pred.shape[1:])
-                    elif isinstance(pred, collections.Sequence):
-                        predictions = dict()
+            result_save = result["save"]
+            if result_save is not None and store_result:
+                if result_collection is None:
+                    if isinstance(result_save, torch.Tensor):
+                        result_collection = torch.zeros((store_lim,) + result_save.size()[1:])
+                    elif isinstance(result_save, np.ndarray):
+                        result_collection = np.zeros((store_lim,) + result_save.shape[1:])
+                    elif isinstance(result_save, collections.Sequence):
+                        result_collection = dict()
                     else:
-                        raise TypeError("Not valid pred type")
+                        raise TypeError("Not valid result_save type")
 
-                for n in range(len(pred)):
-                    if index[n] >= pred_lim:
+                for n in range(len(result_save)):
+                    if index[n] >= store_lim:
                         continue
-                    predictions[index[n]] = pred[n]
-
-            # measure accuracy and record loss
-            if loss is not None:
-                losses.update(loss, batch_size)
-            if acc is not None:
-                acces.update(acc, batch_size)
-            if prec is not None:
-                preces.update(prec, batch_size)
+                    result_collection[index[n]] = result_save[n]
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -439,24 +374,17 @@ def validate(val_loader, exp, epoch, cur_step, store_pred=True):
 
             data_counter += len(index)
 
-            loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) Data: {data:.6f}s | Batch: {bt:.3f}s | Total: {total:3.1f}s\n" +
-                    "\tLoss: {loss:.4f} | Acc: {acc:7.4f} | Prec: {prec:7.4f}\n" +
-                    "\tLos_: {avgloss:.4f} | Ac_: {avgacc:7.4f} | Pre_: {avgprec:7.4f}").format(
+            loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) data: {data:.6f}s | batch: {bt:.3f}s | total: {total:3.1f}s").format(
                 epoch=epoch + 1,
                 batch=i + 1,
                 size_width=len(str(iter_length)),
                 size=iter_length,
                 data=data_time.val,
                 bt=batch_time.val,
-                total=time.time() - start_time,
-                loss=loss if loss is not None else -1.,
-                acc=acc if acc is not None else -1.,
-                prec=prec if prec is not None else -1.,
-                avgloss=losses.avg,
-                avgacc=acces.avg,
-                avgprec=preces.avg
+                total=time.time() - start_time
             )
-            print(loginfo)
+            print(loginfo, end="")
+            exp.print_iter(epoch_ctx)
 
             if config.sigint_triggered:
                 break
@@ -465,10 +393,10 @@ def validate(val_loader, exp, epoch, cur_step, store_pred=True):
                 print("Fast Pass!")
                 break
 
-    if hasattr(exp, "evaluate") and image_ids is not None and annotates is not None:
-        exp.evaluate(image_ids, annotates)
+    exp.summary_scalar_avg(epoch_ctx, cur_step, phase="valid")
+    exp.evaluate(preds)
 
-    return losses.avg, acces.avg, preces.avg, predictions
+    return result_collection
 
 def get_args():
     argp = argparse.ArgumentParser()

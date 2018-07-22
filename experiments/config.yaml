@@ -9,7 +9,7 @@ default: &DEFAULT
     evaluate: false
     checkpoint: 'checkpoint/{exp}/{id}'
     resume: null
-    pred_lim: 10
+    store_lim: 10
     vis: false
 
 profile: &PROFILE
