@@ -3,6 +3,21 @@ import os
 import sys
 import argparse
 import time
+
+# Handle matplotlib backend error when DISPLAY is wrong
+# the error originates from Tk used in matplotlib
+import matplotlib
+if matplotlib.get_backend() != "module://ipykernel.pylab.backend_inline":
+    matplotlib_backend = "TkAgg"
+    try:
+        import tkinter
+        tkinter.Tk().destroy()
+    except tkinter.TclError:
+        print("Cannot use TkAgg for matplotlib, using Agg")
+        matplotlib_backend = "Agg"
+    else:
+        del tkinter
+    matplotlib.use(matplotlib_backend)
 import matplotlib.pyplot as plt
 
 import torch
@@ -24,21 +39,6 @@ import collections
 from tensorboardX import SummaryWriter
 import datetime
 from experiments.baseexperiment import BaseExperiment, EpochContext
-
-# Handle matplotlib backend error when DISPLAY is wrong
-# the error originates from Tk used in matplotlib
-import matplotlib
-if matplotlib.get_backend() != "module://ipykernel.pylab.backend_inline":
-    matplotlib_backend = "TkAgg"
-    try:
-        import tkinter
-        tkinter.Tk().destroy()
-    except tkinter.TclError:
-        print("Cannot use TkAgg for matplotlib, using Agg")
-        matplotlib_backend = "Agg"
-    else:
-        del tkinter
-    matplotlib.use(matplotlib_backend)
 
 # Handle sigint
 import signal
