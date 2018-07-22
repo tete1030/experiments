@@ -127,9 +127,11 @@ def main(args):
             print("=> loading checkpoint '{}'".format(resume_full))
             checkpoint = torch.load(resume_full)
             exp.hparams['start_epoch'] = checkpoint['epoch']
-            exp.model.load_state_dict(checkpoint['state_dict'])
-            exp.criterion.load_state_dict(checkpoint['criterion'])
-            exp.optimizer.load_state_dict(checkpoint['optimizer'])
+            exp.model.load_state_dict(checkpoint['state_dict'], strict=not args.no_strict_model_load)
+            if not args.no_criterion_load:
+                exp.criterion.load_state_dict(checkpoint['criterion'])
+            if not args.no_optimizer_load:
+                exp.optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint (epoch {})"
                   .format(checkpoint['epoch']))
             del checkpoint
@@ -403,6 +405,9 @@ def get_args():
     argp.add_argument('CONF', type=str)
     argp.add_argument('EXP', type=str)
     argp.add_argument('-r', dest='resume_file', type=str, default='model_best.pth.tar')
+    argp.add_argument('--no-strict-model-load', action='store_true')
+    argp.add_argument('--no-criterion-load', action='store_true')
+    argp.add_argument('--no-optimizer-load', action='store_true')
     argp.add_argument('--ptvsd', action='store_true')
     argp.add_argument('--ignore-hparams-differ', action='store_true')
     argp.add_argument('--override', nargs=2, metavar=('var', 'value'), action='append')

@@ -22,8 +22,12 @@ class AutoCorr2D(nn.Module):
                                                   left=corr_kernel_size[1] // 2,
                                                   right=(corr_kernel_size[1] + 1) // 2 - 1))
         self.regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=False)
+
         # For finetune
-        # self.regressor.weight.data.zero_()
+        self.extract_input.do_not_init = True
+        self.regressor.do_not_init = True
+        # self.regressor.weight.requires_grad_(False)
+        self.regressor.weight.data.zero_()
 
     def forward(self, x):
         batch_size = x.size(0)

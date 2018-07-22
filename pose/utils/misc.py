@@ -36,6 +36,6 @@ def adjust_learning_rate(optimizer, epoch, lr, schedule, gamma):
     if lr_deg > 0:
         lr *= gamma ** lr_deg
         for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+            param_group['lr'] *= gamma ** lr_deg
 
     return lr

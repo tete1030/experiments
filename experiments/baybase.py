@@ -30,10 +30,18 @@ class Experiment(BaseExperiment):
         use_pretrained = (config.resume is not None)
         self.model = DataParallel(BayBaseline(self.hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=use_pretrained).cuda())
         self.criterion = MSELoss().cuda()
-        self.optimizer = torch.optim.Adam(list(self.model.parameters()),
-                                          lr=hparams['learning_rate'],
-                                          weight_decay=hparams['weight_decay'])
+        # self.optimizer = torch.optim.Adam(filter(lambda x: x.requires_grad, self.model.parameters()),
+        #                                   lr=self.hparams['learning_rate'],
+        #                                   weight_decay=self.hparams['weight_decay'])
+        acorr2d_parameters = list(self.model.module.resnet50.layer3[1].acorr2d.parameters())
+        _, normal_parameters = zip(*list(filter(lambda x: x[1].requires_grad and not x[0].startswith("module.resnet50.layer3.1.acorr2d."), self.model.named_parameters())))
 
+        self.optimizer = torch.optim.Adam([
+                {"params": normal_parameters},
+                {"params": filter(lambda x: x.requires_grad, acorr2d_parameters), "lr": self.hparams["learning_rate"] * 0.2}
+            ],
+            lr=self.hparams["learning_rate"],
+            weight_decay=self.hparams['weight_decay'])
         self.cur_lr = self.hparams["learning_rate"]
 
         self.coco = COCO("data/mscoco/person_keypoints_train2014.json")
@@ -281,6 +289,8 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
         for m in self.modules():
+            if hasattr(m, "do_not_init") and m.do_not_init is True:
+                continue
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
                 m.weight.data.normal_(0, math.sqrt(2. / n))
