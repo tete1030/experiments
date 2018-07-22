@@ -30,18 +30,18 @@ class Experiment(BaseExperiment):
         use_pretrained = (config.resume is not None)
         self.model = DataParallel(BayBaseline(self.hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=use_pretrained).cuda())
         self.criterion = MSELoss().cuda()
-        # self.optimizer = torch.optim.Adam(filter(lambda x: x.requires_grad, self.model.parameters()),
-        #                                   lr=self.hparams['learning_rate'],
-        #                                   weight_decay=self.hparams['weight_decay'])
-        acorr2d_parameters = list(self.model.module.resnet50.layer3[1].acorr2d.parameters())
-        _, normal_parameters = zip(*list(filter(lambda x: x[1].requires_grad and not x[0].startswith("module.resnet50.layer3.1.acorr2d."), self.model.named_parameters())))
+        self.optimizer = torch.optim.Adam(filter(lambda x: x.requires_grad, self.model.parameters()),
+                                          lr=self.hparams['learning_rate'],
+                                          weight_decay=self.hparams['weight_decay'])
+        # acorr2d_parameters = list(self.model.module.resnet50.layer3[1].acorr2d.parameters())
+        # _, normal_parameters = zip(*list(filter(lambda x: x[1].requires_grad and not x[0].startswith("module.resnet50.layer3.1.acorr2d."), self.model.named_parameters())))
 
-        self.optimizer = torch.optim.Adam([
-                {"params": normal_parameters},
-                {"params": filter(lambda x: x.requires_grad, acorr2d_parameters), "lr": self.hparams["learning_rate"] * 0.2}
-            ],
-            lr=self.hparams["learning_rate"],
-            weight_decay=self.hparams['weight_decay'])
+        # self.optimizer = torch.optim.Adam([
+        #         {"params": normal_parameters},
+        #         {"params": filter(lambda x: x.requires_grad, acorr2d_parameters), "lr": self.hparams["learning_rate"] * 0.2}
+        #     ],
+        #     lr=self.hparams["learning_rate"],
+        #     weight_decay=self.hparams['weight_decay'])
         self.cur_lr = self.hparams["learning_rate"]
 
         self.coco = COCO("data/mscoco/person_keypoints_train2014.json")
@@ -114,7 +114,7 @@ class Experiment(BaseExperiment):
             # if ilabel < len(det_map_gt_vars) - 1:
             #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
             loss += ((outv - gtv).pow(2) * \
-                (((keypoint[:, :, 2] > 1) | (keypoint[:, :, 2] < 1)).float().view(-1, self.num_parts, 1, 1).cuda() if ilabel < len(det_map_gt_vars) - 1 else 1)).mean().sqrt() / self.hparams["model"]["gaussian_kernels"][ilabel]
+                (((keypoint[:, :, 2] > 1) | (keypoint[:, :, 2] < 1)).float().view(-1, self.num_parts, 1, 1).cuda() if ilabel < len(det_map_gt_vars) - 1 else 1)).mean().sqrt() / self.hparams["model"]["gaussian_kernels"][ilabel] ** 2
 
         if (loss.data != loss.data).any():
             import pdb; pdb.set_trace()
@@ -285,7 +285,7 @@ class ResNet(nn.Module):
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2, acorr2d=True)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
         for m in self.modules():
