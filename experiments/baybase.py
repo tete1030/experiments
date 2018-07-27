@@ -168,7 +168,7 @@ class Experiment(BaseExperiment):
             # if ilabel < len(det_map_gt_vars) - 1:
             #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
             loss += ((outv - gtv).pow(2) * \
-                (((keypoint[:, :, 2] > 1) | (keypoint[:, :, 2] < 1)).float().view(-1, self.num_parts, 1, 1).cuda() if ilabel < len(det_map_gt_vars) - 1 else 1)).mean().sqrt() / self.hparams["model"]["gaussian_kernels"][ilabel] ** 2
+                (((keypoint[:, :, 2] > 1) | (keypoint[:, :, 2] < 1)).float().view(-1, self.num_parts, 1, 1).cuda() if ilabel < len(det_map_gt_vars) - 1 else 1)).mean().sqrt()
 
         if (loss.data != loss.data).any():
             import pdb; pdb.set_trace()

@@ -162,7 +162,7 @@ baybase:
     model:
         inp_shape: [192, 256]
         out_shape: [48, 64]
-        gaussian_kernels: [8, 5, 3, 2]
+        gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
     dataset:
         ext_border: [0.1, 0.15]
         scale_factor: 0.25
