@@ -187,12 +187,12 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
     const int height = input.size(2);
     const int width = input.size(3);
 
-    AT_ASSERT(kernel_width <= width, "kernel_width must be lesser than or equal to width")
-    AT_ASSERT(kernel_height <= height, "kernel_height must be lesser than or equal to height")
-    AT_ASSERT(stride_width <= width, "stride_width must be lesser than or equal to width")
-    AT_ASSERT(stride_height <= height, "stride_height must be lesser than or equal to height")
+    AT_ASSERTM(kernel_width <= width, "kernel_width must be lesser than or equal to width")
+    AT_ASSERTM(kernel_height <= height, "kernel_height must be lesser than or equal to height")
+    AT_ASSERTM(stride_width <= width, "stride_width must be lesser than or equal to width")
+    AT_ASSERTM(stride_height <= height, "stride_height must be lesser than or equal to height")
 #if FLOAT_ONLY
-    AT_ASSERT(input.type().scalarType() == at::ScalarType::Float, "input.scalarType must be float")
+    AT_ASSERTM(input.type().scalarType() == at::ScalarType::Float, "input.scalarType must be float")
 #endif
 
     const int n_corr_w = (width + padding_left + padding_right - kernel_width) / stride_width + 1;
@@ -216,7 +216,7 @@ std::vector<at::Tensor> lacorr2d_forward_cuda(
         cout << "register_per_block: " << num_register * n_channel_per_block << std::endl;
     )
     shared_memory_size *= n_channel_per_block;
-    AT_ASSERT(n_channel_per_block > 0, "shared_memory_size or kernel_size or num_reg exceeds limitation");
+    AT_ASSERTM(n_channel_per_block > 0, "shared_memory_size or kernel_size or num_reg exceeds limitation");
 
     // work on pytorch 0.4.0 , have been changed in master 07/10/2018
     auto output = at::zeros(input.type(), std::vector<int64_t>{batch_size, n_corr_h, n_corr_w, channel_size, kernel_height, kernel_width});
@@ -463,13 +463,13 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
     const int height = input.size(2);
     const int width = input.size(3);
 
-    AT_ASSERT(kernel_width <= width, "kernel_width must be lesser than or equal to width")
-    AT_ASSERT(kernel_height <= height, "kernel_height must be lesser than or equal to height")
-    AT_ASSERT(stride_width <= width, "stride_width must be lesser than or equal to width")
-    AT_ASSERT(stride_height <= height, "stride_height must be lesser than or equal to height")
+    AT_ASSERTM(kernel_width <= width, "kernel_width must be lesser than or equal to width")
+    AT_ASSERTM(kernel_height <= height, "kernel_height must be lesser than or equal to height")
+    AT_ASSERTM(stride_width <= width, "stride_width must be lesser than or equal to width")
+    AT_ASSERTM(stride_height <= height, "stride_height must be lesser than or equal to height")
 #if FLOAT_ONLY
-    AT_ASSERT(input.type().scalarType() == at::ScalarType::Float, "input.scalarType must be float")
-    AT_ASSERT(grad_output.type().scalarType() == at::ScalarType::Float, "grad_output.scalarType must be float")
+    AT_ASSERTM(input.type().scalarType() == at::ScalarType::Float, "input.scalarType must be float")
+    AT_ASSERTM(grad_output.type().scalarType() == at::ScalarType::Float, "grad_output.scalarType must be float")
 #endif
 
     const int n_corr_w = (width + padding_left + padding_right - kernel_width) / stride_width + 1;
@@ -493,7 +493,7 @@ std::vector<at::Tensor> lacorr2d_backward_cuda(
         cout << "register_per_block: " << num_register * n_channel_per_block << std::endl;
     )
     shared_memory_size *= n_channel_per_block;
-    AT_ASSERT(n_channel_per_block > 0, "shared_memory_size or kernel_size or num_reg exceeds limitation");
+    AT_ASSERTM(n_channel_per_block > 0, "shared_memory_size or kernel_size or num_reg exceeds limitation");
 
     auto grad_input = at::zeros_like(input);
 

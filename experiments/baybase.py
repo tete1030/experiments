@@ -80,7 +80,7 @@ class Experiment(BaseExperiment):
         self.print_iter_start = " | "
 
     def evaluate(self, preds, step):
-        def _summarize(eval_result, params, step, ap, iou_thr=None, area_rng="all", max_dets=100, title=None):
+        def _summarize(eval_result, params, ap, iou_thr=None, area_rng="all", max_dets=100, title=None):
             type_str = "AP" if ap==1 else "AR"
             if title is None:
                 iou_str = "{:0.2f}-{:0.2f}".format(params.iouThrs[0], params.iouThrs[-1]) \
@@ -121,16 +121,16 @@ class Experiment(BaseExperiment):
             coco_eval.evaluate()
             coco_eval.accumulate()
 
-            _summarize(coco_eval.eval, coco_eval.params, 1, title="avg", maxDets=20)
-            _summarize(coco_eval.eval, coco_eval.params, 1, title="i50", maxDets=20, iouThr=.5)
-            _summarize(coco_eval.eval, coco_eval.params, 1, title="i75", maxDets=20, iouThr=.75)
-            _summarize(coco_eval.eval, coco_eval.params, 1, title="med", maxDets=20, areaRng="medium")
-            _summarize(coco_eval.eval, coco_eval.params, 1, title="lar", maxDets=20, areaRng="large")
-            _summarize(coco_eval.eval, coco_eval.params, 0, title="avg", maxDets=20)
-            _summarize(coco_eval.eval, coco_eval.params, 0, title="i50", maxDets=20, iouThr=.5)
-            _summarize(coco_eval.eval, coco_eval.params, 0, title="i75", maxDets=20, iouThr=.75)
-            _summarize(coco_eval.eval, coco_eval.params, 0, title="med", maxDets=20, areaRng="medium")
-            _summarize(coco_eval.eval, coco_eval.params, 0, title="lar", maxDets=20, areaRng="large")
+            _summarize(coco_eval.eval, coco_eval.params, 1, title="avg", max_dets=20)
+            _summarize(coco_eval.eval, coco_eval.params, 1, title="i50", max_dets=20, iou_thr=.5)
+            _summarize(coco_eval.eval, coco_eval.params, 1, title="i75", max_dets=20, iou_thr=.75)
+            _summarize(coco_eval.eval, coco_eval.params, 1, title="med", max_dets=20, area_rng="medium")
+            _summarize(coco_eval.eval, coco_eval.params, 1, title="lar", max_dets=20, area_rng="large")
+            _summarize(coco_eval.eval, coco_eval.params, 0, title="avg", max_dets=20)
+            _summarize(coco_eval.eval, coco_eval.params, 0, title="i50", max_dets=20, iou_thr=.5)
+            _summarize(coco_eval.eval, coco_eval.params, 0, title="i75", max_dets=20, iou_thr=.75)
+            _summarize(coco_eval.eval, coco_eval.params, 0, title="med", max_dets=20, area_rng="medium")
+            _summarize(coco_eval.eval, coco_eval.params, 0, title="lar", max_dets=20, area_rng="large")
 
             coco_eval.summarize()
         else:
