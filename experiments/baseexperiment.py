@@ -33,13 +33,13 @@ class BaseExperiment(object):
         self.cur_lr = None
         self.init()
 
-    def evaluate(self, preds):
+    def evaluate(self, preds, step):
         pass
 
     def epoch_start(self, epoch):
         pass
 
-    def iter_process(self, epoch_ctx, batch, is_train, detail=None):
+    def iter_process(self, epoch_ctx, batch, is_train, progress):
         pass
 
     def iter_step(self, loss):

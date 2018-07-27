@@ -79,7 +79,7 @@ class Experiment(BaseExperiment):
         self.worker_init_fn = datasets.mscoco.worker_init
         self.print_iter_start = " | "
 
-    def evaluate(self, preds):
+    def evaluate(self, preds, step):
         image_ids = preds["image_index"]
         ans = preds["annotate"]
         if len(ans) > 0:
@@ -96,7 +96,7 @@ class Experiment(BaseExperiment):
     def epoch_start(self, epoch):
         self.cur_lr = adjust_learning_rate(self.optimizer, epoch, self.hparams['learning_rate'], self.hparams['schedule'], self.hparams['lr_gamma'])
 
-    def iter_process(self, epoch_ctx, batch, is_train, detail=None):
+    def iter_process(self, epoch_ctx, batch, is_train, progress):
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
         det_maps_gt = batch["keypoint_map"]
@@ -125,7 +125,7 @@ class Experiment(BaseExperiment):
             for samp_i in range(batch_size):
                 pred_affined[samp_i, :, :2] = kpt_affine(pred_affined[samp_i, :, :2] * FACTOR, np.linalg.pinv(transform_mat[samp_i])[:2])
                 if img_flipped[samp_i]:
-                    pred_affined[samp_i] = fliplr_pts(pred_affined[samp_i], datasets.mscoco.FLIP_INDEX, width=img_ori_size[isamp, 0])
+                    pred_affined[samp_i] = fliplr_pts(pred_affined[samp_i], datasets.mscoco.FLIP_INDEX, width=img_ori_size[samp_i, 0].item())
             ans = generate_ans(image_ids, pred_affined, score)
         else:
             pred = None
@@ -170,7 +170,7 @@ class Experiment(BaseExperiment):
 
             # if loss.item() > 0.1:
             #     import pdb; pdb.set_trace()
-        epoch_ctx.add_scalar("loss", loss.item(), detail["iter_len"])
+        epoch_ctx.add_scalar("loss", loss.item(), progress["iter_len"])
 
         result = {
             "loss": loss,

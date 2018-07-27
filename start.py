@@ -240,14 +240,14 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
 
             cur_step = iter_length * epoch + i
 
-            detail = {
+            progress = {
                 "epoch": epoch,
                 "iter": i,
                 "iter_len": iter_length,
                 "step": cur_step
             }
 
-            result = exp.iter_process(epoch_ctx, batch, True, detail=detail)
+            result = exp.iter_process(epoch_ctx, batch, True, progress=progress)
             loss = result["loss"]
 
             exp.iter_step(loss)
@@ -331,14 +331,14 @@ def validate(val_loader, exp, epoch, cur_step, store_result=True):
 
             batch_size = len(batch["index"])
 
-            detail = {
+            progress = {
                 "epoch": epoch,
                 "iter": i,
                 "iter_len": iter_length,
                 "step": cur_step
             }
 
-            result = exp.iter_process(epoch_ctx, batch, False, detail=detail)
+            result = exp.iter_process(epoch_ctx, batch, False, progress=progress)
 
             if result["pred"] is not None:
                 if preds is None:
@@ -396,7 +396,7 @@ def validate(val_loader, exp, epoch, cur_step, store_result=True):
                 break
 
     exp.summary_scalar_avg(epoch_ctx, cur_step, phase="valid")
-    exp.evaluate(preds)
+    exp.evaluate(preds, cur_step)
 
     return result_collection
 
