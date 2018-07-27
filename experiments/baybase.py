@@ -167,8 +167,11 @@ class Experiment(BaseExperiment):
         for ilabel, (outv, gtv) in enumerate(zip(output_vars, det_map_gt_vars)):
             # if ilabel < len(det_map_gt_vars) - 1:
             #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
-            loss += ((outv - gtv).pow(2) * \
-                (((keypoint[:, :, 2] > 1) | (keypoint[:, :, 2] < 1)).float().view(-1, self.num_parts, 1, 1).cuda() if ilabel < len(det_map_gt_vars) - 1 else 1)).mean().sqrt()
+            if ilabel < len(det_map_gt_vars) - 1:
+                loss += ((outv - gtv).pow(2) * \
+                    (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
+            else:
+                loss += (outv - gtv).pow(2).mean().sqrt()
 
         if (loss.data != loss.data).any():
             import pdb; pdb.set_trace()
@@ -421,23 +424,18 @@ def resnet101(pretrained=False, **kwargs):
     return model
 
 class globalNet(nn.Module):
-    def __init__(self, input_sizes, output_shape, num_points):
+    def __init__(self, channel_settings, output_shape, num_class):
         super(globalNet, self).__init__()
-
-        self.layer1_1 = self._make_layer1(input_sizes[0])
-        self.layer1_2 = self._make_layer2()
-        self.layer1_3 = self._make_layer3(output_shape, num_points)
-
-        self.layer2_1 = self._make_layer1(input_sizes[1])
-        self.layer2_2 = self._make_layer2()
-        self.layer2_3 = self._make_layer3(output_shape, num_points)
-
-        self.layer3_1 = self._make_layer1(input_sizes[2])
-        self.layer3_2 = self._make_layer2()
-        self.layer3_3 = self._make_layer3(output_shape, num_points)
-
-        self.layer4_1 = self._make_layer1(input_sizes[3])
-        self.layer4_3 = self._make_layer3(output_shape, num_points)
+        self.channel_settings = channel_settings
+        laterals, upsamples, predict = [], [], []
+        for i in range(len(channel_settings)):
+            laterals.append(self._lateral(channel_settings[i]))
+            predict.append(self._predict(output_shape, num_class))
+            if i != len(channel_settings) - 1:
+                upsamples.append(self._upsample())
+        self.laterals = nn.ModuleList(laterals)
+        self.upsamples = nn.ModuleList(upsamples)
+        self.predict = nn.ModuleList(predict)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -449,10 +447,8 @@ class globalNet(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-    def _make_layer1(self, input_size):
-
+    def _lateral(self, input_size):
         layers = []
-
         layers.append(nn.Conv2d(input_size, 256,
             kernel_size=1, stride=1, bias=False))
         layers.append(nn.BatchNorm2d(256))
@@ -460,50 +456,43 @@ class globalNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def _make_layer2(self):
-
+    def _upsample(self):
         layers = []
-
         layers.append(torch.nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True))
         layers.append(torch.nn.Conv2d(256, 256,
             kernel_size=1, stride=1, bias=True))
+        layers.append(nn.BatchNorm2d(256))
 
         return nn.Sequential(*layers)
 
-    def _make_layer3(self, output_shape, num_points):
-
+    def _predict(self, output_shape, num_class):
         layers = []
-
         layers.append(nn.Conv2d(256, 256,
             kernel_size=1, stride=1, bias=False))
         layers.append(nn.BatchNorm2d(256))
         layers.append(nn.ReLU(inplace=True))
 
-        layers.append(nn.Conv2d(256, num_points,
+        layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
-        layers.append(nn.BatchNorm2d(num_points))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
+        layers.append(nn.BatchNorm2d(num_class))
 
         return nn.Sequential(*layers)
 
     def forward(self, x):
+        global_fms, global_outs = [], []
+        for i in range(len(self.channel_settings)):
+            if i == 0:
+                feature = self.laterals[i](x[i])
+            else:
+                feature = self.laterals[i](x[i]) + up
+            global_fms.append(feature)
+            if i != len(self.channel_settings) - 1:
+                up = self.upsamples[i](feature)
+            feature = self.predict[i](feature)
+            global_outs.append(feature)
 
-        x1_1 = self.layer1_1(x[0])
-        x1_2 = self.layer1_2(x1_1)
-        x1_3 = self.layer1_3(x1_1)
-
-        x2_1 = self.layer2_1(x[1]) + x1_2
-        x2_2 = self.layer2_2(x2_1)
-        x2_3 = self.layer2_3(x2_1)
-
-        x3_1 = self.layer3_1(x[2]) + x2_2
-        x3_2 = self.layer3_2(x3_1)
-        x3_3 = self.layer3_3(x3_1)
-
-        x4_1 = self.layer4_1(x[3]) + x3_2
-        x4_3 = self.layer4_3(x4_1)
-
-        return [x4_1, x3_1, x2_1, x1_1], [x4_3, x3_3, x2_3, x1_3]
+        return global_fms, global_outs
 
 def parse_map(det_map, thres=0.1, factor=4):
     det_map = det_map.detach()
