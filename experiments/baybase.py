@@ -80,6 +80,37 @@ class Experiment(BaseExperiment):
         self.print_iter_start = " | "
 
     def evaluate(self, preds, step):
+        def _summarize(eval_result, params, step, ap, iou_thr=None, area_rng="all", max_dets=100, title=None):
+            type_str = "AP" if ap==1 else "AR"
+            if title is None:
+                iou_str = "{:0.2f}-{:0.2f}".format(params.iouThrs[0], params.iouThrs[-1]) \
+                    if iou_thr is None else "{:0.2f}".format(iou_thr)
+                title = "{:<9}_{:>6s}_{:>3d}".format(iou_str, area_rng, max_dets)
+
+            aind = [i for i, aRng in enumerate(params.areaRngLbl) if aRng == area_rng]
+            mind = [i for i, mDet in enumerate(params.maxDets) if mDet == max_dets]
+            if ap == 1:
+                # dimension of precision: [TxRxKxAxM]
+                s = eval_result["precision"]
+                # IoU
+                if iou_thr is not None:
+                    t = np.where(iou_thr == params.iouThrs)[0]
+                    s = s[t]
+                s = s[:,:,:,aind,mind]
+            else:
+                # dimension of recall: [TxKxAxM]
+                s = eval_result["recall"]
+                if iou_thr is not None:
+                    t = np.where(iou_thr == params.iouThrs)[0]
+                    s = s[t]
+                s = s[:,:,aind,mind]
+            if len(s[s>-1])==0:
+                mean_s = -1
+            else:
+                mean_s = np.mean(s[s>-1])
+            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, type_str), {title: mean_s}, step)
+            return mean_s
+
         image_ids = preds["image_index"]
         ans = preds["annotate"]
         if len(ans) > 0:
@@ -89,8 +120,31 @@ class Experiment(BaseExperiment):
             coco_eval.params.catIds = [1]
             coco_eval.evaluate()
             coco_eval.accumulate()
+
+            _summarize(coco_eval.eval, coco_eval.params, 1, title="avg", maxDets=20)
+            _summarize(coco_eval.eval, coco_eval.params, 1, title="i50", maxDets=20, iouThr=.5)
+            _summarize(coco_eval.eval, coco_eval.params, 1, title="i75", maxDets=20, iouThr=.75)
+            _summarize(coco_eval.eval, coco_eval.params, 1, title="med", maxDets=20, areaRng="medium")
+            _summarize(coco_eval.eval, coco_eval.params, 1, title="lar", maxDets=20, areaRng="large")
+            _summarize(coco_eval.eval, coco_eval.params, 0, title="avg", maxDets=20)
+            _summarize(coco_eval.eval, coco_eval.params, 0, title="i50", maxDets=20, iouThr=.5)
+            _summarize(coco_eval.eval, coco_eval.params, 0, title="i75", maxDets=20, iouThr=.75)
+            _summarize(coco_eval.eval, coco_eval.params, 0, title="med", maxDets=20, areaRng="medium")
+            _summarize(coco_eval.eval, coco_eval.params, 0, title="lar", maxDets=20, areaRng="large")
+
             coco_eval.summarize()
         else:
+            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AP"), {"avg": -1.}, step)
+            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AP"), {"i50": -1.}, step)
+            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AP"), {"i75": -1.}, step)
+            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AP"), {"med": -1.}, step)
+            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AP"), {"lar": -1.}, step)
+            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AR"), {"avg": -1.}, step)
+            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AR"), {"i50": -1.}, step)
+            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AR"), {"i75": -1.}, step)
+            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AR"), {"med": -1.}, step)
+            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AR"), {"lar": -1.}, step)
+
             print("No points")
 
     def epoch_start(self, epoch):
