@@ -151,7 +151,7 @@ ae2d:
 
 baybase:
     <<: *DEFAULT
-    id: 5
+    id: 6
     name: baybase
     learning_rate: 5.e-4
     lr_gamma: 0.5

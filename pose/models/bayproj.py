@@ -12,6 +12,8 @@ class AutoCorr2D(nn.Module):
         # assert isinstance(corr_stride, int) or (isinstance(corr_stride, tuple) and len(corr_stride) == 2)
         # if isinstance(corr_stride, int):
         #     corr_stride = (corr_stride, corr_stride)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
         self.corr_channels = corr_channels
         self.corr_kernel_size = corr_kernel_size
         self.extract_input = nn.Conv2d(in_channels, corr_channels, kernel_size=3, padding=1)
