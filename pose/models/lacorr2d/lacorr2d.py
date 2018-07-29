@@ -29,7 +29,7 @@ class LocalAutoCorr2DCUDAFunction(Function):
         return grad_inp, None, None, None
 
 class LocalAutoCorr2DCUDA(Module):
-    def __init__(self, kernel_size, stride_size, pad):
+    def __init__(self, kernel_size, stride_size, pad=PadInfo()):
         super(LocalAutoCorr2DCUDA, self).__init__()
         self.kernel_size = kernel_size
         self.stride_size = stride_size
@@ -39,7 +39,7 @@ class LocalAutoCorr2DCUDA(Module):
         return LocalAutoCorr2DCUDAFunction.apply(x, self.kernel_size, self.stride_size, self.pad)
 
 class LocalAutoCorr2D(Module):
-    def __init__(self, kernel_size, stride_size, pad):
+    def __init__(self, kernel_size, stride_size, pad=PadInfo()):
         super(LocalAutoCorr2D, self).__init__()
         self.kernel_size = kernel_size
         self.stride_size = stride_size

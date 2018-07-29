@@ -26,16 +26,18 @@ def save_pred(preds, is_best=False, checkpoint='checkpoint', filename='preds_val
         shutil.copyfile(preds_filepath, os.path.join(checkpoint, 'preds_best.npy'))
     return filename
 
-
-def adjust_learning_rate(optimizer, epoch, lr, schedule, gamma):
+def adjust_learning_rate(optimizer, epoch, init_lr, schedule, gamma):
     """Sets the learning rate to the initial LR decayed by schedule"""
-    try:
-        lr_deg = schedule.index(epoch) + 1
-    except ValueError:
-        lr_deg = 0
+    lr_deg = 0
+    for ep in schedule:
+        if epoch >= ep:
+            lr_deg += 1
     if lr_deg > 0:
-        lr *= gamma ** lr_deg
+        lr = init_lr * gamma ** lr_deg
         for param_group in optimizer.param_groups:
-            param_group['lr'] *= gamma ** lr_deg
+            if "init_lr" in param_group:
+                param_group["lr"] = param_group["init_lr"] * gamma ** lr_deg
+            else:
+                param_group["lr"] = lr
 
     return lr

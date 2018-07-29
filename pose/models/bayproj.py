@@ -4,11 +4,12 @@ from pose.models.lacorr2d import LocalAutoCorr2DCUDA, PadInfo
 class AutoCorr2D(nn.Module):
     def __init__(self, in_channels, out_channels, corr_channels, corr_kernel_size):
         super(AutoCorr2D, self).__init__()
-        assert isinstance(corr_kernel_size, int) or (isinstance(corr_kernel_size, tuple) and len(corr_kernel_size) == 2)
+        assert isinstance(corr_kernel_size, int) or isinstance(corr_kernel_size, tuple)
         if isinstance(corr_kernel_size, int):
-            corr_kernel_size = (int(corr_kernel_size), int(corr_kernel_size))
+            assert corr_kernel_size > 0
+            corr_kernel_size = (corr_kernel_size, corr_kernel_size)
         else:
-            corr_kernel_size = (int(corr_kernel_size[0]), int(corr_kernel_size[1]))
+            assert len(corr_kernel_size) == 2 and isinstance(corr_kernel_size[0], int) and isinstance(corr_kernel_size[1], int)
         # assert isinstance(corr_stride, int) or (isinstance(corr_stride, tuple) and len(corr_stride) == 2)
         # if isinstance(corr_stride, int):
         #     corr_stride = (corr_stride, corr_stride)

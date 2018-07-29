@@ -126,7 +126,7 @@ def main(args):
                         print("Difference ignored")
             print("=> loading checkpoint '{}'".format(resume_full))
             checkpoint = torch.load(resume_full)
-            exp.hparams['start_epoch'] = checkpoint['epoch']
+            exp.hparams['before_epoch'] = checkpoint['epoch']
             exp.model.load_state_dict(checkpoint['state_dict'], strict=not args.no_strict_model_load)
             if not args.no_criterion_load:
                 exp.criterion.load_state_dict(checkpoint['criterion'])
@@ -174,10 +174,10 @@ def main(args):
     if config.handle_sig:
         enable_sigint_handler()
 
-    for epoch in range(exp.hparams['start_epoch'], exp.hparams['epochs']):
+    for epoch in range(exp.hparams['before_epoch'] + 1, exp.hparams['epochs'] + 1):
         exp.epoch_start(epoch)
 
-        print('\nEpoch: %d | LR: %.8f' % (epoch + 1, exp.cur_lr))
+        print('\nEpoch: %d | LR: %.8f' % (epoch, exp.cur_lr))
 
         # train for one epoch
         train(train_loader, exp, epoch, em_valid_int=exp.hparams["em_valid_int"], val_loader=val_loader)
@@ -185,10 +185,10 @@ def main(args):
         if config.sigint_triggered:
             break
 
-        cur_step = len(train_loader) * (epoch + 1)
+        cur_step = len(train_loader) * epoch
 
         # evaluate on validation set
-        if config.skip_val > 0 and (epoch + 1) % config.skip_val == 0:
+        if config.skip_val > 0 and epoch % config.skip_val == 0:
             print("Validation:")
             result_collection = validate(val_loader, exp, epoch, cur_step)
         else:
@@ -198,9 +198,9 @@ def main(args):
         if config.sigint_triggered:
             break
 
-        cp_filename = 'checkpoint_{}.pth.tar'.format(epoch + 1)
+        cp_filename = 'checkpoint_{}.pth.tar'.format(epoch)
         checkpoint_dict = {
-            'epoch': epoch + 1,
+            'epoch': epoch,
             'state_dict': exp.model.state_dict(),
             'optimizer': exp.optimizer.state_dict(),
             'criterion': exp.criterion.state_dict()
@@ -208,7 +208,7 @@ def main(args):
         save_checkpoint(checkpoint_dict, False, checkpoint=config.checkpoint, filename=cp_filename)
 
         if result_collection is not None:
-            preds_filename = 'preds_{}.npy'.format(epoch + 1)
+            preds_filename = 'preds_{}.npy'.format(epoch)
             save_pred(result_collection, is_best=False, checkpoint=config.checkpoint, filename=preds_filename)
 
         exp.epoch_end(epoch)
@@ -238,7 +238,7 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
             # measure data loading time
             data_time.update(time.time() - end)
 
-            cur_step = iter_length * epoch + i
+            cur_step = iter_length * (epoch - 1) + i
 
             progress = {
                 "epoch": epoch,
@@ -259,7 +259,7 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
             end = time.time()
 
             loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) data: {data:.6f}s | batch: {bt:.3f}s | total: {total:3.1f}s").format(
-                epoch=epoch + 1,
+                epoch=epoch,
                 batch=i + 1,
                 size_width=len(str(iter_length)),
                 size=iter_length,
@@ -377,7 +377,7 @@ def validate(val_loader, exp, epoch, cur_step, store_result=True):
             data_counter += len(index)
 
             loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) data: {data:.6f}s | batch: {bt:.3f}s | total: {total:3.1f}s").format(
-                epoch=epoch + 1,
+                epoch=epoch,
                 batch=i + 1,
                 size_width=len(str(iter_length)),
                 size=iter_length,

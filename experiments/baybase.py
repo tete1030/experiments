@@ -38,7 +38,7 @@ class Experiment(BaseExperiment):
 
         self.optimizer = torch.optim.Adam([
                 {"params": normal_parameters},
-                {"params": filter(lambda x: x.requires_grad, acorr2d_parameters), "lr": self.hparams["learning_rate"] * 0.2}
+                {"params": filter(lambda x: x.requires_grad, acorr2d_parameters), "lr": self.hparams["learning_rate"] * 0.2, "init_lr": self.hparams["learning_rate"] * 0.2}
             ],
             lr=self.hparams["learning_rate"],
             weight_decay=self.hparams['weight_decay'])

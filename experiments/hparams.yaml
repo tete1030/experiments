@@ -5,7 +5,7 @@ default_conf:
         weight_decay: 0
         train_batch: 20
         test_batch: 20
-        start_epoch: 0
+        before_epoch: 0
         epochs: 220
         schedule: [150, 175, 200]
         em_valid_int: 0
