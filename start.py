@@ -59,10 +59,9 @@ best_acc = 0
 def main(args):
     global best_acc
 
-    exp_name = args.EXP
+    hparams = get_hparams(args.EXP)
+    exp_name = hparams["name"]
     config.exp_name = exp_name
-
-    hparams = get_hparams(exp_name)
 
     if args.override is not None:
         def set_hierarchic_attr(var, var_name_hierarchic, var_value):
@@ -100,7 +99,7 @@ def main(args):
     if not os.path.isdir(config.checkpoint):
         mkdir_p(config.checkpoint)
 
-    exp_module = importlib.import_module('experiments.' + hparams['name'])
+    exp_module = importlib.import_module('experiments.' + args.EXP)
     assert issubclass(exp_module.Experiment, BaseExperiment)
     exp = exp_module.Experiment(hparams)
     del hparams
