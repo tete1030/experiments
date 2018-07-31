@@ -192,12 +192,12 @@ class LongRangeProj(nn.Module):
         if self.width != width or (hasattr(self, "x_out") and self.x_out.device != device):
             self.width = width
             if width is not None:
-                self.register_buffer("x_out", torch.arange(width, dtype=torch.float32, device=device).view(1, -1))
+                self.x_out = torch.arange(width, dtype=torch.float32, device=device).view(1, -1)
 
         if self.height != height or (hasattr(self, "y_out") and self.y_out.device != device):
             self.height = height
             if height is not None:
-                self.register_buffer("y_out", torch.arange(height, dtype=torch.float32, device=device).view(-1, 1))
+                self.y_out = torch.arange(height, dtype=torch.float32, device=device).view(-1, 1)
 
     def _proj(self, force_field, cx, cy, radius_mean, radius_std, angle_mean, angle_std):
         """
@@ -229,10 +229,10 @@ class LongRangeProj(nn.Module):
         # batch_size x channel_size x 2
         angle_mean_force = torch.stack([fgcos(angle_mean), fgsin(angle_mean)], dim=2)
         # Use selblock to fix output and zero grad at the origin point
+        # NOTE: selblock IS INPLACE OPERATOR
         ang_dis_cos = selblock(torch.mm(angle_mean_force.view(-1, 2), force_field.view(2, -1)).view(force_norm.size()), (slice(None), slice(None), cy, cx), 1, 0) / \
                       selblock(force_norm, (slice(None), slice(None), cy, cx), 1, 0)
-        # FIXME: TEST IF selblock CHANGED ORIGINAL DATA
-        assert (force_norm.data[:, :, cy, cx] == 1).all()
+
         # sometimes rounding error can be twice the float32_eps
         assert not (ang_dis_cos.data > 1 + 2 * self._float32_eps).any() and not (ang_dis_cos.data < -1 - 2 * self._float32_eps).any()
         # This is intentional. The outsiders should only be caused by rounding error.
@@ -305,13 +305,13 @@ class AutoCorrProj(nn.Module):
             self.n_corr_w = n_corr_w
             origin_x = torch.arange(n_corr_w, dtype=torch.float32, device=device)
             origin_x = origin_x * self.acorr2d.corr_stride[1] - self.acorr2d.pad.left + self.acorr2d.corr_kernel_size[1] // 2
-            self.register_buffer("origin_x", origin_x)
+            self.origin_x = origin_x
 
         if self.n_corr_h != n_corr_h or (hasattr(self, "origin_y") and self.origin_y.device != device):
             self.n_corr_h = n_corr_h
             origin_y = torch.arange(n_corr_h, dtype=torch.float32, device=device)
             origin_y = origin_y * self.acorr2d.corr_stride[0] - self.acorr2d.pad.top + self.acorr2d.corr_kernel_size[0] // 2
-            self.register_buffer("origin_y", origin_y)
+            self.origin_y = origin_y
 
     def _regress(self, x):
         batch_size = x.size(0)
