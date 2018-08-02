@@ -22,6 +22,7 @@ from .baseexperiment import BaseExperiment
 
 import cv2
 import re
+import threading
 
 FACTOR = 4
 
@@ -170,7 +171,8 @@ class Experiment(BaseExperiment):
         det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
         if config.vis:
             config.cur_img = img
-        output_vars = self.model(img)
+        output_vars, loss_out_total, count_out_total = self.model(img)
+        assert len(self.model.module._intermediate_out) == 0
         if config.vis:
             config.cur_img = None
 
@@ -183,6 +185,9 @@ class Experiment(BaseExperiment):
                     (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
             else:
                 loss += (outv - gtv).pow(2).mean().sqrt()
+
+        if count_out_total > 0:
+            loss += self.hparams["model"]["loss_outsider_cof"] * loss_out_total / count_out_total
 
         if (loss.data != loss.data).any():
             import pdb; pdb.set_trace()
@@ -252,17 +257,32 @@ class Experiment(BaseExperiment):
 class BayProj(nn.Module):
     def __init__(self, output_shape, num_points, pretrained=True):
         super(BayProj, self).__init__()
+        # referenced in every copy of modules
+        self._intermediate_out = list()
+        self._lock = threading.Lock()
         self.resnet50 = resnet50(pretrained=pretrained, extra_mod=[
             None,
             None,
-            AutoCorrProj,
+            (AutoCorrProj, self._lock, self._intermediate_out),
             None])
         self.global_net = globalNet([2048, 1024, 512, 256], output_shape, num_points)
+
+    def _clear_intermediate_out(self):
+        with self._lock:
+            self._intermediate_out.clear()
 
     def forward(self, x):
         res_out = self.resnet50(x)
         global_re, global_out = self.global_net(res_out)
-        return global_out
+        interm_out = None
+        with self._lock:
+            for i, _int_out in enumerate(self._intermediate_out.copy()):
+                if x.device == _int_out[0].device:
+                    interm_out = _int_out
+                    del self._intermediate_out[i]
+                    break
+        assert interm_out is not None
+        return global_out, interm_out[0], interm_out[1]
 
 def conv3x3(in_planes, out_planes, stride=1):
     "3x3 convolution with padding"
@@ -316,7 +336,10 @@ class Bottleneck(nn.Module):
         self.downsample = downsample
         self.stride = stride
         if extra_mod is not None:
-            self.extra_mod = extra_mod(inplanes, inplanes, 32, corr_kernel_size=(7, 7), corr_stride=(3, 3))
+            mod = extra_mod[0]
+            self._extra_mod_lock = extra_mod[1]
+            self._extra_mod_interm_out = extra_mod[2]
+            self.extra_mod = mod(inplanes, inplanes, 32, corr_kernel_size=(7, 7), corr_stride=(3, 3))
         else:
             self.extra_mod = None
 
@@ -337,10 +360,13 @@ class Bottleneck(nn.Module):
         if self.downsample is not None:
             residual = self.downsample(x)
         elif self.extra_mod is not None:
+            extra_out = self.extra_mod(x)
             if self.extra_mod.out_channels < x.size(1):
-                residual = torch.cat([x[:, :self.extra_mod.out_channels] + self.extra_mod(x), x[:, self.extra_mod.out_channels:]], dim=1)
+                residual = torch.cat([x[:, :self.extra_mod.out_channels] + extra_out[0], x[:, self.extra_mod.out_channels:]], dim=1)
             else:
-                residual = x + self.extra_mod(x)
+                residual = x + extra_out[0]
+            with self._extra_mod_lock:
+                self._extra_mod_interm_out.append((extra_out[1], extra_out[2]))
 
         out += residual
         out = self.relu(out)

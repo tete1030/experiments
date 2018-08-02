@@ -343,6 +343,22 @@ class AutoCorrProj(nn.Module):
 
         return radius, angle, conf, n_corr_h, n_corr_w
 
+    @staticmethod
+    def _sum_outsider(radius, angle, origin_x, origin_y, height, width):
+        # b x nh x nw x chan
+        proj_cen_x = radius * torch.cos(angle) + origin_x.view(1, 1, -1, 1)
+        proj_cen_y = radius * torch.sin(angle) + origin_y.view(1, -1, 1, 1)
+
+        left_outsd = (proj_cen_x.data < 0)
+        right_outsd = (proj_cen_x.data >= width)
+        top_outsd = (proj_cen_y.data < 0)
+        bottom_outsd = (proj_cen_y.data >= height)
+        loss_out_total = ((proj_cen_x[left_outsd] ** 2).sum() + ((proj_cen_x[right_outsd] - width) ** 2).sum() + \
+                          (proj_cen_y[top_outsd] ** 2).sum() + ((proj_cen_y[bottom_outsd] - height) ** 2).sum())
+        count_out_total = (left_outsd | right_outsd | top_outsd | bottom_outsd).int().sum().float()
+
+        return loss_out_total, count_out_total
+
     def forward(self, inp):
         height = inp.size(2)
         width = inp.size(3)
@@ -350,6 +366,7 @@ class AutoCorrProj(nn.Module):
         radius, angle, conf, n_corr_h, n_corr_w = self._regress(inp)
         self._init_force(n_corr_h, n_corr_w, height, width, device=inp.device)
 
+        loss_out_total, count_out_total = self._sum_outsider(radius, angle, self._origin_x, self._origin_y, height, width)
 
         # b x chan x h x w
         out = self.projector(self._force_field, self._force_norm, self._origin_x, self._origin_y, radius, angle, conf)
@@ -368,4 +385,4 @@ class AutoCorrProj(nn.Module):
                     ax.imshow(fts[col])
             plt.show()
 
-        return out
+        return out, loss_out_total, count_out_total
