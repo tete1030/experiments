@@ -22,13 +22,18 @@ from .baseexperiment import BaseExperiment
 
 import cv2
 
+from utils.sync_batchnorm import SynchronizedBatchNorm2d, DataParallelWithCallback
+
+DataParallelImpl = DataParallelWithCallback
+BatchNorm2dImpl = SynchronizedBatchNorm2d
+
 FACTOR = 4
 
 class Experiment(BaseExperiment):
     def init(self):
         self.num_parts = datasets.mscoco.NUM_PARTS
         use_pretrained = (config.resume is not None)
-        self.model = DataParallel(BayBaseline(self.hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=use_pretrained).cuda())
+        self.model = DataParallelImpl(BayBaseline(self.hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=use_pretrained).cuda())
         self.criterion = MSELoss().cuda()
         self.optimizer = torch.optim.Adam(filter(lambda x: x.requires_grad, self.model.parameters()),
                                           lr=self.hparams['learning_rate'],
@@ -260,10 +265,10 @@ class BasicBlock(nn.Module):
     def __init__(self, inplanes, planes, stride=1, downsample=None):
         super(BasicBlock, self).__init__()
         self.conv1 = conv3x3(inplanes, planes, stride)
-        self.bn1 = nn.BatchNorm2d(planes)
+        self.bn1 = BatchNorm2dImpl(planes)
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = conv3x3(planes, planes)
-        self.bn2 = nn.BatchNorm2d(planes)
+        self.bn2 = BatchNorm2dImpl(planes)
         self.downsample = downsample
         self.stride = stride
 
@@ -291,12 +296,12 @@ class Bottleneck(nn.Module):
     def __init__(self, inplanes, planes, stride=1, downsample=None, acorr2d=False):
         super(Bottleneck, self).__init__()
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
+        self.bn1 = BatchNorm2dImpl(planes)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
                                padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
+        self.bn2 = BatchNorm2dImpl(planes)
         self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(planes * 4)
+        self.bn3 = BatchNorm2dImpl(planes * 4)
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample 
         self.stride = stride
@@ -340,7 +345,7 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
                                bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
+        self.bn1 = BatchNorm2dImpl(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
@@ -354,7 +359,7 @@ class ResNet(nn.Module):
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
                 m.weight.data.normal_(0, math.sqrt(2. / n))
-            elif isinstance(m, nn.BatchNorm2d):
+            elif isinstance(m, BatchNorm2dImpl):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
@@ -364,7 +369,7 @@ class ResNet(nn.Module):
             downsample = nn.Sequential(
                 nn.Conv2d(self.inplanes, planes * block.expansion,
                           kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(planes * block.expansion),
+                BatchNorm2dImpl(planes * block.expansion),
             )
 
         layers = []
@@ -446,7 +451,7 @@ class globalNet(nn.Module):
                 m.weight.data.normal_(0, math.sqrt(2. / n))
                 if m.bias is not None:
                     m.bias.data.zero_()
-            elif isinstance(m, nn.BatchNorm2d):
+            elif isinstance(m, BatchNorm2dImpl):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
@@ -454,7 +459,7 @@ class globalNet(nn.Module):
         layers = []
         layers.append(nn.Conv2d(input_size, 256,
             kernel_size=1, stride=1, bias=False))
-        layers.append(nn.BatchNorm2d(256))
+        layers.append(BatchNorm2dImpl(256))
         layers.append(nn.ReLU(inplace=True))
 
         return nn.Sequential(*layers)
@@ -464,7 +469,7 @@ class globalNet(nn.Module):
         layers.append(torch.nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True))
         layers.append(torch.nn.Conv2d(256, 256,
             kernel_size=1, stride=1, bias=True))
-        layers.append(nn.BatchNorm2d(256))
+        layers.append(BatchNorm2dImpl(256))
 
         return nn.Sequential(*layers)
 
@@ -472,13 +477,13 @@ class globalNet(nn.Module):
         layers = []
         layers.append(nn.Conv2d(256, 256,
             kernel_size=1, stride=1, bias=False))
-        layers.append(nn.BatchNorm2d(256))
+        layers.append(BatchNorm2dImpl(256))
         layers.append(nn.ReLU(inplace=True))
 
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
-        layers.append(nn.BatchNorm2d(num_class))
+        layers.append(BatchNorm2dImpl(num_class))
 
         return nn.Sequential(*layers)
 
