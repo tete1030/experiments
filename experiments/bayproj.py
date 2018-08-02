@@ -31,12 +31,21 @@ class Experiment(BaseExperiment):
         use_pretrained = (config.resume is not None)
         self.model = DataParallel(BayProj(self.hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=use_pretrained).cuda())
         self.criterion = MSELoss().cuda()
-        _, extra_parameters = zip(*list(filter(lambda x: x[1].requires_grad and re.match(r"^(.+\.)?extra_mod(\..+)?$", x[0]) is not None, self.model.named_parameters())))
-        _, normal_parameters = zip(*list(filter(lambda x: x[1].requires_grad and re.match(r"^(.+\.)?extra_mod(\..+)?$", x[0]) is None, self.model.named_parameters())))
+
+        extra_mod_parameters = []
+        other_parameters = []
+        extra_mod_reg = re.compile(r"^(.+\.)?extra_mod(\..+)?$")
+        for para_name, para in self.model.named_parameters():
+            if not para.requires_grad:
+                continue
+            if extra_mod_reg.match(para_name) is not None:
+                extra_mod_parameters.append(para)
+            else:
+                other_parameters.append(para)
 
         self.optimizer = torch.optim.Adam([
-                {"params": normal_parameters},
-                {"params": extra_parameters, "lr": self.hparams["learning_rate"] * 0.2, "init_lr": self.hparams["learning_rate"] * 0.2}
+                {"params": other_parameters},
+                {"params": extra_mod_parameters, "lr": self.hparams["learning_rate"] * 0.2, "init_lr": self.hparams["learning_rate"] * 0.2}
             ],
             lr=self.hparams["learning_rate"],
             weight_decay=self.hparams['weight_decay'])
@@ -159,7 +168,11 @@ class Experiment(BaseExperiment):
         batch_size = img.size(0)
 
         det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
+        if config.vis:
+            config.cur_img = img
         output_vars = self.model(img)
+        if config.vis:
+            config.cur_img = None
 
         loss = 0.
         for ilabel, (outv, gtv) in enumerate(zip(output_vars, det_map_gt_vars)):

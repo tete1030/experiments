@@ -3,6 +3,7 @@ import numpy as np
 import torch.nn as nn
 from torch.autograd import Function
 from pose.models.lacorr2d import LocalAutoCorr2DCUDA, PadInfo
+import pose.utils.config as config
 
 class AutoCorr2D(nn.Module):
     def __init__(self, in_channels, out_channels, corr_channels, corr_kernel_size, corr_stride=0, pad=False, permute=True):
@@ -124,7 +125,7 @@ class FriendlyGradCosine(Function):
             mask_p = mask_geq0 & mask_cosgt0 & (grad_output > 0)
             mask_n = mask_geq0 & ~mask_cosgt0 & (grad_output < 0)
             mask_grad_inner_dir = mask_p | mask_n
-            num_random = mask_grad_inner_dir.uint32().sum()
+            num_random = mask_grad_inner_dir.int().sum()
             if num_random > 0:
                 grad[mask_grad_inner_dir] = torch.rand(num_random, dtype=torch.float32, device=grad.device) * 0.2 - 0.1
         return grad_output * grad
@@ -149,7 +150,7 @@ class FriendlyGradSine(Function):
             mask_p = mask_geq0 & mask_singt0 & (grad_output > 0)
             mask_n = mask_geq0 & ~mask_singt0 & (grad_output < 0)
             mask_grad_inner_dir = mask_p | mask_n
-            num_random = mask_grad_inner_dir.uint32().sum()
+            num_random = mask_grad_inner_dir.int().sum()
             if num_random > 0:
                 grad[mask_grad_inner_dir] = torch.rand(num_random, dtype=torch.float32, device=grad.device) * 0.2 - 0.1
         return grad_output * grad
@@ -160,12 +161,14 @@ class SelectBlocker(Function):
         ctx.block_sel = sel
         ctx.override_grad = override_grad
         if override_output is not None:
+            x = x.clone()
             x.__setitem__(sel, override_output)
         return x
 
     @staticmethod
     def backward(ctx, grad_output):
         if ctx.override_grad is not None:
+            grad_output = grad_output.clone()
             grad_output.__setitem__(ctx.block_sel, ctx.override_grad)
         return grad_output, None, None, None
 
@@ -175,34 +178,21 @@ fgacos = FriendlyGradArcCosine.apply
 selblock = SelectBlocker.apply
 
 class LongRangeProj(nn.Module):
-    def __init__(self, height=None, width=None, radius_std_init=1.):
+    def __init__(self, radius_std_init=1.):
         super(LongRangeProj, self).__init__()
         self._float32_eps = np.finfo(np.float32).eps.item()
         self.radius_std = nn.Parameter(torch.FloatTensor(1))
         self.angle_std = nn.Parameter(torch.FloatTensor(1))
-        self.height = None
-        self.width = None
-        self._init_buffer(height, width)
 
         # TODO: improve initialization
         self.radius_std.data.fill_(radius_std_init)
         self.angle_std.data.fill_(np.pi)
 
-    def _init_buffer(self, height, width, device=torch.device("cpu")):
-        if self.width != width or (hasattr(self, "x_out") and self.x_out.device != device):
-            self.width = width
-            if width is not None:
-                self.x_out = torch.arange(width, dtype=torch.float32, device=device).view(1, -1)
-
-        if self.height != height or (hasattr(self, "y_out") and self.y_out.device != device):
-            self.height = height
-            if height is not None:
-                self.y_out = torch.arange(height, dtype=torch.float32, device=device).view(-1, 1)
-
-    def _proj(self, force_field, cx, cy, radius_mean, radius_std, angle_mean, angle_std):
+    def _proj(self, force_field, force_norm, cx, cy, radius_mean, radius_std, angle_mean, angle_std):
         """
         Arguments:
             force_field {torch.FloatTensor} -- [2 x h x w]
+            force_norm {torch.FloatTensor} -- [h x w]
             cx {int} -- center x
             cy {int} -- center y
             radius_mean {torch.FloatTensor} -- [batch_size x channel_size]
@@ -221,17 +211,21 @@ class LongRangeProj(nn.Module):
         cx = int(cx.item())
         cy = int(cy.item())
 
-        force_norm = force_field.norm(dim=0).view(1, 1, height, width).repeat(batch_size, channel_size, 1, 1)
-
         radius_mean = radius_mean.abs().view(batch_size, channel_size, 1, 1)
-        radius_dist = torch.exp(-(force_norm - radius_mean)**2 / 2 / radius_std**2)
+        radius_dist = torch.exp(-(force_norm.expand(batch_size, channel_size, -1, -1) - radius_mean)**2 / 2 / radius_std**2)
 
         # batch_size x channel_size x 2
         angle_mean_force = torch.stack([fgcos(angle_mean), fgsin(angle_mean)], dim=2)
+        # Compute cosine similarity between force_field and angle_mean vector
         # Use selblock to fix output and zero grad at the origin point
         # NOTE: selblock IS INPLACE OPERATOR
-        ang_dis_cos = selblock(torch.mm(angle_mean_force.view(-1, 2), force_field.view(2, -1)).view(force_norm.size()), (slice(None), slice(None), cy, cx), 1, 0) / \
-                      selblock(force_norm, (slice(None), slice(None), cy, cx), 1, 0)
+        ang_dis_cos = selblock(
+            torch.mm(
+                angle_mean_force.view(-1, 2),
+                force_field.view(2, -1)
+            ).view(angle_mean_force.size()[:-1]+force_field.size()[1:]),
+            (slice(None), slice(None), cy, cx), 1, 0
+        ) / selblock(force_norm, (cy, cx), 1, 0).expand(batch_size, channel_size, -1, -1)
 
         # sometimes rounding error can be twice the float32_eps
         assert not (ang_dis_cos.data > 1 + 2 * self._float32_eps).any() and not (ang_dis_cos.data < -1 - 2 * self._float32_eps).any()
@@ -247,9 +241,11 @@ class LongRangeProj(nn.Module):
         dist = radius_dist * ang_dist
         return dist
 
-    def forward(self, origin_x, origin_y, radius, angle, confidence, height=None, width=None):
+    def forward(self, force_field, force_norm, origin_x, origin_y, radius, angle, confidence):
         """
         Arguments:
+            force_field {torch.FloatTensor} -- [nh x nw x 2 x height x width]
+            force_norm {torch.FloatTensor} -- [nh x nw x height x width]
             origin_x {torch.FloatTensor} -- [nw]
             origin_y {torch.FloatTensor} -- [nh]
             radius {torch.FloatTensor} -- [nb x nh x nw x nchan]
@@ -258,17 +254,15 @@ class LongRangeProj(nn.Module):
         """
         batch_size = radius.size(0)
         channel_size = radius.size(3)
-        if height is not None and width is not None:
-            self._init_buffer(height, width, device=radius.device)
+
         out = None
         # TODO: random drop out to ease training (when random, should we disable confidence?)
         for iy in range(radius.size(1)):
-            force_y = self.y_out - origin_y[iy]
             for ix in range(radius.size(2)):
-                force_x = self.x_out - origin_x[ix]
-                force_field = torch.stack([force_x.repeat(self.height, 1), force_y.repeat(1, self.width)], dim=0)
+                # FIXME:
+                # proj = \
                 proj = confidence[:, iy, ix].view(batch_size, channel_size, 1, 1) * \
-                       self._proj(force_field, origin_x[ix], origin_y[iy], radius[:, iy, ix], self.radius_std, angle[:, iy, ix], self.angle_std)
+                       self._proj(force_field[iy, ix], force_norm[iy, ix], origin_x[ix], origin_y[iy], radius[:, iy, ix], self.radius_std, angle[:, iy, ix], self.angle_std)
                 if out is None:
                     out = proj
                 else:
@@ -286,10 +280,17 @@ class AutoCorrProj(nn.Module):
                                             nn.Sigmoid())
         # TODO: improve initialization
         self.projector = LongRangeProj(radius_std_init=10)
-        self.n_corr_h = None
-        self.n_corr_w = None
         self.in_channels = in_channels
         self.out_channels = out_channels
+
+        self._n_corr_h = None
+        self._n_corr_w = None
+        self._height = None
+        self._width = None
+        self._force_field = None
+        self._force_norm = None
+        self._origin_x = None
+        self._origin_y = None
 
         # For finetune
         # TODO: improve initialization
@@ -300,18 +301,30 @@ class AutoCorrProj(nn.Module):
         self.conf_regressor[0].weight.data.zero_()
         self.conf_regressor[0].bias.data.zero_()
 
-    def _init_buffer(self, n_corr_h, n_corr_w, device=torch.device("cpu")):
-        if self.n_corr_w != n_corr_w or (hasattr(self, "origin_x") and self.origin_x.device != device):
-            self.n_corr_w = n_corr_w
-            origin_x = torch.arange(n_corr_w, dtype=torch.float32, device=device)
-            origin_x = origin_x * self.acorr2d.corr_stride[1] - self.acorr2d.pad.left + self.acorr2d.corr_kernel_size[1] // 2
-            self.origin_x = origin_x
+    def _init_force(self, n_corr_h, n_corr_w, height, width, device=torch.device("cpu")):
+        if self._n_corr_h != n_corr_h or self._n_corr_w != n_corr_w or self._height != height or self._width != width or self._force_field.device != device:
+            self._n_corr_h = n_corr_h
+            self._n_corr_w = n_corr_w
+            self._height = height
+            self._width = width
 
-        if self.n_corr_h != n_corr_h or (hasattr(self, "origin_y") and self.origin_y.device != device):
-            self.n_corr_h = n_corr_h
-            origin_y = torch.arange(n_corr_h, dtype=torch.float32, device=device)
-            origin_y = origin_y * self.acorr2d.corr_stride[0] - self.acorr2d.pad.top + self.acorr2d.corr_kernel_size[0] // 2
-            self.origin_y = origin_y
+            x_orig = torch.arange(n_corr_w, dtype=torch.float32, device=device)
+            x_orig = x_orig * self.acorr2d.corr_stride[1] - self.acorr2d.pad.left + self.acorr2d.corr_kernel_size[1] // 2
+            y_orig = torch.arange(n_corr_h, dtype=torch.float32, device=device)
+            y_orig = y_orig * self.acorr2d.corr_stride[0] - self.acorr2d.pad.top + self.acorr2d.corr_kernel_size[0] // 2
+            self._origin_x = x_orig
+            self._origin_y = y_orig
+
+            x_orig = x_orig.view(1, -1, 1, 1)
+            y_orig = y_orig.view(-1, 1, 1, 1)
+            x_out = torch.arange(width, dtype=torch.float32, device=device).view(1, 1, 1, -1)
+            y_out = torch.arange(height, dtype=torch.float32, device=device).view(1, 1, -1, 1)
+
+            self._force_field = torch.stack([
+                    (x_out-x_orig).expand(n_corr_h, -1, height, -1),
+                    (y_out-y_orig).expand(-1, n_corr_w, -1, width)
+                ], dim=2)
+            self._force_norm = torch.norm(self._force_field, dim=2)
 
     def _regress(self, x):
         batch_size = x.size(0)
@@ -331,8 +344,28 @@ class AutoCorrProj(nn.Module):
         return radius, angle, conf, n_corr_h, n_corr_w
 
     def forward(self, inp):
+        height = inp.size(2)
+        width = inp.size(3)
+        # b x nh x nw x chan
         radius, angle, conf, n_corr_h, n_corr_w = self._regress(inp)
-        self._init_buffer(n_corr_h, n_corr_w, device=inp.device)
+        self._init_force(n_corr_h, n_corr_w, height, width, device=inp.device)
 
-        out = self.projector(self.origin_x, self.origin_y, radius, angle, conf, height=inp.size(2), width=inp.size(3))
+
+        # b x chan x h x w
+        out = self.projector(self._force_field, self._force_norm, self._origin_x, self._origin_y, radius, angle, conf)
+        if config.vis:
+            print(radius)
+            print(angle)
+            print(conf)
+            import pdb; pdb.set_trace()
+            import matplotlib.pyplot as plt
+            import cv2
+            fig, axes = plt.subplots(2, 10, squeeze=False)
+            for row, axes_row in enumerate(axes):
+                # img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                fts = out.data[row].cpu().numpy()
+                for col, ax in enumerate(axes_row):
+                    ax.imshow(fts[col])
+            plt.show()
+
         return out
