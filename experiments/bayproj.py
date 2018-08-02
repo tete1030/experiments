@@ -191,8 +191,8 @@ class Experiment(BaseExperiment):
             else:
                 loss += (outv - gtv).pow(2).mean().sqrt()
 
-        if count_out_total > 0:
-            loss += self.hparams["model"]["loss_outsider_cof"] * loss_out_total / count_out_total
+        if count_out_total.sum().item() > 0:
+            loss += self.hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / count_out_total.sum()
 
         if (loss.data != loss.data).any():
             import pdb; pdb.set_trace()
