@@ -172,14 +172,15 @@ baybase:
 bayproj:
     <<: *DEFAULT
     name: baybase
-    id: 7
+    id: 8
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 200
-    schedule: [76, 92, 102]
+    schedule: [100]
     train_batch: 32
     test_batch: 32
     model:
+        bayproj_lr: 5.e-4
         loss_outsider_cof: 0.001
         inp_shape: [192, 256]
         out_shape: [48, 64]
