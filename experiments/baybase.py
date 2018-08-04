@@ -32,7 +32,7 @@ FACTOR = 4
 class Experiment(BaseExperiment):
     def init(self):
         self.num_parts = datasets.mscoco.NUM_PARTS
-        use_pretrained = (config.resume is not None)
+        use_pretrained = (config.resume is None and self.hparams["model"]["resnet_pretrained"] is True)
         self.model = DataParallelImpl(BayBaseline(self.hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=use_pretrained).cuda())
         self.criterion = MSELoss().cuda()
         self.optimizer = torch.optim.Adam(filter(lambda x: x.requires_grad, self.model.parameters()),
@@ -403,6 +403,7 @@ def resnet50(pretrained=False, **kwargs):
     """
     model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
     if pretrained:
+        print("Loading pretrained resnet50 ...")
         from collections import OrderedDict
         state_dict = model.state_dict()
         pretrained_state_dict = torch.load("pretrained/resnet50-19c8e357.pth")
@@ -421,6 +422,7 @@ def resnet101(pretrained=False, **kwargs):
     """
     model = ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
     if pretrained:
+        print("Loading pretrained resnet101 ...")
         from collections import OrderedDict
         state_dict = model.state_dict()
         pretrained_state_dict = torch.load("pretrained/resnet101-19c8e357.pth")

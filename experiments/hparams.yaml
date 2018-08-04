@@ -160,6 +160,7 @@ baybase:
     train_batch: 32
     test_batch: 32
     model:
+        resnet_pretrained: true
         inp_shape: [192, 256]
         out_shape: [48, 64]
         gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
@@ -180,6 +181,7 @@ bayproj:
     train_batch: 32
     test_batch: 32
     model:
+        resnet_pretrained: true
         bayproj_lr: 5.e-4
         loss_outsider_cof: 0.001
         inp_shape: [192, 256]
