@@ -178,17 +178,19 @@ fgacos = FriendlyGradArcCosine.apply
 selblock = SelectBlocker.apply
 
 class LongRangeProj(nn.Module):
-    def __init__(self, radius_std_init=1.):
+    def __init__(self, channel_size=None, radius_std_init=1., input_std=False):
         super(LongRangeProj, self).__init__()
         self._float32_eps = np.finfo(np.float32).eps.item()
-        self.radius_std = nn.Parameter(torch.FloatTensor(1))
-        self.angle_std = nn.Parameter(torch.FloatTensor(1))
+        self.input_std = input_std
+        if not input_std:
+            self.radius_std = nn.Parameter(torch.FloatTensor(channel_size))
+            self.angle_std = nn.Parameter(torch.FloatTensor(channel_size))
 
-        # TODO: improve initialization
-        self.radius_std.data.fill_(radius_std_init)
-        self.angle_std.data.fill_(np.pi)
+            # TODO: improve initialization
+            self.radius_std.data.uniform_(radius_std_init * (1-0.2), radius_std_init * (1+0.2))
+            self.angle_std.data.uniform_(np.pi * (1-0.2), np.pi * (1+0.2))
 
-    def _proj(self, force_field, force_norm, cx, cy, radius_mean, radius_std, angle_mean, angle_std):
+    def _proj(self, force_field, force_norm, cx, cy, radius_mean, angle_mean, radius_std, angle_std):
         """
         Arguments:
             force_field {torch.FloatTensor} -- [2 x h x w]
@@ -196,9 +198,9 @@ class LongRangeProj(nn.Module):
             cx {int} -- center x
             cy {int} -- center y
             radius_mean {torch.FloatTensor} -- [batch_size x channel_size]
-            radius_std {torch.FloatTensor} -- [1]
             angle_mean {torch.FloatTensor} -- [batch_size x channel_size]
-            angle_std {torch.FloatTensor} -- [1]
+            radius_std {torch.FloatTensor} -- [channel_size] or [batch_size x channel_size]
+            angle_std {torch.FloatTensor} -- [channel_size] or [batch_size x channel_size]
         
         Return:
             {torch.FloatTensor} -- [batch_size x channel_size x h x w]
@@ -212,6 +214,7 @@ class LongRangeProj(nn.Module):
         cy = int(cy.item())
 
         radius_mean = radius_mean.abs().view(batch_size, channel_size, 1, 1)
+        radius_std = radius_std.view(1 if radius_std.dim() == 1 else batch_size, channel_size, 1, 1)
         radius_dist = torch.exp(-(force_norm.expand(batch_size, channel_size, -1, -1) - radius_mean)**2 / 2 / radius_std**2)
 
         # batch_size x channel_size x 2
@@ -236,12 +239,13 @@ class LongRangeProj(nn.Module):
         ang_dis_cos[mask_upper] -= ang_dis_cos.data[mask_upper] - 1
         ang_dis_cos[mask_lower] -= ang_dis_cos.data[mask_lower] + 1
 
+        angle_std = angle_std.view(1 if angle_std.dim() == 1 else batch_size, channel_size, 1, 1)
         ang_dist = torch.exp(-fgacos(ang_dis_cos)**2 / 2 / angle_std**2)
 
         dist = radius_dist * ang_dist
         return dist
 
-    def forward(self, force_field, force_norm, origin_x, origin_y, radius, angle, confidence):
+    def forward(self, force_field, force_norm, origin_x, origin_y, radius, angle, confidence, radius_std=None, angle_std=None):
         """
         Arguments:
             force_field {torch.FloatTensor} -- [nh x nw x 2 x height x width]
@@ -251,9 +255,14 @@ class LongRangeProj(nn.Module):
             radius {torch.FloatTensor} -- [nb x nh x nw x nchan]
             angle {torch.FloatTensor} -- [nb x nh x nw x nchan]
             confidence {torch.FloatTensor} -- [nb x nh x nw x nchan]
+            radius_std {torch.FloatTensor} -- [nb x nh x nw x nchan] or None
+            angle_std {torch.FloatTensor} -- [nb x nh x nw x nchan] or None
         """
         batch_size = radius.size(0)
         channel_size = radius.size(3)
+
+        if self.input_std:
+            assert radius_std is not None and angle_std is not None
 
         out = None
         # TODO: random drop out to ease training (when random, should we disable confidence?)
@@ -262,7 +271,14 @@ class LongRangeProj(nn.Module):
                 # FIXME:
                 # proj = \
                 proj = confidence[:, iy, ix].view(batch_size, channel_size, 1, 1) * \
-                       self._proj(force_field[iy, ix], force_norm[iy, ix], origin_x[ix], origin_y[iy], radius[:, iy, ix], self.radius_std, angle[:, iy, ix], self.angle_std)
+                       self._proj(force_field[iy, ix],
+                                  force_norm[iy, ix],
+                                  origin_x[ix],
+                                  origin_y[iy],
+                                  radius[:, iy, ix],
+                                  angle[:, iy, ix],
+                                  radius_std[:, iy, ix] if self.input_std else self.radius_std,
+                                  angle_std[:, iy, ix] if self.input_std else self.angle_std)
                 if out is None:
                     out = proj
                 else:
@@ -275,11 +291,12 @@ class AutoCorrProj(nn.Module):
         super(AutoCorrProj, self).__init__()
         self.acorr2d = AutoCorr2D(in_channels, None, corr_channels, corr_kernel_size, corr_stride, pad=pad, permute=False)
         self.radius_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
-        self.angle_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)        
-        self.conf_regressor = nn.Sequential(nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True),
-                                            nn.Sigmoid())
+        self.angle_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
+        self.radius_std_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
+        self.angle_std_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
+        self.conf_regressor = nn.Sequential(nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True))
         # TODO: improve initialization
-        self.projector = LongRangeProj(radius_std_init=10)
+        self.projector = LongRangeProj(input_std=True)
         self.in_channels = in_channels
         self.out_channels = out_channels
 
@@ -298,6 +315,8 @@ class AutoCorrProj(nn.Module):
         self.radius_regressor.bias.data.uniform_(0, 0.5)
         self.angle_regressor.weight.data.uniform_(-1e-3, 1e-3)
         self.angle_regressor.bias.data.uniform_(-np.pi, np.pi)
+        self.radius_std_regressor.bias.data.fill_(10)
+        self.angle_std_regressor.bias.data.fill_(np.pi)
         self.conf_regressor[0].weight.data.zero_()
         self.conf_regressor[0].bias.data.zero_()
 
@@ -339,9 +358,11 @@ class AutoCorrProj(nn.Module):
         radius = self.radius_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
         # TODO: angle periodicity
         angle = self.angle_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
+        radius_std = self.radius_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
+        angle_std = self.angle_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
         conf = self.conf_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
 
-        return radius, angle, conf, n_corr_h, n_corr_w
+        return radius, angle, radius_std, angle_std, conf, n_corr_h, n_corr_w
 
     @staticmethod
     def _sum_outsider(radius, angle, origin_x, origin_y, height, width):
@@ -363,13 +384,13 @@ class AutoCorrProj(nn.Module):
         height = inp.size(2)
         width = inp.size(3)
         # b x nh x nw x chan
-        radius, angle, conf, n_corr_h, n_corr_w = self._regress(inp)
+        radius, angle, radius_std, angle_std, conf, n_corr_h, n_corr_w = self._regress(inp)
         self._init_force(n_corr_h, n_corr_w, height, width, device=inp.device)
 
         loss_out_total, count_out_total = self._sum_outsider(radius, angle, self._origin_x, self._origin_y, height, width)
 
         # b x chan x h x w
-        out = self.projector(self._force_field, self._force_norm, self._origin_x, self._origin_y, radius, angle, conf)
+        out = self.projector(self._force_field, self._force_norm, self._origin_x, self._origin_y, radius, angle, conf, radius_std=radius_std, angle_std=angle_std)
         if config.vis:
             print(radius)
             print(angle)
