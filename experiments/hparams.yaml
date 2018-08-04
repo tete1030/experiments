@@ -178,11 +178,11 @@ bayproj:
     lr_gamma: 0.5
     epochs: 200
     schedule: [100]
-    train_batch: 128
-    test_batch: 128
+    train_batch: 32
+    test_batch: 32
     model:
         resnet_pretrained: false
-        bayproj_lr: 5.e-4
+        bayproj_lr: 1.e-4
         loss_outsider_cof: 0.001
         inp_shape: [192, 256]
         out_shape: [48, 64]
