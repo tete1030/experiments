@@ -24,10 +24,10 @@ import cv2
 
 from utils.sync_batchnorm import SynchronizedBatchNorm2d, DataParallelWithCallback
 
+FACTOR = 4
+
 DataParallelImpl = DataParallelWithCallback
 BatchNorm2dImpl = SynchronizedBatchNorm2d
-
-FACTOR = 4
 
 class Experiment(BaseExperiment):
     def init(self):
