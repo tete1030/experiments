@@ -266,17 +266,20 @@ class LongRangeProj(nn.Module):
             force_norm {torch.FloatTensor} -- [nh x nw x height x width]
             origin_x {torch.FloatTensor} -- [nw]
             origin_y {torch.FloatTensor} -- [nh]
-            radius {torch.FloatTensor} -- [nb x nh x nw x nchan]
+            radius {torch.FloatTensor} -- [nb x nh x nw x nchan], >= 0
             angle {torch.FloatTensor} -- [nb x nh x nw x nchan]
             confidence {torch.FloatTensor} -- [nb x nh x nw x nchan]
-            radius_std {torch.FloatTensor} -- [nb x nh x nw x nchan] or None
-            angle_std {torch.FloatTensor} -- [nb x nh x nw x nchan] or None
+            radius_std {torch.FloatTensor} -- [nb x nh x nw x nchan] or None, > 0
+            angle_std {torch.FloatTensor} -- [nb x nh x nw x nchan] or None, > 0
         """
         batch_size = radius.size(0)
         channel_size = radius.size(3)
 
         if self.input_std:
             assert radius_std is not None and angle_std is not None
+        else:
+            radius_std = self.radius_std.clamp(min=0.3)
+            angle_std = self.angle_std.clamp(min=np.pi / 60)
 
         out = None
         # TODO: random drop out to ease training (when random, should we disable confidence?)
@@ -289,8 +292,8 @@ class LongRangeProj(nn.Module):
                                   origin_y[iy],
                                   radius[:, iy, ix],
                                   angle[:, iy, ix],
-                                  radius_std[:, iy, ix] if self.input_std else self.radius_std,
-                                  angle_std[:, iy, ix] if self.input_std else self.angle_std)
+                                  radius_std[:, iy, ix] if self.input_std else radius_std,
+                                  angle_std[:, iy, ix] if self.input_std else angle_std)
                 if out is None:
                     out = proj
                 else:
@@ -366,12 +369,12 @@ class AutoCorrProj(nn.Module):
         # corrs shape: b*ch*cw x chan x kh x kw
         corrs = corrs.view(batch_size*n_corr_h*n_corr_w, corrs.size(3), corrs.size(4), corrs.size(5))
         # radius shape: b*ch*cw x chan x 1 x 1
-        # TODO: radius could be negative, or too large
-        radius = self.radius_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
-        # TODO: angle periodicity
+        # NOTE: Do not use nn.ReLU as of pytorch 0.4.1, as it won't propagate NaN
+        radius = torch.relu(self.radius_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels))
+        # NOTE: Use clamp instead of nn.Threshold as of pytorch 0.4.1, as the latter won't propagate NaN
         angle = self.angle_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
-        radius_std = self.radius_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
-        angle_std = self.angle_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
+        radius_std = self.radius_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels).clamp(min=0.3)
+        angle_std = self.angle_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels).clamp(min=np.pi / 60)
         conf = self.conf_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
 
         return radius, angle, radius_std, angle_std, conf, n_corr_h, n_corr_w
