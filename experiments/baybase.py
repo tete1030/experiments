@@ -18,6 +18,7 @@ from pose.utils.transforms import fliplr_pts
 from pose.utils.misc import adjust_learning_rate
 
 from pose.models.bayproj import AutoCorr2D
+from pose.models.common import StrictNaNReLU
 from .baseexperiment import BaseExperiment
 
 import cv2
@@ -266,7 +267,7 @@ class BasicBlock(nn.Module):
         super(BasicBlock, self).__init__()
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = BatchNorm2dImpl(planes)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = StrictNaNReLU(inplace=True)
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = BatchNorm2dImpl(planes)
         self.downsample = downsample
@@ -302,7 +303,7 @@ class Bottleneck(nn.Module):
         self.bn2 = BatchNorm2dImpl(planes)
         self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
         self.bn3 = BatchNorm2dImpl(planes * 4)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = StrictNaNReLU(inplace=True)
         self.downsample = downsample 
         self.stride = stride
         if acorr2d:
@@ -346,7 +347,7 @@ class ResNet(nn.Module):
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
                                bias=False)
         self.bn1 = BatchNorm2dImpl(64)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = StrictNaNReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
@@ -462,7 +463,7 @@ class globalNet(nn.Module):
         layers.append(nn.Conv2d(input_size, 256,
             kernel_size=1, stride=1, bias=False))
         layers.append(BatchNorm2dImpl(256))
-        layers.append(nn.ReLU(inplace=True))
+        layers.append(StrictNaNReLU(inplace=True))
 
         return nn.Sequential(*layers)
 
@@ -480,7 +481,7 @@ class globalNet(nn.Module):
         layers.append(nn.Conv2d(256, 256,
             kernel_size=1, stride=1, bias=False))
         layers.append(BatchNorm2dImpl(256))
-        layers.append(nn.ReLU(inplace=True))
+        layers.append(StrictNaNReLU(inplace=True))
 
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
