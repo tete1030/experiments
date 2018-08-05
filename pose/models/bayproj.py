@@ -221,7 +221,6 @@ class LongRangeProj(nn.Module):
         angle_mean_force = torch.stack([fgcos(angle_mean), fgsin(angle_mean)], dim=2)
         # Compute cosine similarity between force_field and angle_mean vector
         # Use selblock to fix output and zero grad at the origin point
-        # NOTE: selblock IS INPLACE OPERATOR
         ang_dis_cos = selblock(
             torch.mm(
                 angle_mean_force.view(-1, 2),
@@ -243,6 +242,21 @@ class LongRangeProj(nn.Module):
         ang_dist = torch.exp(-fgacos(ang_dis_cos)**2 / 2 / angle_std**2)
 
         dist = radius_dist * ang_dist
+
+        if config.debug_nan:
+            def get_back_hook(hook_name):
+                def back_hook(grad):
+                    for g in grad:
+                        if (g.data != g.data).any():
+                            print("[LongRangeProj]" + hook_name + " contains NaN")
+                            import ipdb; ipdb.set_trace()
+                return back_hook
+
+            ang_dis_cos.register_hook(get_back_hook("ang_dis_cos"))
+            ang_dist.register_hook(get_back_hook("ang_dist"))
+            radius_dist.register_hook(get_back_hook("radius_dist"))
+            dist.register_hook(get_back_hook("dist"))
+
         return dist
 
     def forward(self, force_field, force_norm, origin_x, origin_y, radius, angle, confidence, radius_std=None, angle_std=None):
@@ -268,8 +282,6 @@ class LongRangeProj(nn.Module):
         # TODO: random drop out to ease training (when random, should we disable confidence?)
         for iy in range(radius.size(1)):
             for ix in range(radius.size(2)):
-                # FIXME:
-                # proj = \
                 proj = confidence[:, iy, ix].view(batch_size, channel_size, 1, 1) * \
                        self._proj(force_field[iy, ix],
                                   force_norm[iy, ix],
@@ -294,7 +306,7 @@ class AutoCorrProj(nn.Module):
         self.angle_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
         self.radius_std_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
         self.angle_std_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
-        self.conf_regressor = nn.Sequential(nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True))
+        self.conf_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
         # TODO: improve initialization
         self.projector = LongRangeProj(input_std=True)
         self.in_channels = in_channels
@@ -317,8 +329,8 @@ class AutoCorrProj(nn.Module):
         self.angle_regressor.bias.data.uniform_(-np.pi, np.pi)
         self.radius_std_regressor.bias.data.fill_(10)
         self.angle_std_regressor.bias.data.fill_(np.pi)
-        self.conf_regressor[0].weight.data.zero_()
-        self.conf_regressor[0].bias.data.zero_()
+        self.conf_regressor.weight.data.zero_()
+        self.conf_regressor.bias.data.zero_()
 
     def _init_force(self, n_corr_h, n_corr_w, height, width, device=torch.device("cpu")):
         if self._n_corr_h != n_corr_h or self._n_corr_w != n_corr_w or self._height != height or self._width != width or self._force_field.device != device:
@@ -391,11 +403,14 @@ class AutoCorrProj(nn.Module):
 
         # b x chan x h x w
         out = self.projector(self._force_field, self._force_norm, self._origin_x, self._origin_y, radius, angle, conf, radius_std=radius_std, angle_std=angle_std)
-        if config.vis:
+        
+        if config.debug:
             print(radius)
             print(angle)
             print(conf)
             import ipdb; ipdb.set_trace()
+
+        if config.vis:
             import matplotlib.pyplot as plt
             import cv2
             fig, axes = plt.subplots(2, 10, squeeze=False)

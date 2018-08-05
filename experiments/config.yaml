@@ -11,6 +11,7 @@ default: &DEFAULT
     resume: null
     store_lim: 10
     vis: false
+    debug_nan: false
 
 profile: &PROFILE
     <<: *DEFAULT
@@ -22,6 +23,7 @@ debug: &DEBUG
     workers: 0
     debug: true
     vis: true
+    debug_nan: true
 
 evaluate: &EVALUATE
     <<: *DEFAULT

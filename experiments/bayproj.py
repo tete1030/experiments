@@ -97,6 +97,32 @@ class Experiment(BaseExperiment):
         self.test_collate_fn = datasets.COCOSinglePose.collate_function
         self.worker_init_fn = datasets.mscoco.worker_init
         self.print_iter_start = " | "
+        if config.debug_nan:
+            self._setup_debug_nan()
+
+    def _setup_debug_nan(self):
+        def get_backward_hook(mod_name):
+                def _backward_hook(module, grad_input, grad_output):
+                    exp = self
+                    for ginp in grad_input:
+                        if isinstance(ginp, torch.Tensor) and (ginp.data != ginp.data).any():
+                            print(mod_name + " contains NaN during backward")
+                            import ipdb; ipdb.set_trace()
+                return _backward_hook
+
+        def get_forward_hook(mod_name):
+            def _forward_hook(module, input, output):
+                exp = self
+                for out in output:
+                    if isinstance(out, torch.Tensor) and (out.data != out.data).any():
+                        print(mod_name + " contains NaN during forward")
+                        import ipdb; ipdb.set_trace()
+            return _forward_hook
+
+        print("!!!!!PERFORMANCE WARN: FORWARD BACKWARD NAN DEBUGGING ENABLED!!!!!")
+        for modname, mod in self.model.named_modules():
+            mod.register_forward_hook(get_forward_hook(modname))
+            mod.register_backward_hook(get_backward_hook(modname))
 
     def evaluate(self, preds, step):
         def _summarize(eval_result, params, ap, iou_thr=None, area_rng="all", max_dets=100, title=None):
