@@ -40,8 +40,10 @@ BatchNorm2dImpl = GroupNormWrapper
 class Experiment(BaseExperiment):
     def init(self):
         self.num_parts = datasets.mscoco.NUM_PARTS
-        use_pretrained = (config.resume is None and self.hparams["model"]["resnet_pretrained"] is True)
-        self.model = DataParallelImpl(BayProj(self.hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=use_pretrained).cuda())
+        pretrained = self.hparams["model"]["resnet_pretrained"]
+        if config.resume is not None:
+            pretrained = None
+        self.model = DataParallelImpl(BayProj(self.hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda())
         self.criterion = MSELoss().cuda()
 
         extra_mod_parameters = []
@@ -68,7 +70,7 @@ class Experiment(BaseExperiment):
         self.train_dataset = datasets.COCOSinglePose("data/mscoco/images",
                                                self.coco,
                                                "data/mscoco/sp_split.pth",
-                                               "data/mscoco/mean_std.pth",
+                                               "data/mscoco/" + self.hparams["dataset"]["mean_std_file"],
                                                True,
                                                img_res=self.hparams["model"]["inp_shape"],
                                                ext_border=self.hparams["dataset"]["ext_border"],
@@ -82,7 +84,7 @@ class Experiment(BaseExperiment):
         self.val_dataset = datasets.COCOSinglePose("data/mscoco/images",
                                              self.coco,
                                              "data/mscoco/sp_split.pth",
-                                             "data/mscoco/mean_std.pth",
+                                             "data/mscoco/" + self.hparams["dataset"]["mean_std_file"],
                                              False,
                                              img_res=self.hparams["model"]["inp_shape"],
                                              ext_border=self.hparams["dataset"]["ext_border"],
@@ -292,7 +294,7 @@ class Experiment(BaseExperiment):
         return result
 
 class BayProj(nn.Module):
-    def __init__(self, output_shape, num_points, pretrained=True):
+    def __init__(self, output_shape, num_points, pretrained=None):
         super(BayProj, self).__init__()
         # referenced in every copy of modules
         self._intermediate_out = list()
@@ -469,17 +471,17 @@ class ResNet(nn.Module):
 
         return [x4, x3, x2, x1]
 
-def resnet50(pretrained=False, **kwargs):
+def resnet50(pretrained=None, **kwargs):
     """Constructs a ResNet-50 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
     model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
-    if pretrained:
+    if pretrained is not None:
         print("Loading pretrained resnet50 ...")
         from collections import OrderedDict
         state_dict = model.state_dict()
-        pretrained_state_dict = torch.load("pretrained/resnet50-19c8e357.pth")
+        pretrained_state_dict = torch.load(pretrained)
         for k, v in pretrained_state_dict.items():
             if k not in state_dict:
                 continue
@@ -488,17 +490,17 @@ def resnet50(pretrained=False, **kwargs):
     return model
 
 
-def resnet101(pretrained=False, **kwargs):
+def resnet101(pretrained=None, **kwargs):
     """Constructs a ResNet-101 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
     model = ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
-    if pretrained:
+    if pretrained is not None:
         print("Loading pretrained resnet101 ...")
         from collections import OrderedDict
         state_dict = model.state_dict()
-        pretrained_state_dict = torch.load("pretrained/resnet101-19c8e357.pth")
+        pretrained_state_dict = torch.load(pretrained)
         for k, v in pretrained_state_dict.items():
             if k not in state_dict:
                 continue

@@ -215,7 +215,7 @@ class LongRangeProj(nn.Module):
 
         radius_mean = radius_mean.abs().view(batch_size, channel_size, 1, 1)
         radius_std = radius_std.view(1 if radius_std.dim() == 1 else batch_size, channel_size, 1, 1)
-        radius_dist = torch.exp(-(force_norm.expand(batch_size, channel_size, -1, -1) - radius_mean)**2 / 2 / radius_std**2)
+        radius_dist = torch.exp(-(force_norm.expand(batch_size, channel_size, -1, -1) - radius_mean)**2 / 2 / (radius_std**2 + 0.01))
 
         # batch_size x channel_size x 2
         angle_mean_force = torch.stack([fgcos(angle_mean), fgsin(angle_mean)], dim=2)
@@ -239,7 +239,7 @@ class LongRangeProj(nn.Module):
         ang_dis_cos[mask_lower] -= ang_dis_cos.data[mask_lower] + 1
 
         angle_std = angle_std.view(1 if angle_std.dim() == 1 else batch_size, channel_size, 1, 1)
-        ang_dist = torch.exp(-fgacos(ang_dis_cos)**2 / 2 / angle_std**2)
+        ang_dist = torch.exp(-fgacos(ang_dis_cos)**2 / 2 / (angle_std**2 + 0.0001))
 
         dist = radius_dist * ang_dist
 
@@ -278,8 +278,8 @@ class LongRangeProj(nn.Module):
         if self.input_std:
             assert radius_std is not None and angle_std is not None
         else:
-            radius_std = self.radius_std.clamp(min=0.3)
-            angle_std = self.angle_std.clamp(min=np.pi / 60)
+            radius_std = self.radius_std
+            angle_std = self.angle_std
 
         out = None
         # TODO: random drop out to ease training (when random, should we disable confidence?)
@@ -370,11 +370,11 @@ class AutoCorrProj(nn.Module):
         corrs = corrs.view(batch_size*n_corr_h*n_corr_w, corrs.size(3), corrs.size(4), corrs.size(5))
         # radius shape: b*ch*cw x chan x 1 x 1
         # NOTE: Do not use nn.ReLU as of pytorch 0.4.1, as it won't propagate NaN
-        radius = torch.relu(self.radius_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels))
+        radius = self.radius_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
         # NOTE: Use clamp instead of nn.Threshold as of pytorch 0.4.1, as the latter won't propagate NaN
         angle = self.angle_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
-        radius_std = self.radius_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels).clamp(min=0.3)
-        angle_std = self.angle_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels).clamp(min=np.pi / 60)
+        radius_std = self.radius_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
+        angle_std = self.angle_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
         conf = self.conf_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
 
         return radius, angle, radius_std, angle_std, conf, n_corr_h, n_corr_w

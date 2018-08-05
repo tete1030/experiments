@@ -160,11 +160,12 @@ baybase:
     train_batch: 32
     test_batch: 32
     model:
-        resnet_pretrained: true
+        resnet_pretrained: pretrained/resnet50_gn.pth
         inp_shape: [192, 256]
         out_shape: [48, 64]
         gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
     dataset:
+        mean_std_file: mean_std_resnet_pretrained.pth
         ext_border: [0.1, 0.15]
         scale_factor: 0.25
         rotate_factor: 30
@@ -181,13 +182,14 @@ bayproj:
     train_batch: 32
     test_batch: 32
     model:
-        resnet_pretrained: false
+        resnet_pretrained: pretrained/resnet50_gn.pth
         bayproj_lr: 1.e-4
         loss_outsider_cof: 0.001
         inp_shape: [192, 256]
         out_shape: [48, 64]
         gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
     dataset:
+        mean_std_file: mean_std_resnet_pretrained.pth
         ext_border: [0.1, 0.15]
         scale_factor: 0.25
         rotate_factor: 30
