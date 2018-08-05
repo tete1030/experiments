@@ -180,7 +180,7 @@ class Experiment(BaseExperiment):
                 loss += (outv - gtv).pow(2).mean().sqrt()
 
         if (loss.data != loss.data).any():
-            import pdb; pdb.set_trace()
+            import ipdb; ipdb.set_trace()
 
         if not is_train or config.vis:
             pred, score = parse_map(output_vars[-1])
@@ -232,7 +232,7 @@ class Experiment(BaseExperiment):
                     plt.show()
 
             # if loss.item() > 0.1:
-            #     import pdb; pdb.set_trace()
+            #     import ipdb; ipdb.set_trace()
         epoch_ctx.add_scalar("loss", loss.item(), progress["iter_len"])
 
         result = {

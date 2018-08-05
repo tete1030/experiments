@@ -395,7 +395,7 @@ class AutoCorrProj(nn.Module):
             print(radius)
             print(angle)
             print(conf)
-            import pdb; pdb.set_trace()
+            import ipdb; ipdb.set_trace()
             import matplotlib.pyplot as plt
             import cv2
             fig, axes = plt.subplots(2, 10, squeeze=False)
