@@ -302,18 +302,22 @@ class LongRangeProj(nn.Module):
         return out
 
 class AutoCorrProj(nn.Module):
-    def __init__(self, in_channels, out_channels, corr_channels, corr_kernel_size, corr_stride, pad=False):
+    def __init__(self, in_channels, out_channels, corr_channels, corr_kernel_size, corr_stride, pad=False, regress_std=True):
         super(AutoCorrProj, self).__init__()
         self.acorr2d = AutoCorr2D(in_channels, None, corr_channels, corr_kernel_size, corr_stride, pad=pad, permute=False)
         self.radius_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
         self.angle_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
-        self.radius_std_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
-        self.angle_std_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
+        if regress_std:
+            self.radius_std_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
+            self.angle_std_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
+            # TODO: improve initialization
+            self.projector = LongRangeProj(input_std=True)
+        else:
+            self.projector = LongRangeProj(input_std=False, channel_size=out_channels, radius_std_init=10)
         self.conf_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
-        # TODO: improve initialization
-        self.projector = LongRangeProj(input_std=True)
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.regress_std = regress_std
 
         self._n_corr_h = None
         self._n_corr_w = None
@@ -330,8 +334,9 @@ class AutoCorrProj(nn.Module):
         self.radius_regressor.bias.data.uniform_(0, 0.5)
         self.angle_regressor.weight.data.uniform_(-1e-3, 1e-3)
         self.angle_regressor.bias.data.uniform_(-np.pi, np.pi)
-        self.radius_std_regressor.bias.data.fill_(10)
-        self.angle_std_regressor.bias.data.fill_(np.pi)
+        if regress_std:
+            self.radius_std_regressor.bias.data.fill_(10)
+            self.angle_std_regressor.bias.data.fill_(np.pi)
         self.conf_regressor.weight.data.zero_()
         self.conf_regressor.bias.data.zero_()
 
@@ -373,8 +378,12 @@ class AutoCorrProj(nn.Module):
         radius = self.radius_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
         # NOTE: Use clamp instead of nn.Threshold as of pytorch 0.4.1, as the latter won't propagate NaN
         angle = self.angle_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
-        radius_std = self.radius_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
-        angle_std = self.angle_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
+        if self.regress_std:
+            radius_std = self.radius_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
+            angle_std = self.angle_std_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
+        else:
+            radius_std = None
+            angle_std = None
         conf = self.conf_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
 
         return radius, angle, radius_std, angle_std, conf, n_corr_h, n_corr_w
@@ -391,9 +400,9 @@ class AutoCorrProj(nn.Module):
         bottom_outsd = (proj_cen_y.data >= height)
         loss_out_total = ((proj_cen_x[left_outsd] ** 2).sum() + ((proj_cen_x[right_outsd] - width) ** 2).sum() + \
                           (proj_cen_y[top_outsd] ** 2).sum() + ((proj_cen_y[bottom_outsd] - height) ** 2).sum())
-        count_out_total = (left_outsd | right_outsd | top_outsd | bottom_outsd).int().sum().float()
+        # count_out_total = (left_outsd | right_outsd | top_outsd | bottom_outsd).int().sum().float()
 
-        return loss_out_total, count_out_total
+        return loss_out_total 
 
     def forward(self, inp):
         height = inp.size(2)
@@ -402,7 +411,9 @@ class AutoCorrProj(nn.Module):
         radius, angle, radius_std, angle_std, conf, n_corr_h, n_corr_w = self._regress(inp)
         self._init_force(n_corr_h, n_corr_w, height, width, device=inp.device)
 
-        loss_out_total, count_out_total = self._sum_outsider(radius, angle, self._origin_x, self._origin_y, height, width)
+        loss_out_total = self._sum_outsider(radius, angle, self._origin_x, self._origin_y, height, width)
+        count_point = torch.tensor([radius.size(3) * n_corr_h * n_corr_w], dtype=torch.float, device=loss_out_total.device)
+        loss_in_total = torch.relu(1 - radius).sum()
 
         # b x chan x h x w
         out = self.projector(self._force_field, self._force_norm, self._origin_x, self._origin_y, radius, angle, conf, radius_std=radius_std, angle_std=angle_std)
@@ -424,4 +435,4 @@ class AutoCorrProj(nn.Module):
                     ax.imshow(fts[col])
             plt.show()
 
-        return out, loss_out_total, count_out_total
+        return out, loss_out_total, loss_in_total, count_point

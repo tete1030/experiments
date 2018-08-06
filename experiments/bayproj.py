@@ -210,7 +210,7 @@ class Experiment(BaseExperiment):
         det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
         if config.vis:
             config.cur_img = img
-        output_vars, loss_out_total, count_out_total = self.model(img)
+        output_vars, (loss_out_total, loss_in_total, count_point) = self.model(img)
         assert len(self.model.module._intermediate_out) == 0
         if config.vis:
             config.cur_img = None
@@ -225,8 +225,8 @@ class Experiment(BaseExperiment):
             else:
                 loss += (outv - gtv).pow(2).mean().sqrt()
 
-        if count_out_total.sum().item() > 0:
-            loss += self.hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / count_out_total.sum()
+        loss += self.hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / batch_size / count_point.sum()
+        loss += self.hparams["model"]["loss_close_cof"] * loss_in_total.sum() / batch_size / count_point.sum()
 
         if (loss.data != loss.data).any():
             import ipdb; ipdb.set_trace()
@@ -321,7 +321,7 @@ class BayProj(nn.Module):
                     del self._intermediate_out[i]
                     break
         assert interm_out is not None
-        return global_out, interm_out[0], interm_out[1]
+        return global_out, interm_out
 
 def conv3x3(in_planes, out_planes, stride=1):
     "3x3 convolution with padding"
@@ -378,7 +378,7 @@ class Bottleneck(nn.Module):
             mod = extra_mod[0]
             self._extra_mod_lock = extra_mod[1]
             self._extra_mod_interm_out = extra_mod[2]
-            self.extra_mod = mod(inplanes, inplanes, 32, corr_kernel_size=(7, 7), corr_stride=(3, 3))
+            self.extra_mod = mod(inplanes, inplanes, 32, corr_kernel_size=(7, 7), corr_stride=(3, 3), regress_std=False)
         else:
             self.extra_mod = None
 
@@ -405,7 +405,7 @@ class Bottleneck(nn.Module):
             else:
                 residual = x + extra_out[0]
             with self._extra_mod_lock:
-                self._extra_mod_interm_out.append((extra_out[1], extra_out[2]))
+                self._extra_mod_interm_out.append(extra_out[1:])
 
         out += residual
         out = self.relu(out)
