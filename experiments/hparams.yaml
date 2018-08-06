@@ -176,8 +176,8 @@ bayproj:
     id: 8
     learning_rate: 5.e-4
     lr_gamma: 0.5
-    epochs: 200
-    schedule: [200]
+    epochs: 600
+    schedule: [400]
     train_batch: 128
     test_batch: 128
     model:
