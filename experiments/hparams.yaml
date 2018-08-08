@@ -156,7 +156,7 @@ baybase:
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 200
-    schedule: [76, 92, 102]
+    schedule: [100]
     train_batch: 32
     test_batch: 32
     model:
