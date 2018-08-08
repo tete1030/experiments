@@ -208,10 +208,13 @@ class Experiment(BaseExperiment):
         batch_size = img.size(0)
 
         det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
+        # dirty trick for debug
         if config.vis:
             config.cur_img = img
-        output_vars, (loss_out_total, loss_in_total, count_point) = self.model(img)
+        output_vars, intermediate_out = self.model(img)
+        # Make sure the dirty trick, intermediate_out mechanism, not missing anything
         assert len(self.model.module._intermediate_out) == 0
+        # dirty trick for debug, release
         if config.vis:
             config.cur_img = None
 
@@ -225,8 +228,10 @@ class Experiment(BaseExperiment):
             else:
                 loss += (outv - gtv).pow(2).mean().sqrt()
 
-        loss += self.hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / batch_size / count_point.sum()
-        loss += self.hparams["model"]["loss_close_cof"] * loss_in_total.sum() / batch_size / count_point.sum()
+        if intermediate_out is not None:
+            loss_out_total, loss_in_total, count_point = intermediate_out
+            loss += self.hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / batch_size / count_point.sum()
+            loss += self.hparams["model"]["loss_close_cof"] * loss_in_total.sum() / batch_size / count_point.sum()
 
         if (loss.data != loss.data).any():
             import ipdb; ipdb.set_trace()
@@ -314,13 +319,15 @@ class BayProj(nn.Module):
         res_out = self.resnet50(x)
         global_re, global_out = self.global_net(res_out)
         interm_out = None
-        with self._lock:
-            for i, _int_out in enumerate(self._intermediate_out.copy()):
-                if x.device == _int_out[0].device:
-                    interm_out = _int_out
-                    del self._intermediate_out[i]
-                    break
-        assert interm_out is not None
+        # at least current thread should have pushed one into _intermediate_out
+        if len(self._intermediate_out) > 0:
+            with self._lock:
+                for i, _int_out in enumerate(self._intermediate_out.copy()):
+                    if x.device == _int_out[0].device:
+                        interm_out = _int_out
+                        del self._intermediate_out[i]
+                        break
+            assert interm_out is not None
         return global_out, interm_out
 
 def conv3x3(in_planes, out_planes, stride=1):
