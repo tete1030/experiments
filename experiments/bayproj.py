@@ -232,7 +232,7 @@ class Experiment(BaseExperiment):
             import ipdb; ipdb.set_trace()
 
         if not is_train or config.vis:
-            pred, score = parse_map(output_vars[-1])
+            pred, score = parse_map(output_vars[-1], thres=self.hparams["model"]["parse_threshold"], factor=FACTOR)
             pred_affined = pred.copy()
             for samp_i in range(batch_size):
                 pred_affined[samp_i, :, :2] = kpt_affine(pred_affined[samp_i, :, :2] * FACTOR, np.linalg.pinv(transform_mat[samp_i])[:2])
