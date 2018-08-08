@@ -27,8 +27,13 @@ from utils.sync_batchnorm import SynchronizedBatchNorm2d, DataParallelWithCallba
 
 FACTOR = 4
 
-DataParallelImpl = DataParallelWithCallback
-BatchNorm2dImpl = SynchronizedBatchNorm2d
+class GroupNormWrapper(nn.GroupNorm):
+    def __init__(self, num_features, eps=1e-5, num_groups=32):
+        assert num_features % num_groups == 0, "num_features({}) is not dividend by num_groups({})".format(num_features, num_groups)
+        super(GroupNormWrapper, self).__init__(num_groups, num_features, eps=1e-5)
+
+DataParallelImpl = nn.DataParallel
+BatchNorm2dImpl = GroupNormWrapper
 
 class Experiment(BaseExperiment):
     def init(self):
@@ -495,7 +500,8 @@ class globalNet(nn.Module):
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
-        layers.append(BatchNorm2dImpl(num_class))
+        layers.append(nn.Conv2d(num_class, num_class,
+            kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
 
         return nn.Sequential(*layers)
 
