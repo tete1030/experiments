@@ -427,7 +427,7 @@ class AutoCorrProj(nn.Module):
         if config.vis:
             import matplotlib.pyplot as plt
             import cv2
-            fig, axes = plt.subplots(2, 10, squeeze=False)
+            fig, axes = plt.subplots(out.size(0), 10, squeeze=False)
             for row, axes_row in enumerate(axes):
                 # img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
                 fts = out.data[row].cpu().numpy()
