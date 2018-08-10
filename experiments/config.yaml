@@ -2,7 +2,6 @@ default: &DEFAULT
     workers: 5
     debug: false
     profile: false
-    hyperdash: null
     skip_val: 1
     fast_pass: 0
     handle_sig: true

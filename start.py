@@ -34,6 +34,7 @@ import pose.utils.config as config
 import numpy as np
 import importlib
 from ruamel.yaml import YAML
+from io import StringIO
 
 import collections
 from tensorboardX import SummaryWriter
@@ -51,18 +52,50 @@ def enable_sigint_handler():
             ori_sigint_handler(signal, frame)
         config.sigint_triggered = True
         if type(multiprocessing.current_process()) != multiprocessing.Process:
-            print("SIGINT")
+            print("[SIGINT DETECTED]")
     signal.signal(signal.SIGINT, sigint_handler)
 
-best_acc = 0
+def ask(question, posstr="y", negstr="n", ansretry=False, ansdefault=False):
+    if ansretry is False:
+        ansretry = 1
+    else:
+        assert isinstance(ansretry, int)
 
-def main(args):
-    global best_acc
+    retry_count = 0
+    while True:
+        ans = input(question + " (%s|%s) :" % (posstr, negstr))
+        retry_count += 1
 
-    hparams = get_hparams(args.EXP)
+        if ans == posstr:
+            return True
+        elif ans == negstr:
+            return False
+        else:
+            if retry_count < ansretry:
+                print("[Error] Illegal answer! Retry")
+                continue
+            else:
+                print("[Error] Illegal answer!")
+                return ansdefault
+
+def check_hparams_consistency(old_hparams, new_hparams):
+    def safe_yaml_convert(rt_yaml):
+        sio = StringIO()
+        YAML().dump(rt_yaml, sio)
+        return YAML(typ="safe").load(sio.getvalue())
+
+    if safe_yaml_convert(old_hparams) != safe_yaml_convert(new_hparams):
+        return False
+    return True
+
+def main(args, unknown_args):
+    init_config(args.CONF, args.config)
+    exp_mod = args.EXP
+    hparams = get_hparams(exp_mod)
     exp_name = hparams["name"]
     config.exp_name = exp_name
 
+    # Override config from command line
     if args.override is not None:
         def set_hierarchic_attr(var, var_name_hierarchic, var_value):
             if len(var_name_hierarchic) > 1:
@@ -73,81 +106,62 @@ def main(args):
             set_hierarchic_attr(hparams, var_name.split("."), eval(var_value))
         set_hierarchic_attr = None
 
-    config.checkpoint = config.checkpoint.format(**{'exp': exp_name, 'id': hparams['id']})
+    # Substitude var in configs
+    config.checkpoint = config.checkpoint.format(**{"exp": exp_name, "id": hparams["id"]})
     if config.resume is not None:
-        config.resume = config.resume.format(**{'exp': exp_name, 'id': hparams['id']})
+        config.resume = config.resume.format(**{"exp": exp_name, "id": hparams["id"]})
 
-    hparams_cp_file = os.path.join(config.checkpoint, 'hparams.yaml')
-    if not config.resume and ( \
+    # Check if checkpoint existed
+    hparams_cp_file = os.path.join(config.checkpoint, "hparams.yaml")
+    if config.resume is None and ( \
             detect_checkpoint(checkpoint=config.checkpoint) or \
             os.path.isfile(hparams_cp_file)):
-        print("Exist files in %s" % config.checkpoint)
-        ans_del = input("Do you want to delete files in %s (yes|n): " % config.checkpoint)
-        if ans_del not in ["yes", "n"]:
-            print("Wrong answer. Exit.")
-            sys.exit(1)
-        if ans_del == "yes":
-            print("Deleting %s" % config.checkpoint)
+        if not ask("[Warning] Exist files in %s" % config.checkpoint + "\n" +
+                "Do you want to delete files in %s ?" % config.checkpoint,
+                posstr="yes", negstr="n"):
+            print("[Exit] Will not delete")
+            sys.exit(0)
+        else:
+            print("==> Deleting %s" % config.checkpoint)
             import shutil
             shutil.rmtree(config.checkpoint)
-        else:
-            print("Not delete. Exit.")
-            sys.exit(0)
-
-    print("==> creating model")
 
     if not os.path.isdir(config.checkpoint):
         mkdir_p(config.checkpoint)
 
-    exp_module = importlib.import_module('experiments.' + args.EXP)
-    assert issubclass(exp_module.Experiment, BaseExperiment)
-    exp = exp_module.Experiment(hparams)
-    del hparams
+    # Create experiment
+    print("==> Creating model")
 
-    if config.resume:
-        resume_full = os.path.join(config.resume, args.resume_file)
-        if os.path.isfile(resume_full):
-            hparams_cp_file = os.path.join(config.resume, 'hparams.yaml')
-            if os.path.isfile(hparams_cp_file):
-                with open(hparams_cp_file, 'r') as f:
-                    resume_hparams = YAML(typ='safe').load(f)
-                if resume_hparams != exp.hparams:
-                    print("Warning: hparams from config and from checkpoint are not equal")
-                    if not args.ignore_hparams_differ:
-                        print("In config:")
-                        YAML(typ='safe').dump(exp.hparams, sys.stdout)
-                        print("<<<<\n>>>>\nIn checkpoint:")
-                        YAML(typ='safe').dump(resume_hparams, sys.stdout)
-                        ans = input("Continue (y|n)? ")
-                        if ans != "y":
-                            sys.exit(0)
-                    else:
-                        print("Difference ignored")
-            print("=> loading checkpoint '{}'".format(resume_full))
-            checkpoint = torch.load(resume_full)
-            exp.hparams['before_epoch'] = checkpoint['epoch']
-            exp.model.load_state_dict(checkpoint['state_dict'], strict=not args.no_strict_model_load)
-            if not args.no_criterion_load:
-                exp.criterion.load_state_dict(checkpoint['criterion'])
-            if not args.no_optimizer_load:
-                exp.optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint (epoch {})"
-                  .format(checkpoint['epoch']))
-            del checkpoint
-        else:
-            print("=> no checkpoint found at '{}'".format(config.resume))
-            sys.exit(1)
+    exp_module = importlib.import_module("experiments." + args.EXP)
+    assert issubclass(exp_module.Experiment, BaseExperiment), args.EXP + ".Experiment is not a subclass of BaseExperiment"
+    exp = exp_module.Experiment(hparams)
+
+    if config.resume is None:
+        with open(hparams_cp_file, "w") as f:
+            YAML().dump(hparams, f)
     else:
-        with open(hparams_cp_file, 'w') as f:
-            YAML(typ='safe').dump(exp.hparams, f)
+        # Load checkpoint
+        if args.resume_file is None:
+            print("[Error] Please specify resume_file in the argumen")
+            sys.exit(1)
+
+        resume_full = os.path.join(config.resume, args.resume_file)
+        if not os.path.isfile(resume_full):
+            print("[Error] No checkpoint found at '{}'".format(config.resume))
+            sys.exit(1)
+        
+        if not load_checkpoint(exp, config.resume, args.resume_file, args.ignore_hparams_mismatch):
+            print("[Error] hparams mismatch or loading failed")
+            sys.exit(0)
 
     config.tb_writer = SummaryWriter(log_dir="runs/{exp_name}_{exp_id}/{datetime}".format(exp_name=exp_name, exp_id=exp.hparams["id"], datetime=datetime.datetime.now().strftime("%b%d_%H-%M-%S")))
 
+    print("==> Initiating dataloader")
     # Data loading code
     train_loader = torch.utils.data.DataLoader(
         exp.train_dataset,
         collate_fn=exp.train_collate_fn,
-        batch_size=exp.hparams['train_batch'],
+        batch_size=exp.hparams["train_batch"],
         num_workers=config.workers,
         shuffle=True,
         pin_memory=True,
@@ -157,32 +171,68 @@ def main(args):
     val_loader = torch.utils.data.DataLoader(
         exp.val_dataset,
         collate_fn=exp.valid_collate_fn,
-        batch_size=exp.hparams['test_batch'],
+        batch_size=exp.hparams["test_batch"],
         num_workers=config.workers,
         shuffle=False,
         pin_memory=True,
         worker_init_fn=exp.worker_init_fn)
 
     if config.evaluate:
-        print('\nEvaluation-only mode')
+        print("\n[Info] Evaluation-only mode")
         result_collection = validate(val_loader, exp, 0, 0)
         if result_collection is not None:
+            print("")
             save_pred(result_collection, checkpoint=config.checkpoint)
         return
 
     if config.handle_sig:
         enable_sigint_handler()
 
-    for epoch in range(exp.hparams['before_epoch'] + 1, exp.hparams['epochs'] + 1):
+    train_eval_loop(exp, exp.hparams["before_epoch"] + 1, exp.hparams["epochs"] + 1, train_loader, val_loader)
+
+def load_checkpoint(exp, checkpoint_folder, checkpoint_file, ignore_hparams_mismatch=False):
+    # Checking hparams consistency
+    old_hparams_file = os.path.join(checkpoint_folder, "hparams.yaml")
+    if os.path.isfile(old_hparams_file):
+        with open(old_hparams_file, "r") as f:
+            old_hparams = YAML().load(f)
+        if not check_hparams_consistency(old_hparams, exp.hparams):
+            print("[Warning] hparams from config and from checkpoint are not equal")
+            if not ignore_hparams_mismatch:
+                print("In current:")
+                YAML().dump(exp.hparams, sys.stdout)
+                print("<<<<\n>>>>\nIn checkpoint:")
+                YAML().dump(old_hparams, sys.stdout)
+                if not ask("Continue ?"):
+                    return False
+            else:
+                print("[Info] hparams mismatch ignored")
+
+    # Load checkpoint data
+    checkpoint_full = os.path.join(checkpoint_folder, checkpoint_file)
+    print("==> Loading checkpoint '{}'".format(checkpoint_full))
+    checkpoint = torch.load(checkpoint_full)
+    exp.hparams["before_epoch"] = checkpoint["epoch"]
+    exp.model.load_state_dict(checkpoint["state_dict"], strict=not args.no_strict_model_load)
+    if not args.no_criterion_load:
+        exp.criterion.load_state_dict(checkpoint["criterion"])
+    if not args.no_optimizer_load:
+        exp.optimizer.load_state_dict(checkpoint["optimizer"])
+    print("==> Loaded checkpoint (epoch {})".format(checkpoint["epoch"]))
+
+    return True
+
+def train_eval_loop(exp, start_epoch, stop_epoch, train_loader, val_loader):
+    for epoch in range(start_epoch, stop_epoch):
         exp.epoch_start(epoch)
 
-        print('\nEpoch: %d | LR: %.8f' % (epoch, exp.cur_lr))
+        print("\nEpoch: %d | LR: %.8f" % (epoch, exp.cur_lr))
 
         # train for one epoch
         train(train_loader, exp, epoch, em_valid_int=exp.hparams["em_valid_int"], val_loader=val_loader)
 
         if config.sigint_triggered:
-            break
+            return False
 
         cur_step = len(train_loader) * epoch
 
@@ -195,25 +245,27 @@ def main(args):
             result_collection = None
 
         if config.sigint_triggered:
-            break
+            return False
 
-        cp_filename = 'checkpoint_{}.pth.tar'.format(epoch)
+        cp_filename = "checkpoint_{}.pth.tar".format(epoch)
         checkpoint_dict = {
-            'epoch': epoch,
-            'state_dict': exp.model.state_dict(),
-            'optimizer': exp.optimizer.state_dict(),
-            'criterion': exp.criterion.state_dict()
+            "epoch": epoch,
+            "state_dict": exp.model.state_dict(),
+            "optimizer": exp.optimizer.state_dict(),
+            "criterion": exp.criterion.state_dict()
         }
         save_checkpoint(checkpoint_dict, False, checkpoint=config.checkpoint, filename=cp_filename)
 
         if result_collection is not None:
-            preds_filename = 'preds_{}.npy'.format(epoch)
+            preds_filename = "preds_{}.npy".format(epoch)
             save_pred(result_collection, is_best=False, checkpoint=config.checkpoint, filename=preds_filename)
 
         exp.epoch_end(epoch)
 
         if config.sigint_triggered:
-            break
+            return False
+
+    return True
 
 def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
     batch_time = AverageMeter()
@@ -401,40 +453,39 @@ def validate(val_loader, exp, epoch, cur_step, store_result=True):
 
 def get_args():
     argp = argparse.ArgumentParser()
-    argp.add_argument('CONF', type=str)
-    argp.add_argument('EXP', type=str)
-    argp.add_argument('-r', dest='resume_file', type=str, default='model_best.pth.tar')
-    argp.add_argument('--no-strict-model-load', action='store_true')
-    argp.add_argument('--no-criterion-load', action='store_true')
-    argp.add_argument('--no-optimizer-load', action='store_true')
-    argp.add_argument('--ptvsd', action='store_true')
-    argp.add_argument('--ignore-hparams-differ', action='store_true')
-    argp.add_argument('--override', nargs=2, metavar=('var', 'value'), action='append')
-    argp.add_argument('--config', nargs=2, metavar=('var', 'value'), action='append')
-    return argp.parse_args()
+    argp.add_argument("CONF", type=str)
+    argp.add_argument("EXP", type=str)
+    argp.add_argument("-r", dest="resume_file", type=str)
+    argp.add_argument("--no-strict-model-load", action="store_true")
+    argp.add_argument("--no-criterion-load", action="store_true")
+    argp.add_argument("--no-optimizer-load", action="store_true")
+    argp.add_argument("--ptvsd", action="store_true")
+    argp.add_argument("--ignore-hparams-mismatch", action="store_true")
+    argp.add_argument("--override", nargs=2, metavar=("var", "value"), action="append")
+    argp.add_argument("--config", nargs=2, metavar=("var", "value"), action="append")
+    return argp.parse_known_args()
 
 def init_config(conf_name, config_override):
-    with open('experiments/config.yaml', 'r') as f:
-        conf = YAML(typ='safe').load(f)
+    with open("experiments/config.yaml", "r") as f:
+        conf = YAML(typ="safe").load(f)
     conf_data = conf[conf_name]
     config.__dict__.update(conf_data.items())
     if config_override:
         config.__dict__.update(dict(map(lambda x: (x[0], eval(str(x[1]))), config_override)))
 
-def get_hparams(exp_name, hp_file='experiments/hparams.yaml'):
-    with open(hp_file, 'r') as f:
-        return YAML(typ='safe').load(f)[exp_name]
+def get_hparams(exp_name, hp_file="experiments/hparams.yaml"):
+    with open(hp_file, "r") as f:
+        return YAML().load(f)[exp_name]
 
-if __name__ == '__main__':
-    args = get_args()
+if __name__ == "__main__":
+    args, unknown_args = get_args()
     if args.ptvsd:
         import ptvsd
         import platform
-        ptvsd.enable_attach("mydebug", address = ('0.0.0.0', 23456))
-        if platform.node() == 'lhtserver-2':
+        ptvsd.enable_attach("mydebug", address = ("0.0.0.0", 23456))
+        if platform.node() == "lhtserver-2":
             print("Waiting for debugger...")
             ptvsd.wait_for_attach()
             print("Debugger attached!")
 
-    init_config(args.CONF, args.config)
-    main(args)
+    main(args, unknown_args)
