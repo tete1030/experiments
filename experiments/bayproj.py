@@ -55,7 +55,10 @@ class Experiment(BaseExperiment):
             if extra_mod_reg.match(para_name) is not None:
                 extra_mod_parameters.append(para)
             else:
-                other_parameters.append(para)
+                if not self.hparams["freeze_backbone"]:
+                    other_parameters.append(para)
+                else:
+                    para.requires_grad = False
 
         self.optimizer = torch.optim.Adam([
                 {"params": other_parameters},
@@ -385,7 +388,7 @@ class Bottleneck(nn.Module):
             mod = extra_mod[0]
             self._extra_mod_lock = extra_mod[1]
             self._extra_mod_interm_out = extra_mod[2]
-            self.extra_mod = mod(inplanes, inplanes, 32, corr_kernel_size=(7, 7), corr_stride=(3, 3), regress_std=False)
+            self.extra_mod = mod(False, inplanes, inplanes, 32, kernel_size=(7, 7), stride=(3, 3), regress_std=False, proj_mode="samp")
         else:
             self.extra_mod = None
 

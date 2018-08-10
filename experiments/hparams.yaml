@@ -175,16 +175,17 @@ baybase:
 bayproj:
     <<: *DEFAULT
     name: baybase
-    id: 10
+    id: 11
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 200
-    schedule: [100]
+    schedule: []
     train_batch: 32
     test_batch: 32
+    freeze_backbone: true
     model:
         resnet_pretrained: pretrained/resnet50_gn.pth
-        bayproj_lr: 1.e-4
+        bayproj_lr: 5.e-4
         loss_outsider_cof: 0.001
         loss_close_cof: 0.001
         inp_shape: [192, 256]

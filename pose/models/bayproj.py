@@ -178,8 +178,10 @@ fgacos = FriendlyGradArcCosine.apply
 selblock = SelectBlocker.apply
 
 class LongRangeProj(nn.Module):
-    def __init__(self, channel_size=None, radius_std_init=1., input_std=False):
+    def __init__(self, channel_size=None, radius_std_init=1., input_std=False, mode="prob"):
         super(LongRangeProj, self).__init__()
+        assert mode in ["prob", "samp"]
+        self.mode = mode
         self._float32_eps = np.finfo(np.float32).eps.item()
         self.input_std = input_std
         if not input_std:
@@ -190,7 +192,7 @@ class LongRangeProj(nn.Module):
             self.radius_std.data.uniform_(radius_std_init * (1-0.2), radius_std_init * (1+0.2))
             self.angle_std.data.uniform_(np.pi * (1-0.2), np.pi * (1+0.2))
 
-    def _proj(self, force_field, force_norm, cx, cy, radius_mean, angle_mean, radius_std, angle_std):
+    def _proj_prob(self, force_field, force_norm, cx, cy, radius_mean, angle_mean, radius_std, angle_std):
         """
         Arguments:
             force_field {torch.FloatTensor} -- [2 x h x w]
@@ -259,6 +261,42 @@ class LongRangeProj(nn.Module):
 
         return dist
 
+    def _proj_samp(self, force_field, force_norm, cx, cy, radius_mean, angle_mean, radius_std, angle_std):
+        """
+        Arguments:
+            force_field {torch.FloatTensor} -- [2 x h x w]
+            force_norm {torch.FloatTensor} -- [h x w]
+            cx {int} -- center x
+            cy {int} -- center y
+            radius_mean {torch.FloatTensor} -- [batch_size x channel_size]
+            angle_mean {torch.FloatTensor} -- [batch_size x channel_size]
+            radius_std {torch.FloatTensor} -- [channel_size] or [batch_size x channel_size]
+            angle_std {torch.FloatTensor} -- [channel_size] or [batch_size x channel_size]
+        
+        Return:
+            {torch.FloatTensor} -- [batch_size x channel_size x h x w]
+        """
+        batch_size = radius_mean.size(0)
+        channel_size = radius_mean.size(1)
+        height = force_field.size(1)
+        width = force_field.size(2)
+
+        if self.training:
+            radius_std = radius_std.view(1 if radius_std.dim() == 1 else batch_size, channel_size)
+            angle_std = angle_std.view(1 if angle_std.dim() == 1 else batch_size, channel_size)
+            radius = radius_mean.abs() + torch.randn(batch_size, channel_size, device=force_field.device) * radius_std
+            angle = angle_mean + torch.randn(batch_size, channel_size, device=force_field.device) * angle_std
+        else:
+            radius = radius_mean.abs()
+            angle = angle_mean
+
+        # nb x nc x 2
+        force_target = torch.stack([radius * torch.cos(angle), radius * torch.sin(angle)], dim=2)
+        # nb x nc x 2 x h x w
+        force_field = force_field[None, None] - force_target[..., None, None]
+        # TODO: parameterize std?
+        return torch.exp(- force_field.norm(dim=2) ** 2 / 2)
+
     def forward(self, force_field, force_norm, origin_x, origin_y, radius, angle, confidence, radius_std=None, angle_std=None):
         """
         Arguments:
@@ -281,12 +319,14 @@ class LongRangeProj(nn.Module):
             radius_std = self.radius_std
             angle_std = self.angle_std
 
+        projector = self._proj_prob if self.mode == "proj" else self._proj_samp
+
         out = None
         # TODO: random drop out to ease training (when random, should we disable confidence?)
         for iy in range(radius.size(1)):
             for ix in range(radius.size(2)):
                 proj = confidence[:, iy, ix].view(batch_size, channel_size, 1, 1) * \
-                       self._proj(force_field[iy, ix],
+                       projector(force_field[iy, ix],
                                   force_norm[iy, ix],
                                   origin_x[ix],
                                   origin_y[iy],
@@ -302,25 +342,63 @@ class LongRangeProj(nn.Module):
         return out
 
 class AutoCorrProj(nn.Module):
-    def __init__(self, in_channels, out_channels, corr_channels, corr_kernel_size, corr_stride, pad=False, regress_std=True):
+    def __init__(self, use_acorr, in_channels, out_channels, inner_channels, kernel_size, stride, pad=False, regress_std=True, proj_mode="proj"):
         super(AutoCorrProj, self).__init__()
-        self.acorr2d = AutoCorr2D(in_channels, None, corr_channels, corr_kernel_size, corr_stride, pad=pad, permute=False)
-        self.radius_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
-        self.angle_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
-        if regress_std:
-            self.radius_std_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
-            self.angle_std_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
-            # TODO: improve initialization
-            self.projector = LongRangeProj(input_std=True)
+        self.use_acorr = use_acorr
+        regressor_kwargs = {}
+        if use_acorr:
+            print("[Info] Using acorr")
+            self.acorr2d = AutoCorr2D(in_channels, None, inner_channels, kernel_size, stride, pad=pad, permute=False)
+            self._kernel_size = self.acorr2d.corr_kernel_size
+            self._stride = self.acorr2d.corr_stride
+            self._pad_tl = (self.acorr2d.pad.top, self.acorr2d.pad.left)
         else:
-            self.projector = LongRangeProj(input_std=False, channel_size=out_channels, radius_std_init=10)
-        self.conf_regressor = nn.Conv2d(corr_channels, out_channels, kernel_size=corr_kernel_size, bias=True)
+            print("[Info] Using fake acorr")
+            if pad is False:
+                pad = (0, 0)
+            elif pad is True:
+                pad = (kernel_size[0] // 2, kernel_size[1] // 2)
+            elif isinstance(pad, int):
+                pad = (pad, pad)
+            elif not isinstance(pad, tuple) and len(pad) == 2:
+                raise ValueError("Illegal pad argument")
+            assert isinstance(kernel_size, int) or isinstance(kernel_size, tuple)
+            if isinstance(kernel_size, int):
+                assert kernel_size > 0
+                kernel_size = (kernel_size, kernel_size)
+            else:
+                assert len(kernel_size) == 2 and isinstance(kernel_size[0], int) and isinstance(kernel_size[1], int)
+                assert kernel_size[0] > 0 and kernel_size[1] > 0
+            assert isinstance(stride, int) or isinstance(stride, tuple)
+            if isinstance(stride, int):
+                assert stride > 0
+                stride = (stride, stride)
+            else:
+                assert len(stride) == 2 and isinstance(stride[0], int) and isinstance(stride[1], int)
+                assert stride[0] > 0 and stride[1] > 0
+            self.acorr2d_sim = nn.Conv2d(in_channels, inner_channels, kernel_size=3, padding=1)
+            regressor_kwargs["stride"] = stride
+            regressor_kwargs["padding"] = pad
+            self._kernel_size = kernel_size
+            self._stride = stride
+            self._pad_tl = pad
+
+        self.radius_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
+        self.angle_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
+        if regress_std:
+            self.radius_std_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
+            self.angle_std_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
+            # TODO: improve initialization
+            self.projector = LongRangeProj(input_std=True, mode=proj_mode)
+        else:
+            self.projector = LongRangeProj(input_std=False, channel_size=out_channels, radius_std_init=10, mode=proj_mode)
+        self.conf_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.regress_std = regress_std
 
-        self._n_corr_h = None
-        self._n_corr_w = None
+        self._nh = None
+        self._nw = None
         self._height = None
         self._width = None
         self._force_field = None
@@ -340,17 +418,17 @@ class AutoCorrProj(nn.Module):
         self.conf_regressor.weight.data.zero_()
         self.conf_regressor.bias.data.zero_()
 
-    def _init_force(self, n_corr_h, n_corr_w, height, width, device=torch.device("cpu")):
-        if self._n_corr_h != n_corr_h or self._n_corr_w != n_corr_w or self._height != height or self._width != width or self._force_field.device != device:
-            self._n_corr_h = n_corr_h
-            self._n_corr_w = n_corr_w
+    def _init_force(self, nh, nw, height, width, device=torch.device("cpu")):
+        if self._nh != nh or self._nw != nw or self._height != height or self._width != width or self._force_field.device != device:
+            self._nh = nh
+            self._nw = nw
             self._height = height
             self._width = width
 
-            x_orig = torch.arange(n_corr_w, dtype=torch.float32, device=device)
-            x_orig = x_orig * self.acorr2d.corr_stride[1] - self.acorr2d.pad.left + self.acorr2d.corr_kernel_size[1] // 2
-            y_orig = torch.arange(n_corr_h, dtype=torch.float32, device=device)
-            y_orig = y_orig * self.acorr2d.corr_stride[0] - self.acorr2d.pad.top + self.acorr2d.corr_kernel_size[0] // 2
+            x_orig = torch.arange(nw, dtype=torch.float32, device=device)
+            x_orig = x_orig * self._stride[1] - self._pad_tl[1] + self._kernel_size[1] // 2
+            y_orig = torch.arange(nh, dtype=torch.float32, device=device)
+            y_orig = y_orig * self._stride[0] - self._pad_tl[0] + self._kernel_size[0] // 2
             self._origin_x = x_orig
             self._origin_y = y_orig
 
@@ -360,12 +438,12 @@ class AutoCorrProj(nn.Module):
             y_out = torch.arange(height, dtype=torch.float32, device=device).view(1, 1, -1, 1)
 
             self._force_field = torch.stack([
-                    (x_out-x_orig).expand(n_corr_h, -1, height, -1),
-                    (y_out-y_orig).expand(-1, n_corr_w, -1, width)
+                    (x_out-x_orig).expand(nh, -1, height, -1),
+                    (y_out-y_orig).expand(-1, nw, -1, width)
                 ], dim=2)
             self._force_norm = torch.norm(self._force_field, dim=2)
 
-    def _regress(self, x):
+    def _corr_regress(self, x):
         batch_size = x.size(0)
         # corrs shape: b x ch x cw x chan x kh x kw
         corrs = self.acorr2d(x)
@@ -388,6 +466,31 @@ class AutoCorrProj(nn.Module):
 
         return radius, angle, radius_std, angle_std, conf, n_corr_h, n_corr_w
 
+    def _conv_regress(self, x):
+        batch_size = x.size(0)
+        channel_size = x.size(1)
+        height = x.size(2)
+        width = x.size(3)
+
+        # nb x ninnerchan x h x w
+        x = self.acorr2d_sim(x)
+
+        # nb x nchan x nh x nw
+        radius = self.radius_regressor(x)
+        nh = radius.size(2)
+        nw = radius.size(3)
+        radius = radius.view(batch_size, self.out_channels, -1).transpose(1, 2).view(batch_size, nh, nw, self.out_channels)
+        angle = self.angle_regressor(x).view(batch_size, self.out_channels, -1).transpose(1, 2).view(batch_size, nh, nw, self.out_channels)
+        if self.regress_std:
+            radius_std = self.radius_std_regressor(x).view(batch_size, self.out_channels, -1).transpose(1, 2).view(batch_size, nh, nw, self.out_channels)
+            angle_std = self.angle_std_regressor(x).view(batch_size, self.out_channels, -1).transpose(1, 2).view(batch_size, nh, nw, self.out_channels)
+        else:
+            radius_std = None
+            angle_std = None
+        conf = self.conf_regressor(x).view(batch_size, self.out_channels, -1).transpose(1, 2).view(batch_size, nh, nw, self.out_channels)
+
+        return radius, angle, radius_std, angle_std, conf, nh, nw
+
     @staticmethod
     def _sum_outsider(radius, angle, origin_x, origin_y, height, width):
         # b x nh x nw x chan
@@ -407,12 +510,17 @@ class AutoCorrProj(nn.Module):
     def forward(self, inp):
         height = inp.size(2)
         width = inp.size(3)
-        # b x nh x nw x chan
-        radius, angle, radius_std, angle_std, conf, n_corr_h, n_corr_w = self._regress(inp)
-        self._init_force(n_corr_h, n_corr_w, height, width, device=inp.device)
+
+        if self.use_acorr:
+            # b x nh x nw x chan
+            radius, angle, radius_std, angle_std, conf, nh, nw = self._corr_regress(inp)
+        else:
+            # b x nh x nw x chan
+            radius, angle, radius_std, angle_std, conf, nh, nw = self._conv_regress(inp)
+        self._init_force(nh, nw, height, width, device=inp.device)
 
         loss_out_total = self._sum_outsider(radius, angle, self._origin_x, self._origin_y, height, width)
-        count_point = torch.tensor([radius.size(3) * n_corr_h * n_corr_w], dtype=torch.float, device=loss_out_total.device)
+        count_point = torch.tensor([radius.size(3) * nh * nw], dtype=torch.float, device=loss_out_total.device)
         loss_in_total = torch.relu(1 - radius).sum()
 
         # b x chan x h x w
