@@ -178,10 +178,12 @@ fgacos = FriendlyGradArcCosine.apply
 selblock = SelectBlocker.apply
 
 class LongRangeProj(nn.Module):
-    def __init__(self, channel_size=None, radius_std_init=1., input_std=False, mode="prob"):
+    def __init__(self, channel_size=None, radius_std_init=1., input_std=False, mode="prob", summary_mode="max"):
         super(LongRangeProj, self).__init__()
         assert mode in ["prob", "samp"]
+        assert summary_mode in ["max", "sum"]
         self.mode = mode
+        self.summary_mode = summary_mode
         self._float32_eps = np.finfo(np.float32).eps.item()
         self.input_std = input_std
         if not input_std:
@@ -337,12 +339,17 @@ class LongRangeProj(nn.Module):
                 if out is None:
                     out = proj
                 else:
-                    out = torch.max(out, proj)
+                    if self.summary_mode == "max":
+                        out = torch.max(out, proj)
+                    elif self.summary_mode == "sum":
+                        out = out + proj
+                    else:
+                        raise ValueError("illegal summary_mode=" + self.summary_mode)
 
         return out
 
 class AutoCorrProj(nn.Module):
-    def __init__(self, use_acorr, in_channels, out_channels, inner_channels, kernel_size, stride, pad=False, regress_std=True, proj_mode="proj"):
+    def __init__(self, use_acorr, in_channels, out_channels, inner_channels, kernel_size, stride, regress_std, proj_mode, proj_summary_mode, pad=False):
         super(AutoCorrProj, self).__init__()
         self.use_acorr = use_acorr
         regressor_kwargs = {}
@@ -389,9 +396,9 @@ class AutoCorrProj(nn.Module):
             self.radius_std_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
             self.angle_std_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
             # TODO: improve initialization
-            self.projector = LongRangeProj(input_std=True, mode=proj_mode)
+            self.projector = LongRangeProj(input_std=True, mode=proj_mode, summary_mode=proj_summary_mode)
         else:
-            self.projector = LongRangeProj(input_std=False, channel_size=out_channels, radius_std_init=10, mode=proj_mode)
+            self.projector = LongRangeProj(input_std=False, channel_size=out_channels, radius_std_init=10, mode=proj_mode, summary_mode=proj_summary_mode)
         self.conf_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -462,7 +469,7 @@ class AutoCorrProj(nn.Module):
         else:
             radius_std = None
             angle_std = None
-        conf = self.conf_regressor(corrs).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
+        conf = torch.relu(self.conf_regressor(corrs)).view(batch_size, n_corr_h, n_corr_w, self.out_channels)
 
         return radius, angle, radius_std, angle_std, conf, n_corr_h, n_corr_w
 
@@ -487,7 +494,7 @@ class AutoCorrProj(nn.Module):
         else:
             radius_std = None
             angle_std = None
-        conf = self.conf_regressor(x).view(batch_size, self.out_channels, -1).transpose(1, 2).view(batch_size, nh, nw, self.out_channels)
+        conf = torch.relu(self.conf_regressor(x)).view(batch_size, self.out_channels, -1).transpose(1, 2).view(batch_size, nh, nw, self.out_channels)
 
         return radius, angle, radius_std, angle_std, conf, nh, nw
 

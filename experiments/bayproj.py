@@ -388,7 +388,7 @@ class Bottleneck(nn.Module):
             mod = extra_mod[0]
             self._extra_mod_lock = extra_mod[1]
             self._extra_mod_interm_out = extra_mod[2]
-            self.extra_mod = mod(False, inplanes, inplanes, 32, kernel_size=(7, 7), stride=(3, 3), regress_std=False, proj_mode="samp")
+            self.extra_mod = mod(False, inplanes, inplanes, 32, kernel_size=(7, 7), stride=(3, 3), regress_std=False, proj_mode="samp", proj_summary_mode="sum")
         else:
             self.extra_mod = None
 
