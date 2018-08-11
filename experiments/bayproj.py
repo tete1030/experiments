@@ -385,6 +385,7 @@ class Bottleneck(nn.Module):
         self.downsample = downsample
         self.stride = stride
         if extra_mod is not None:
+            assert self.downsample is None, "extra_mod require equal-sized input output"
             mod = extra_mod[0]
             self._extra_mod_lock = extra_mod[1]
             self._extra_mod_interm_out = extra_mod[2]
@@ -408,16 +409,37 @@ class Bottleneck(nn.Module):
 
         if self.downsample is not None:
             residual = self.downsample(x)
-        elif self.extra_mod is not None:
-            extra_out = self.extra_mod(x)
-            if self.extra_mod.out_channels < x.size(1):
-                residual = torch.cat([x[:, :self.extra_mod.out_channels] + extra_out[0], x[:, self.extra_mod.out_channels:]], dim=1)
-            else:
-                residual = x + extra_out[0]
-            with self._extra_mod_lock:
-                self._extra_mod_interm_out.append(extra_out[1:])
 
         out += residual
+
+        if self.extra_mod is not None:
+            extra_out = self.extra_mod(x)
+            with self._extra_mod_lock:
+                self._extra_mod_interm_out.append(extra_out[1:])
+            if self.extra_mod.out_channels < out.size(1):
+                out = torch.cat([torch.max(out[:, :self.extra_mod.out_channels], extra_out[0]), out[:, self.extra_mod.out_channels:]], dim=1)
+            else:
+                out = torch.max(out, extra_out[0])
+                if config.vis:
+                    import matplotlib.pyplot as plt
+                    import cv2
+                    fig, axes = plt.subplots(x.size(0), 10, squeeze=False)
+                    for row, axes_row in enumerate(axes):
+                        # img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                        fts = x.data[row].cpu().numpy()
+                        for col, ax in enumerate(axes_row):
+                            ax.imshow(fts[col])
+                    fig.suptitle("bottleneck x")
+
+                    fig, axes = plt.subplots(extra_out[0].size(0), 10, squeeze=False)
+                    for row, axes_row in enumerate(axes):
+                        # img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                        fts = extra_out[0].data[row].cpu().numpy()
+                        for col, ax in enumerate(axes_row):
+                            ax.imshow(fts[col])
+                    fig.suptitle("bottleneck extra_out")
+                    plt.show()
+
         out = self.relu(out)
 
         return out
