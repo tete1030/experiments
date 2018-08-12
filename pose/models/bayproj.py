@@ -415,15 +415,15 @@ class AutoCorrProj(nn.Module):
 
         # For finetune
         # TODO: improve initialization
-        self.radius_regressor.weight.data.zero_()
+        # self.radius_regressor.weight.data.uniform_(2, 8)
         self.radius_regressor.bias.data.uniform_(0, 0.5)
-        self.angle_regressor.weight.data.uniform_(-1e-3, 1e-3)
+        # self.angle_regressor.weight.data.uniform_(-1e-3, 1e-3)
         self.angle_regressor.bias.data.uniform_(-np.pi, np.pi)
         if regress_std:
             self.radius_std_regressor.bias.data.fill_(10)
             self.angle_std_regressor.bias.data.fill_(np.pi)
-        self.conf_regressor.weight.data.zero_()
-        self.conf_regressor.bias.data.zero_()
+        # self.conf_regressor.weight.data.uniform_(0.1, 0.3)
+        self.conf_regressor.bias.data.uniform_(0.1, 1.0)
 
     def _init_force(self, nh, nw, height, width, device=torch.device("cpu")):
         if self._nh != nh or self._nw != nw or self._height != height or self._width != width or self._force_field.device != device:
