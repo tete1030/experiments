@@ -43,7 +43,7 @@ from experiments.baseexperiment import BaseExperiment, EpochContext
 
 # Handle sigint
 import signal
-import multiprocessing
+from utils.miscs import is_main_process
 config.sigint_triggered = False
 def enable_sigint_handler():
     ori_sigint_handler = signal.getsignal(signal.SIGINT)
@@ -51,7 +51,7 @@ def enable_sigint_handler():
         if config.sigint_triggered:
             ori_sigint_handler(signal, frame)
         config.sigint_triggered = True
-        if type(multiprocessing.current_process()) != multiprocessing.Process:
+        if is_main_process():
             print("[SIGINT DETECTED]")
     signal.signal(signal.SIGINT, sigint_handler)
 
@@ -229,7 +229,7 @@ def train_eval_loop(exp, start_epoch, stop_epoch, train_loader, val_loader):
         print("\nEpoch: %d | LR: %.8f" % (epoch, exp.cur_lr))
 
         # train for one epoch
-        train(train_loader, exp, epoch, em_valid_int=exp.hparams["em_valid_int"], val_loader=val_loader)
+        train(train_loader, exp, epoch, em_valid_int=config.em_valid_int, val_loader=val_loader)
 
         if config.sigint_triggered:
             return False
@@ -335,7 +335,7 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
             if config.sigint_triggered:
                 break
 
-            if config.fast_pass > 0 and (i+1) >= config.fast_pass:
+            if config.fast_pass_train > 0 and (i+1) >= config.fast_pass_train:
                 print("Fast Pass!")
                 break
 
@@ -442,7 +442,7 @@ def validate(val_loader, exp, epoch, cur_step, store_result=True):
             if config.sigint_triggered:
                 break
 
-            if config.fast_pass > 0 and (i+1) >= config.fast_pass:
+            if config.fast_pass_valid > 0 and (i+1) >= config.fast_pass_valid:
                 print("Fast Pass!")
                 break
 

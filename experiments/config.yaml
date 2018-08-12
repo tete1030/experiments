@@ -3,7 +3,8 @@ default: &DEFAULT
     debug: false
     profile: false
     skip_val: 1
-    fast_pass: 0
+    fast_pass_train: 0
+    fast_pass_valid: 0
     handle_sig: true
     evaluate: false
     checkpoint: 'checkpoint/{exp}/{id}'
@@ -11,6 +12,7 @@ default: &DEFAULT
     store_lim: 10
     vis: false
     debug_nan: false
+    em_valid_int: 0
 
 profile: &PROFILE
     <<: *DEFAULT
@@ -33,7 +35,8 @@ fast: &FAST
     <<: *DEFAULT
     workers: 0
     skip_val: 1
-    fast_pass: 1
+    fast_pass_train: 1
+    fast_pass_valid: 1
 
 fastresume:
     <<: *FAST
@@ -45,6 +48,7 @@ resume: &RESUME
 
 fasteval:
     <<: *DEFAULT
-    fast_pass: 3
+    fast_pass_train: 3
+    fast_pass_valid: 3
     resume: 'checkpoint/{exp}/{id}'
     evaluate: true

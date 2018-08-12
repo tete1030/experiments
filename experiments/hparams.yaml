@@ -8,7 +8,6 @@ default_conf:
         before_epoch: 0
         epochs: 220
         schedule: [150, 175, 200]
-        em_valid_int: 0
 
     model_hourglass: &MODEL_HOURGLASS
         flip: true
@@ -37,7 +36,6 @@ locate:
     learning_rate: 2.e-4
     train_batch: 32
     test_batch: 32
-    em_valid_int: 200
     model:
         hg_dim: 256
         bn: false
@@ -54,7 +52,6 @@ stretch:
     learning_rate: 5.e-4
     train_batch: 7
     test_batch: 7
-    em_valid_int: 200
     model:
         hg_dim: 256
         bn: false
@@ -73,7 +70,6 @@ back:
     learning_rate: 5.e-4
     train_batch: 10
     test_batch: 10
-    em_valid_int: 200
     model:
         hg_dim: 256
         bn: false

@@ -1,5 +1,6 @@
 import os
 import sys
+import multiprocessing
 
 if os.name == 'nt':
     import msvcrt
@@ -27,3 +28,6 @@ def wait_key():
             termios.tcsetattr(fd, termios.TCSAFLUSH, oldterm)
 
     return result
+
+def is_main_process():
+    return type(multiprocessing.current_process()) != multiprocessing.Process

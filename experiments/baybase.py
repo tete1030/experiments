@@ -415,9 +415,9 @@ def load_pretrained(model, pretrained, pause_model_missing=True, pause_model_ext
     if len(model_extra_keys) > 0:
         print("Model extra keys: " + str(model_extra_keys))
     if (pause_model_missing and len(model_missing_keys) > 0) or (pause_model_extra and len(model_extra_keys) > 0):
-        import utils.pause as pause
+        import utils.miscs as miscs
         print("Press any key to continue")
-        pause.wait_key()
+        miscs.wait_key()
 
     for k, v in pretrained_state_dict.items():
         if k not in state_dict:
