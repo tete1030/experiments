@@ -178,7 +178,7 @@ bayproj:
     schedule: []
     train_batch: 32
     test_batch: 32
-    freeze_backbone: true
+    freeze_backbone: false
     model:
         resnet_pretrained: pretrained/resnet50_gn.pth
         bayproj_lr: 5.e-4
