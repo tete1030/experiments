@@ -253,8 +253,12 @@ class Experiment(BaseExperiment):
 
         if config.vis:
             import matplotlib.pyplot as plt
+            plt.show()
+
+        if config.vis and False:
+            import matplotlib.pyplot as plt
             img_restored = np.ascontiguousarray(self.train_dataset.restore_image(img.data.cpu().numpy())[..., ::-1])
-            
+
             if False:
                 nrows = int(np.sqrt(float(batch_size)))
                 ncols = (batch_size + nrows - 1) // nrows
@@ -269,10 +273,8 @@ class Experiment(BaseExperiment):
                             cv2.circle(draw_img, (int(pt[0] * FACTOR), int(pt[1] * FACTOR)), radius=2, color=(0, 0, 255), thickness=-1)
                     axes.flat[i].imshow(draw_img[..., ::-1])
 
-                plt.show()
-
-            if True:
-                for i in range(batch_size):
+            if False:
+                for i in range(min(1, batch_size)):
                     nrows = 3; ncols = 6
                     for i_out in range(len(output_vars)):
                         pred_resized = batch_resize((output_vars[i_out][i].data.cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8) , img.size()[-2:])
@@ -423,22 +425,29 @@ class Bottleneck(nn.Module):
                 if config.vis:
                     import matplotlib.pyplot as plt
                     import cv2
-                    fig, axes = plt.subplots(x.size(0), 10, squeeze=False)
+                    fig, axes = plt.subplots(3, 10, squeeze=False)
+                    
                     for row, axes_row in enumerate(axes):
-                        # img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                        img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
                         fts = x.data[row].cpu().numpy()
                         for col, ax in enumerate(axes_row):
-                            ax.imshow(fts[col])
+                            if col == 0:
+                                ax.imshow(img)
+                            else:
+                                ax.imshow(fts[col-1])
                     fig.suptitle("bottleneck x")
 
-                    fig, axes = plt.subplots(extra_out[0].size(0), 10, squeeze=False)
+                    fig, axes = plt.subplots(3, 10, squeeze=False)
                     for row, axes_row in enumerate(axes):
-                        # img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                        img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
                         fts = extra_out[0].data[row].cpu().numpy()
                         for col, ax in enumerate(axes_row):
-                            ax.imshow(fts[col])
+                            if col == 0:
+                                ax.imshow(img)
+                            else:
+                                ax.imshow(fts[col-1])
                     fig.suptitle("bottleneck extra_out")
-                    plt.show()
+                    # plt.show()
 
         out = self.relu(out)
 

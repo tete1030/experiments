@@ -539,7 +539,7 @@ class AutoCorrProj(nn.Module):
             print(conf)
             import ipdb; ipdb.set_trace()
 
-        if config.vis:
+        if config.vis and False:
             import matplotlib.pyplot as plt
             import cv2
             fig, axes = plt.subplots(out.size(0), 10, squeeze=False)
