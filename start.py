@@ -3,55 +3,52 @@ import os
 import sys
 import argparse
 import time
+import importlib
+import collections
+import datetime
+import signal
+from io import StringIO
 
 # Handle matplotlib backend error when DISPLAY is wrong
 # the error originates from Tk used in matplotlib
 import matplotlib
 if matplotlib.get_backend() != "module://ipykernel.pylab.backend_inline":
-    matplotlib_backend = "TkAgg"
     try:
         import tkinter
         tkinter.Tk().destroy()
+        matplotlib_backend = "TkAgg"
     except tkinter.TclError:
         print("Cannot use TkAgg for matplotlib, using Agg")
         matplotlib_backend = "Agg"
     else:
         del tkinter
     matplotlib.use(matplotlib_backend)
-import matplotlib.pyplot as plt
+    del matplotlib_backend
 
 import torch
 import torch.nn.parallel
-import torch.backends.cudnn as cudnn
 import torch.optim
-import torchvision.datasets as datasets
 
 from pose.utils.evaluation import AverageMeter
-from pose.utils.misc import save_checkpoint, detect_checkpoint, save_pred
-from pose.utils.osutils import mkdir_p
-import pose.utils.config as config
+from utils.miscs import mkdir_p
+from utils.globals import config, hparams, globalvars
+from utils.miscs import ask, is_main_process
+from utils.checkpoint import load_pretrained_loose, save_checkpoint, detect_checkpoint, save_pred
 
 import numpy as np
-import importlib
 from ruamel.yaml import YAML
-from io import StringIO
 
-import collections
 from tensorboardX import SummaryWriter
-import datetime
 from experiments.baseexperiment import BaseExperiment, EpochContext
-from utils.miscs import ask, load_pretrained_loose
 
 # Handle sigint
-import signal
-from utils.miscs import is_main_process
-config.sigint_triggered = False
+globalvars.sigint_triggered = False
 def enable_sigint_handler():
     ori_sigint_handler = signal.getsignal(signal.SIGINT)
-    def sigint_handler(signal, frame):
-        if config.sigint_triggered:
-            ori_sigint_handler(signal, frame)
-        config.sigint_triggered = True
+    def sigint_handler(sig, frame):
+        if globalvars.sigint_triggered:
+            ori_sigint_handler(sig, frame)
+        globalvars.sigint_triggered = True
         if is_main_process():
             print("[SIGINT DETECTED]")
     signal.signal(signal.SIGINT, sigint_handler)
@@ -66,23 +63,25 @@ def check_hparams_consistency(old_hparams, new_hparams):
         return False
     return True
 
+def override_hparams(_hparams, override):
+    def set_hierarchic_attr(var, var_name_hierarchic, var_value):
+        if len(var_name_hierarchic) > 1:
+            set_hierarchic_attr(var[var_name_hierarchic[0]], var_name_hierarchic[1:], var_value)
+        else:
+            var[var_name_hierarchic[0]] = var_value
+    for var_name, var_value in override:
+        set_hierarchic_attr(_hparams, var_name.split("."), eval(var_value))
+
 def main(args, unknown_args):
     init_config(args.CONF, args.config)
     exp_mod = args.EXP
-    hparams = get_hparams(exp_mod)
+    hparams.update(get_hparams(exp_mod))
     exp_name = hparams["name"]
-    config.exp_name = exp_name
+    globalvars.exp_name = exp_name
 
     # Override config from command line
     if args.override is not None:
-        def set_hierarchic_attr(var, var_name_hierarchic, var_value):
-            if len(var_name_hierarchic) > 1:
-                set_hierarchic_attr(var[var_name_hierarchic[0]], var_name_hierarchic[1:], var_value)
-            else:
-                var[var_name_hierarchic[0]] = var_value
-        for var_name, var_value in args.override:
-            set_hierarchic_attr(hparams, var_name.split("."), eval(var_value))
-        set_hierarchic_attr = None
+        override_hparams(hparams, args.override)
 
     # Substitude var in configs
     config.checkpoint = config.checkpoint.format(**{"exp": exp_name, "id": hparams["id"]})
@@ -112,7 +111,7 @@ def main(args, unknown_args):
 
     exp_module = importlib.import_module("experiments." + args.EXP)
     assert issubclass(exp_module.Experiment, BaseExperiment), args.EXP + ".Experiment is not a subclass of BaseExperiment"
-    exp = exp_module.Experiment(hparams)
+    exp = exp_module.Experiment()
 
     if config.resume is None:
         with open(hparams_cp_file, "w") as f:
@@ -128,18 +127,22 @@ def main(args, unknown_args):
             print("[Error] No checkpoint found at '{}'".format(config.resume))
             sys.exit(1)
         
-        if not load_checkpoint(exp, config.resume, args.resume_file, args.ignore_hparams_mismatch):
+        if not load_checkpoint(exp, config.resume, args.resume_file,
+                               ignore_hparams_mismatch=args.ignore_hparams_mismatch,
+                               no_strict_model_load=args.no_strict_model_load,
+                               no_criterion_load=args.no_criterion_load,
+                               no_optimizer_load=args.no_optimizer_load):
             print("[Error] hparams mismatch or loading failed")
             sys.exit(0)
 
-    config.tb_writer = SummaryWriter(log_dir="runs/{exp_name}_{exp_id}/{datetime}".format(exp_name=exp_name, exp_id=exp.hparams["id"], datetime=datetime.datetime.now().strftime("%b%d_%H-%M-%S")))
+    globalvars.tb_writer = SummaryWriter(log_dir="runs/{exp_name}_{exp_id}/{datetime}".format(exp_name=exp_name, exp_id=hparams["id"], datetime=datetime.datetime.now().strftime("%b%d_%H-%M-%S")))
 
     print("==> Initiating dataloader")
     # Data loading code
     train_loader = torch.utils.data.DataLoader(
         exp.train_dataset,
         collate_fn=exp.train_collate_fn,
-        batch_size=exp.hparams["train_batch"],
+        batch_size=hparams["train_batch"],
         num_workers=config.workers,
         shuffle=True,
         pin_memory=True,
@@ -149,7 +152,7 @@ def main(args, unknown_args):
     val_loader = torch.utils.data.DataLoader(
         exp.val_dataset,
         collate_fn=exp.valid_collate_fn,
-        batch_size=exp.hparams["test_batch"],
+        batch_size=hparams["test_batch"],
         num_workers=config.workers,
         shuffle=False,
         pin_memory=True,
@@ -160,15 +163,19 @@ def main(args, unknown_args):
         result_collection = validate(val_loader, exp, 0, 0)
         if result_collection is not None:
             print("")
-            save_pred(result_collection, checkpoint=config.checkpoint)
+            save_pred(result_collection, checkpoint=config.checkpoint, filename="pred_evaluate.npy")
         return
 
     if config.handle_sig:
         enable_sigint_handler()
 
-    train_eval_loop(exp, exp.hparams["before_epoch"] + 1, exp.hparams["epochs"] + 1, train_loader, val_loader)
+    train_eval_loop(exp, hparams["before_epoch"] + 1, hparams["epochs"] + 1, train_loader, val_loader)
 
-def load_checkpoint(exp, checkpoint_folder, checkpoint_file, ignore_hparams_mismatch=False):
+def load_checkpoint(exp, checkpoint_folder, checkpoint_file,
+                    ignore_hparams_mismatch=False,
+                    no_strict_model_load=False,
+                    no_criterion_load=False,
+                    no_optimizer_load=False):
     # Checking hparams consistency
     old_hparams_file = os.path.join(checkpoint_folder, "hparams.yaml")
     if os.path.isfile(old_hparams_file):
@@ -190,14 +197,14 @@ def load_checkpoint(exp, checkpoint_folder, checkpoint_file, ignore_hparams_mism
     checkpoint_full = os.path.join(checkpoint_folder, checkpoint_file)
     print("==> Loading checkpoint '{}'".format(checkpoint_full))
     checkpoint = torch.load(checkpoint_full)
-    exp.hparams["before_epoch"] = checkpoint["epoch"]
-    if args.no_strict_model_load:
+    hparams["before_epoch"] = checkpoint["epoch"]
+    if no_strict_model_load:
         load_pretrained_loose(exp.model, checkpoint["state_dict"])
     else:
         exp.model.load_state_dict(checkpoint["state_dict"])
-    if not args.no_criterion_load:
+    if not no_criterion_load:
         exp.criterion.load_state_dict(checkpoint["criterion"])
-    if not args.no_optimizer_load:
+    if not no_optimizer_load:
         exp.optimizer.load_state_dict(checkpoint["optimizer"])
     print("==> Loaded checkpoint (epoch {})".format(checkpoint["epoch"]))
 
@@ -212,7 +219,7 @@ def train_eval_loop(exp, start_epoch, stop_epoch, train_loader, val_loader):
         # train for one epoch
         train(train_loader, exp, epoch, em_valid_int=config.em_valid_int, val_loader=val_loader)
 
-        if config.sigint_triggered:
+        if globalvars.sigint_triggered:
             return False
 
         cur_step = len(train_loader) * epoch
@@ -225,7 +232,7 @@ def train_eval_loop(exp, start_epoch, stop_epoch, train_loader, val_loader):
             print("Skip validation")
             result_collection = None
 
-        if config.sigint_triggered:
+        if globalvars.sigint_triggered:
             return False
 
         cp_filename = "checkpoint_{}.pth.tar".format(epoch)
@@ -235,15 +242,15 @@ def train_eval_loop(exp, start_epoch, stop_epoch, train_loader, val_loader):
             "optimizer": exp.optimizer.state_dict(),
             "criterion": exp.criterion.state_dict()
         }
-        save_checkpoint(checkpoint_dict, False, checkpoint=config.checkpoint, filename=cp_filename)
+        save_checkpoint(checkpoint_dict, checkpoint=config.checkpoint, filename=cp_filename)
 
         if result_collection is not None:
             preds_filename = "preds_{}.npy".format(epoch)
-            save_pred(result_collection, is_best=False, checkpoint=config.checkpoint, filename=preds_filename)
+            save_pred(result_collection, checkpoint=config.checkpoint, filename=preds_filename)
 
         exp.epoch_end(epoch)
 
-        if config.sigint_triggered:
+        if globalvars.sigint_triggered:
             return False
 
     return True
@@ -303,7 +310,7 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
             exp.print_iter(epoch_ctx)
             exp.summary_scalar(epoch_ctx, cur_step, "train")
             
-            if config.sigint_triggered:
+            if globalvars.sigint_triggered:
                 break
 
             if em_valid:
@@ -313,7 +320,7 @@ def train(train_loader, exp, epoch, em_valid_int=0, val_loader=None):
                 exp.model.train()
                 end = time.time()
 
-            if config.sigint_triggered:
+            if globalvars.sigint_triggered:
                 break
 
             if config.fast_pass_train > 0 and (i+1) >= config.fast_pass_train:
@@ -420,7 +427,7 @@ def validate(val_loader, exp, epoch, cur_step, store_result=True):
             print(loginfo, end="")
             exp.print_iter(epoch_ctx)
 
-            if config.sigint_triggered:
+            if globalvars.sigint_triggered:
                 break
 
             if config.fast_pass_valid > 0 and (i+1) >= config.fast_pass_valid:
@@ -450,17 +457,17 @@ def init_config(conf_name, config_override):
     with open("experiments/config.yaml", "r") as f:
         conf = YAML(typ="safe").load(f)
     conf_data = conf[conf_name]
-    config.__dict__.update(conf_data.items())
+    config.update(conf_data.items())
     if config_override:
-        config.__dict__.update(dict(map(lambda x: (x[0], eval(str(x[1]))), config_override)))
+        config.update(dict(map(lambda x: (x[0], eval(str(x[1]))), config_override)))
 
 def get_hparams(exp_name, hp_file="experiments/hparams.yaml"):
     with open(hp_file, "r") as f:
         return YAML().load(f)[exp_name]
 
 if __name__ == "__main__":
-    args, unknown_args = get_args()
-    if args.ptvsd:
+    _args, _unknown_args = get_args()
+    if _args.ptvsd:
         import ptvsd
         import platform
         ptvsd.enable_attach("mydebug", address = ("0.0.0.0", 23456))
@@ -469,4 +476,4 @@ if __name__ == "__main__":
             ptvsd.wait_for_attach()
             print("Debugger attached!")
 
-    main(args, unknown_args)
+    main(_args, _unknown_args)

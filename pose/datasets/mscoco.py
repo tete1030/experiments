@@ -1,28 +1,26 @@
 #!python3
 
 import os
-import numpy as np
-import json
-import math
-import cv2
 import copy
+import cv2
+import numpy as np
 from scipy.stats import truncnorm
 
 import torch
 import torch.utils.data as data
 
-from pose.utils.osutils import *
-from pose.utils.imutils import *
-from pose.utils.transforms import *
+import matplotlib.pyplot as plt
+
+from pose.utils.imutils import HeatmapGenerator
+from pose.utils.transforms import fliplr_chwimg, fliplr_pts, get_transform, transform
 from pycocotools.coco import COCO
-import pycocotools
 
 # FLIP_INDEX is an involution map
 FLIP_INDEX = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]
 
-PART_LABELS = ['nose','eye_l','eye_r','ear_l','ear_r',
-               'sho_l','sho_r','elb_l','elb_r','wri_l','wri_r',
-               'hip_l','hip_r','kne_l','kne_r','ank_l','ank_r']
+PART_LABELS = ['nose', 'eye_l', 'eye_r', 'ear_l', 'ear_r',
+               'sho_l', 'sho_r', 'elb_l', 'elb_r', 'wri_l', 'wri_r',
+               'hip_l', 'hip_r', 'kne_l', 'kne_r', 'ank_l', 'ank_r']
 
 PART_CONNECT = [(0, 1), (0, 2), (1, 3), (2, 4),
                 (0, 5), (0, 6), (5, 6), (5, 7), (6, 8), (7, 9), (8, 10),
@@ -601,7 +599,6 @@ class COCOSinglePose(data.Dataset):
             print("Aug: rescale %.2f , rot %.2f , center_off (%.2f, %.2f), flip %s" % (
                 scale_aug, rotate, center_aug_off[0], center_aug_off[1], "Y" if flip_status else "N"))
 
-            import matplotlib.pyplot as plt
             if flip_status:
                 bbox[0] = img_size[0] - bbox[0] - bbox[2]
             cv2.rectangle(img_bgr, (bbox[0], bbox[1]), ((bbox[0] + bbox[2]), (bbox[1] + bbox[3])), (255, 0, 0), thickness=2)
@@ -647,12 +644,6 @@ class COCOSinglePose(data.Dataset):
         }
 
         return result
-
-    def __len__(self):
-        if self.is_train:
-            return len(self.train)
-        else:
-            return len(self.valid)
 
     @classmethod
     def collate_function(cls, batch):

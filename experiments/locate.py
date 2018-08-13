@@ -6,8 +6,8 @@ import torchvision.utils as vutils
 import pose.models as models
 import pose.datasets as datasets
 from pose.utils.evaluation import match_locate, PR_locate
-import pose.utils.config as config
-from pose.utils.misc import adjust_learning_rate
+from utils.globals import config, hparams, globalvars
+from utils.train import adjust_learning_rate
 
 import cv2
 
@@ -59,20 +59,20 @@ class Experiment(object):
     """Stretch Experiment
     """
 
-    def __init__(self, hparams):
-        self.hparams = hparams
+    def __init__(self):
+
         self.num_parts = datasets.mscoco.NUM_PARTS
 
         self.model = torch.nn.DataParallel(
             models.MergeHGNet(inp_dim=3, out_dim=1,
-                           hg_dim=self.hparams["model"]["hg_dim"],
-                           bn=self.hparams["model"]["bn"]).cuda())
+                           hg_dim=hparams["model"]["hg_dim"],
+                           bn=hparams["model"]["bn"]).cuda())
 
         self.criterion = models.HeatmapLoss().cuda()
 
         self.optimizer = torch.optim.Adam(list(self.model.parameters()),
-                                          lr=self.hparams["learning_rate"],
-                                          weight_decay=self.hparams["weight_decay"])
+                                          lr=hparams["learning_rate"],
+                                          weight_decay=hparams["weight_decay"])
 
         # Only used when train and valid dataset are all from train2014
         self.coco = COCO("data/mscoco/person_keypoints_train2014.json")
@@ -102,22 +102,22 @@ class Experiment(object):
         self.train_collate_fn = datasets.COCOPose.collate_function
         self.test_collate_fn = datasets.COCOPose.collate_function
 
-        self.pose_mgr = models.PoseManager(max(self.hparams["train_batch"], self.hparams["test_batch"]), 1, (OUT_RES, OUT_RES), 30,
-                                           cuda=False, sigma=int(self.hparams["dataset"]["label_sigma"]), filter_inside=False, gen_embedding=False)
+        self.pose_mgr = models.PoseManager(max(hparams["train_batch"], hparams["test_batch"]), 1, (OUT_RES, OUT_RES), 30,
+                                           cuda=False, sigma=int(hparams["dataset"]["label_sigma"]), filter_inside=False, gen_embedding=False)
 
         self.train_drop_last = True
 
-        self.posemap_parser = models.PoseMapParser(cuda=True, threshold=self.hparams["model"]["parse_threshold"])
+        self.posemap_parser = models.PoseMapParser(cuda=True, threshold=hparams["model"]["parse_threshold"])
 
     def epoch(self, epoch):
-        self.hparams["learning_rate"] = adjust_learning_rate(
+        hparams["learning_rate"] = adjust_learning_rate(
             self.optimizer,
             epoch,
-            self.hparams["learning_rate"],
-            self.hparams["schedule"],
-            self.hparams["lr_gamma"])
+            hparams["learning_rate"],
+            hparams["schedule"],
+            hparams["lr_gamma"])
         # # decay sigma
-        # label_sigma_decay = self.hparams["dataset"]["label_sigma_decay"]
+        # label_sigma_decay = hparams["dataset"]["label_sigma_decay"]
         # if label_sigma_decay > 0:
         #     self.train_dataset.label_sigma *= label_sigma_decay
         #     self.val_dataset.label_sigma *= label_sigma_decayn
@@ -176,11 +176,11 @@ class Experiment(object):
             show_img[tb_num + iimg] = cur_pred
 
         show_img = vutils.make_grid(torch.from_numpy(show_img), nrow=tb_num, range=(0, 1))
-        config.tb_writer.add_image(title, show_img, step)
+        globalvars.tb_writer.add_image(title, show_img, step)
 
     def summary_histogram(self, n_iter):
         for name, param in self.model.named_parameters():
-            config.tb_writer.add_histogram("locate." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
+            globalvars.tb_writer.add_histogram("locate." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
 
     @profile
     def process(self, batch, train, detail=None):
@@ -214,9 +214,9 @@ class Experiment(object):
 
         # Match locating point with person in ground truth keypoints
         # match_*: #batch x #batch_i_match_index
-        match_pred, match_gt = match_locate(locate_pred, locate_gt, threshold_abandon=OUT_RES/float(self.hparams["model"]["match_threshold_factor"]))
+        match_pred, match_gt = match_locate(locate_pred, locate_gt, threshold_abandon=OUT_RES/float(hparams["model"]["match_threshold_factor"]))
 
-        precision, recall, indices_TP = PR_locate(locate_pred, locate_gt, match_pred, match_gt, threshold=OUT_RES/float(self.hparams["model"]["eval_threshold_factor"]))
+        precision, recall, indices_TP = PR_locate(locate_pred, locate_gt, match_pred, match_gt, threshold=OUT_RES/float(hparams["model"]["eval_threshold_factor"]))
 
         if detail["summary"]:
             self.summary_image(img=img,

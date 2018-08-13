@@ -6,8 +6,8 @@ from pose.models.parallel import DataParallelModel, DataParallelCriterion, gathe
 from torch.nn import DataParallel
 import pose.datasets as datasets
 from pose.utils.evaluation import PR_multi
-import pose.utils.config as config
-from pose.utils.misc import adjust_learning_rate
+from utils.globals import config, hparams, globalvars
+from utils.train import adjust_learning_rate
 from pose.utils.transforms import fliplr_chwimg, fliplr_map, fliplr_pts
 from pose.models import HeatmapLoss, FieldmapLoss
 from pose.utils.group import FieldmapParser
@@ -97,9 +97,9 @@ def compute_nearest_distance(pair):
 DISTANCE_MAT = compute_nearest_distance(PAIR)
 
 class Experiment(object):
-    def __init__(self, hparams):
+    def __init__(self):
         self.num_parts = datasets.mscoco.NUM_PARTS + 1
-        self.hparams = hparams
+
         self.model = DataParallel(
             models.PoseHGNet(
                 inp_dim=3,
@@ -134,11 +134,11 @@ class Experiment(object):
                                                "data/mscoco/mean_std.pth",
                                                train=True,
                                                single_person=False,
-                                               img_res=[self.hparams["model"]["inp_res"]],
-                                               mask_res=self.hparams["model"]["out_res"],
-                                               kpmap_res=self.hparams["model"]["out_res"],
+                                               img_res=[hparams["model"]["inp_res"]],
+                                               mask_res=hparams["model"]["out_res"],
+                                               kpmap_res=hparams["model"]["out_res"],
                                                kpmap_select="all_ex",
-                                               keypoint_res=self.hparams["model"]["out_res"],
+                                               keypoint_res=hparams["model"]["out_res"],
                                                keypoint_extender=keypoint_extender,
                                                keypoint_label_outsider=True,
                                                keypoint_filter=True)
@@ -149,26 +149,26 @@ class Experiment(object):
                                              "data/mscoco/mean_std.pth",
                                              train=False,
                                              single_person=False,
-                                             img_res=self.hparams["model"]["inp_res_ms"],
-                                             mask_res=self.hparams["model"]["out_res"],
-                                             kpmap_res=self.hparams["model"]["out_res"],
+                                             img_res=hparams["model"]["inp_res_ms"],
+                                             mask_res=hparams["model"]["out_res"],
+                                             kpmap_res=hparams["model"]["out_res"],
                                              kpmap_select="all_ex",
-                                             keypoint_res=self.hparams["model"]["out_res"],
+                                             keypoint_res=hparams["model"]["out_res"],
                                              keypoint_extender=keypoint_extender,
                                              keypoint_label_outsider=True,
                                              keypoint_filter=True)
 
-        self.parser = AE2DParser(PAIR, DISTANCE_MAT, "experiments/mean_length.npy", "experiments/std_length.npy", "experiments/norm_std_length.npy", detection_thres=self.hparams["eval"]["detection_thres"], group_thres=self.hparams["eval"]["group_thres"], max_num_people=self.hparams["model"]["max_num_people"])
+        self.parser = AE2DParser(PAIR, DISTANCE_MAT, "experiments/mean_length.npy", "experiments/std_length.npy", "experiments/norm_std_length.npy", detection_thres=hparams["eval"]["detection_thres"], group_thres=hparams["eval"]["group_thres"], max_num_people=hparams["model"]["max_num_people"])
 
         self.train_collate_fn = datasets.COCOPose.collate_function
         self.test_collate_fn = datasets.COCOPose.collate_function
 
     def epoch(self, epoch):
-        self.hparams['learning_rate'] = adjust_learning_rate(self.optimizer, epoch, self.hparams['learning_rate'], self.hparams['schedule'], self.hparams['lr_gamma'])
+        hparams['learning_rate'] = adjust_learning_rate(self.optimizer, epoch, hparams['learning_rate'], hparams['schedule'], hparams['lr_gamma'])
 
     def summary_histogram(self, n_iter):
         for name, param in self.model.named_parameters():
-            config.tb_writer.add_histogram(config.exp_name + "." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
+            globalvars.tb_writer.add_histogram(globalvars.exp_name + "." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
 
     def evaluate(self, image_ids, ans):
         if len(ans) > 0:
@@ -214,7 +214,7 @@ class Experiment(object):
         kplosses = []
         emlosses_push = []
         emlosses_pull = []
-        for istack in range(self.hparams["model"]["nstack"]):
+        for istack in range(hparams["model"]["nstack"]):
             kplosses.append(heatmaploss(heatmap_var[istack], det_map_gt_var, det_map_mask_gt_var))
             eml_push, eml_pull = ae2dloss(emmap_var[istack])
             emlosses_push.append(eml_push)
@@ -225,7 +225,7 @@ class Experiment(object):
         emloss_pull = sum(emlosses_pull) / len(emlosses_pull)
 
         # TODO: Temporaryly disable to check mseloss integrity
-        loss = kploss * self.hparams["model"]["loss_det_cof"] + emloss_push * self.hparams["model"]["loss_em_push_cof"] + emloss_pull * self.hparams["model"]["loss_em_pull_cof"]
+        loss = kploss * hparams["model"]["loss_det_cof"] + emloss_push * hparams["model"]["loss_em_push_cof"] + emloss_pull * hparams["model"]["loss_em_pull_cof"]
 
         if (loss.data != loss.data).any():
             import pdb; pdb.set_trace()
@@ -254,12 +254,12 @@ class Experiment(object):
             field_map = batch_resize(field_map, (max_map_res, max_map_res))
 
             transform_mats_max_map = [tfm[max_map_i] for tfm in transform_mats]
-            if "no_parse" in config.__dict__ and config.no_parse:
+            if config.get("no_parse", False):
                 ans = None
             else:
                 ans = parse_result(self.parser, det_map, field_map, self.num_parts-1, image_ids, transform_mats_max_map, img_flipped, img_ori_size)
 
-            if "save_pred" in config.__dict__ and config.save_pred:
+            if config.get("save_pred", False):
                 save_args = [
                     det_map,
                     field_map,
@@ -275,9 +275,9 @@ class Experiment(object):
                 np.save(os.path.join(config.save_pred_path, "pred_{}_{}.npy".format(detail["epoch"], detail["iter"])), save_args)
 
         phase_str = "train" if train else "valid"
-        config.tb_writer.add_scalars(config.exp_name + "/loss_det", {phase_str: kploss.data.cpu()[0]}, detail["step"])
-        config.tb_writer.add_scalars(config.exp_name + "/loss_em_push", {phase_str: emloss_push.data.cpu()[0]}, detail["step"])
-        config.tb_writer.add_scalars(config.exp_name + "/loss_em_pull", {phase_str: emloss_pull.data.cpu()[0]}, detail["step"])
+        globalvars.tb_writer.add_scalars(globalvars.exp_name + "/loss_det", {phase_str: kploss.data.cpu()[0]}, detail["step"])
+        globalvars.tb_writer.add_scalars(globalvars.exp_name + "/loss_em_push", {phase_str: emloss_push.data.cpu()[0]}, detail["step"])
+        globalvars.tb_writer.add_scalars(globalvars.exp_name + "/loss_em_pull", {phase_str: emloss_pull.data.cpu()[0]}, detail["step"])
 
         result = {
             "loss": loss,
@@ -1094,7 +1094,7 @@ class TestOutput(object):
                 detection_thres=0.05,
                 group_thres=0.1)
         )
-        self.exp = Experiment(hparams)
+        self.exp = Experiment()
         if img_index is None:
             self.dataloader = torch.utils.data.DataLoader(self.exp.val_dataset,
                                                         batch_size=32,

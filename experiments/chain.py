@@ -5,8 +5,8 @@ import pose.models as models
 from pose.models.parallel import DataParallelModel, DataParallelCriterion, gather
 import pose.datasets as datasets
 from pose.utils.evaluation import PR_multi
-import pose.utils.config as config
-from pose.utils.misc import adjust_learning_rate
+from utils.globals import config, hparams, globalvars
+from utils.train import adjust_learning_rate
 from pose.utils.transforms import fliplr_chwimg, fliplr_map
 from pose.models import HeatmapLoss, FieldmapLoss
 from pose.utils.group import FieldmapParser
@@ -46,9 +46,9 @@ def generate_pair_index():
 PAIR_INDEXOF = generate_pair_index()
 
 class Experiment(object):
-    def __init__(self, hparams):
+    def __init__(self):
         self.num_parts = datasets.mscoco.NUM_PARTS
-        self.hparams = hparams
+
         self.model = DataParallelModel(
             models.PoseHGNet(
                 inp_dim=3,
@@ -62,7 +62,7 @@ class Experiment(object):
             ChainLoss(self.num_parts,
                       len(PAIR)).cuda(), comp_mean=True)
 
-        self.pfgen = PairwiseFieldGenerator(radius=self.hparams["dataset"]["label_field_radius"], pair=PAIR, pair_indexof=PAIR_INDEXOF, res=OUT_RES)
+        self.pfgen = PairwiseFieldGenerator(radius=hparams["dataset"]["label_field_radius"], pair=PAIR, pair_indexof=PAIR_INDEXOF, res=OUT_RES)
         
         self.optimizer = torch.optim.Adam(list(self.model.parameters()),
                                           lr=hparams['learning_rate'],
@@ -98,13 +98,13 @@ class Experiment(object):
                                              keypoint_res=OUT_RES,
                                              custom_generator=self.pfgen)
 
-        self.parser = FieldmapParser(PAIR, PAIR_INDEXOF, detection_thres=self.hparams["eval"]["detection_thres"], group_thres=self.hparams["eval"]["group_thres"], max_num_people=self.hparams["model"]["max_num_people"])
+        self.parser = FieldmapParser(PAIR, PAIR_INDEXOF, detection_thres=hparams["eval"]["detection_thres"], group_thres=hparams["eval"]["group_thres"], max_num_people=hparams["model"]["max_num_people"])
 
         self.train_collate_fn = datasets.COCOPose.collate_function
         self.test_collate_fn = datasets.COCOPose.collate_function
 
     def epoch(self, epoch):
-        self.hparams['learning_rate'] = adjust_learning_rate(self.optimizer, epoch, self.hparams['learning_rate'], self.hparams['schedule'], self.hparams['lr_gamma'])
+        hparams['learning_rate'] = adjust_learning_rate(self.optimizer, epoch, hparams['learning_rate'], hparams['schedule'], hparams['lr_gamma'])
 
     # def summary_image(self, img, pred, gt, title, step):
     #     tb_num = 3
@@ -130,11 +130,11 @@ class Experiment(object):
     #         show_img[tb_num + iimg] = cur_pred
 
     #     show_img = vutils.make_grid(torch.from_numpy(show_img), nrow=tb_num, range=(0, 1))
-    #     config.tb_writer.add_image(title, show_img, step)
+    #     globalvars.tb_writer.add_image(title, show_img, step)
 
     def summary_histogram(self, n_iter):
         for name, param in self.model.named_parameters():
-            config.tb_writer.add_histogram(config.exp_name + "." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
+            globalvars.tb_writer.add_histogram(globalvars.exp_name + "." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
 
     def evaluate(self, image_ids, ans):
         if len(ans) > 0:
@@ -174,7 +174,7 @@ class Experiment(object):
         output_var = self.model(Variable(imgs[0], volatile=volatile))
 
         det_loss, field_loss = self.criterion(output_var, det_map_var, det_map_mask_var, field_map_var, field_map_mask_var)
-        loss = det_loss * self.hparams["model"]["loss_det_cof"] + field_loss * self.hparams["model"]["loss_field_cof"]
+        loss = det_loss * hparams["model"]["loss_det_cof"] + field_loss * hparams["model"]["loss_field_cof"]
 
         if (loss.data != loss.data).any():
             import pdb; pdb.set_trace()
@@ -226,8 +226,8 @@ class Experiment(object):
         # pred = self.parser.parse(*extract_map(output_var))
 
         phase_str = "train" if train else "valid"
-        config.tb_writer.add_scalars(config.exp_name + "/loss_det", {phase_str: det_loss.data.cpu()[0]}, detail["step"])
-        config.tb_writer.add_scalars(config.exp_name + "/loss_field", {phase_str: field_loss.data.cpu()[0]}, detail["step"])
+        globalvars.tb_writer.add_scalars(globalvars.exp_name + "/loss_det", {phase_str: det_loss.data.cpu()[0]}, detail["step"])
+        globalvars.tb_writer.add_scalars(globalvars.exp_name + "/loss_field", {phase_str: field_loss.data.cpu()[0]}, detail["step"])
 
         result = {
             "loss": loss,
@@ -443,7 +443,7 @@ class TestOutput(object):
                 detection_thres=0.1,
                 group_thres=0.86)
         )
-        self.exp = Experiment(hparams)
+        self.exp = Experiment()
         self.dataloader = torch.utils.data.DataLoader(self.exp.val_dataset,
                                                       batch_size=8,
                                                       shuffle=False,

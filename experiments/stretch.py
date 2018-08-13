@@ -6,8 +6,8 @@ import torchvision.utils as vutils
 import pose.models as models
 import pose.datasets as datasets
 from pose.utils.evaluation import PR_multi
-import pose.utils.config as config
-from pose.utils.misc import adjust_learning_rate
+from utils.globals import config, hparams, globalvars
+from utils.train import adjust_learning_rate
 
 from pycocotools.coco import COCO
 
@@ -60,19 +60,19 @@ class Experiment(object):
     """Stretch Experiment
     """
 
-    def __init__(self, hparams):
-        self.hparams = hparams
+    def __init__(self):
+
         self.num_parts = datasets.mscoco.NUM_PARTS
 
         self.model = torch.nn.DataParallel(
-            models.MergeResNet(inp_size=self.num_parts*2, num_classes=self.hparams["model"]["max_person"]*self.num_parts*2).cuda()
+            models.MergeResNet(inp_size=self.num_parts*2, num_classes=hparams["model"]["max_person"]*self.num_parts*2).cuda()
         )
 
         self.criterion = models.PoseDisLoss().cuda()
 
         self.optimizer = torch.optim.Adam(list(self.model.parameters()),
-                                          lr=self.hparams["learning_rate"],
-                                          weight_decay=self.hparams["weight_decay"])
+                                          lr=hparams["learning_rate"],
+                                          weight_decay=hparams["weight_decay"])
 
         # Only used when train and valid dataset are all from train2014
         self.coco = COCO("data/mscoco/person_keypoints_train2014.json")
@@ -99,17 +99,17 @@ class Experiment(object):
                                              keypoint_res=INP_RES,
                                              locate_res=INP_RES)
 
-        self.train_pose_mgr = models.PoseManager(self.hparams["train_batch"],
+        self.train_pose_mgr = models.PoseManager(hparams["train_batch"],
                                                  self.num_parts,
                                                  (INP_RES, INP_RES),
-                                                 self.hparams["model"]["max_person"],
+                                                 hparams["model"]["max_person"],
                                                  cuda=True,
                                                  sigma=1*FACTOR)
 
-        self.test_pose_mgr = models.PoseManager(self.hparams["test_batch"],
+        self.test_pose_mgr = models.PoseManager(hparams["test_batch"],
                                                 self.num_parts,
                                                 (INP_RES, INP_RES),
-                                                self.hparams["model"]["max_person"],
+                                                hparams["model"]["max_person"],
                                                 cuda=True,
                                                 sigma=1*FACTOR)
 
@@ -117,14 +117,14 @@ class Experiment(object):
         self.test_collate_fn = datasets.COCOPose.collate_function
 
     def epoch(self, epoch):
-        self.hparams["learning_rate"] = adjust_learning_rate(
+        hparams["learning_rate"] = adjust_learning_rate(
             self.optimizer,
             epoch,
-            self.hparams["learning_rate"],
-            self.hparams["schedule"],
-            self.hparams["lr_gamma"])
+            hparams["learning_rate"],
+            hparams["schedule"],
+            hparams["lr_gamma"])
         # # decay sigma
-        # label_sigma_decay = self.hparams["dataset"]["label_sigma_decay"]
+        # label_sigma_decay = hparams["dataset"]["label_sigma_decay"]
         # if label_sigma_decay > 0:
         #     self.train_dataset.label_sigma *= label_sigma_decay
         #     self.val_dataset.label_sigma *= label_sigma_decayn
@@ -162,7 +162,7 @@ class Experiment(object):
 
         tb_num = 2
         tb_img = img[:tb_num].numpy() + self.train_dataset.mean[None, :, None, None]
-        nrows = self.hparams["model"]["stack"] + 1
+        nrows = hparams["model"]["stack"] + 1
         ncols = self.num_parts + 1
         whole_img = np.zeros((tb_num, nrows, ncols, 3, INP_RES, INP_RES))
         for i in range(len(tb_img)):
@@ -210,7 +210,7 @@ class Experiment(object):
                                     point2_pred = (point_pred[0] + force[0], point_pred[1] + force[1])
                                 else:
                                     force = (int(round(np.clip(move_vector[k][i, (int(embedding[k][iper, i])-1)*self.num_parts+j], -INP_RES, INP_RES))),
-                                             int(round(np.clip(move_vector[k][i, (int(embedding[k][iper, i])-1)*self.num_parts+j+self.hparams["model"]["max_person"]*self.num_parts], -INP_RES, INP_RES))))
+                                             int(round(np.clip(move_vector[k][i, (int(embedding[k][iper, i])-1)*self.num_parts+j+hparams["model"]["max_person"]*self.num_parts], -INP_RES, INP_RES))))
                                     point2_pred = (point_pred[0] + force[0], point_pred[1] + force[1])
                                 # Draw force
                                 cv2.arrowedLine(finalimg, point_pred, point2_pred, FP_COLOR[::-1], thickness=SEP_LINE_THICKNESS)
@@ -252,19 +252,19 @@ class Experiment(object):
 
         whole_img = vutils.make_grid(torch.from_numpy(whole_img.reshape((-1, 3, INP_RES, INP_RES))),
                                      nrow=ncols, range=(0, 1), pad_value=0.3) # that the nrow equals to ncols is expected because make_grid use nrow as ncol
-        config.tb_writer.add_image(title, whole_img, step)
+        globalvars.tb_writer.add_image(title, whole_img, step)
 
 
     def summary_histogram(self, n_iter):
         for name, param in self.model.named_parameters():
-            config.tb_writer.add_histogram("stretch." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
+            globalvars.tb_writer.add_histogram("stretch." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
 
     @profile
     def process(self, batch, train, detail=None):
-        num_stack = self.hparams["model"]["stack"]
-        init_noise_factor = self.hparams["model"]["init_noise_factor"]
-        mid_noise_factor = self.hparams["model"]["mid_noise_factor"]
-        use_outsider = self.hparams["model"]["use_outsider"]
+        num_stack = hparams["model"]["stack"]
+        init_noise_factor = hparams["model"]["init_noise_factor"]
+        mid_noise_factor = hparams["model"]["mid_noise_factor"]
+        use_outsider = hparams["model"]["use_outsider"]
 
         model_reg = self.model
         criterion_dis = self.criterion
@@ -352,9 +352,9 @@ class Experiment(object):
                 move_x_var, move_y_var = pose_mgr.extract_movement(move_vector=move_vector_var, embedding=embedding)
                 pose_mgr.move_keypoints(move_x_var, move_y_var)
                 if loss is None:
-                    loss = self.hparams["model"]["loss_factor"][i] * criterion_dis(pose_mgr.all_keypoints_var, keypoint_gt_cat_var, keypoint_gt_cat_mask_var, locate_std_gt_cat_var)
+                    loss = hparams["model"]["loss_factor"][i] * criterion_dis(pose_mgr.all_keypoints_var, keypoint_gt_cat_var, keypoint_gt_cat_mask_var, locate_std_gt_cat_var)
                 else:
-                    loss += self.hparams["model"]["loss_factor"][i] * criterion_dis(pose_mgr.all_keypoints_var, keypoint_gt_cat_var, keypoint_gt_cat_mask_var, locate_std_gt_cat_var)
+                    loss += hparams["model"]["loss_factor"][i] * criterion_dis(pose_mgr.all_keypoints_var, keypoint_gt_cat_var, keypoint_gt_cat_mask_var, locate_std_gt_cat_var)
                 pose_mgr.all_keypoints_var = pose_mgr.all_keypoints_var.detach()
                 if detail["summary"]:
                     move_vector_list.append(move_vector_var.data.cpu())
@@ -364,7 +364,7 @@ class Experiment(object):
 
             keypoint_pred = pose_mgr.get_split_keypoints()
 
-            precision, recall, _, _, indices_TP = PR_multi(keypoint_pred, keypoint_gt, locate_std_gt, num_parts=self.num_parts, threshold=self.hparams["model"]["eval_threshold"])
+            precision, recall, _, _, indices_TP = PR_multi(keypoint_pred, keypoint_gt, locate_std_gt, num_parts=self.num_parts, threshold=hparams["model"]["eval_threshold"])
 
             if detail["summary"]:
                 self.summary_image(img=img,

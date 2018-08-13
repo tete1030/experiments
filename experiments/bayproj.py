@@ -12,10 +12,10 @@ import torch.utils.model_zoo as model_zoo
 
 import pose.models as models
 import pose.datasets as datasets
-import pose.utils.config as config
+from utils.globals import config, hparams, globalvars
 from pose.utils.transforms import fliplr_pts
 
-from pose.utils.misc import adjust_learning_rate
+from utils.train import adjust_learning_rate
 
 from pose.models.bayproj import AutoCorrProj
 from pose.models.common import StrictNaNReLU
@@ -26,7 +26,7 @@ import re
 import threading
 
 from utils.sync_batchnorm import SynchronizedBatchNorm2d, DataParallelWithCallback
-from utils.miscs import load_pretrained_loose
+from utils.checkpoint import load_pretrained_loose
 
 FACTOR = 4
 
@@ -44,10 +44,10 @@ BatchNorm2dImpl = GroupNormWrapper
 class Experiment(BaseExperiment):
     def init(self):
         self.num_parts = datasets.mscoco.NUM_PARTS
-        pretrained = self.hparams["model"]["resnet_pretrained"]
+        pretrained = hparams["model"]["resnet_pretrained"]
         if config.resume is not None:
             pretrained = None
-        self.model = DataParallelImpl(BayProj(self.hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda())
+        self.model = DataParallelImpl(BayProj(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda())
         self.criterion = MSELoss().cuda()
 
         extra_mod_parameters = []
@@ -59,51 +59,51 @@ class Experiment(BaseExperiment):
             if extra_mod_reg.match(para_name) is not None:
                 extra_mod_parameters.append(para)
             else:
-                if not self.hparams["freeze_backbone"]:
+                if not hparams["freeze_backbone"]:
                     other_parameters.append(para)
                 else:
                     para.requires_grad = False
 
         self.optimizer = torch.optim.Adam([
                 {"params": other_parameters},
-                {"params": extra_mod_parameters, "lr": self.hparams["model"]["bayproj_lr"], "init_lr": self.hparams["model"]["bayproj_lr"]}
+                {"params": extra_mod_parameters, "lr": hparams["model"]["bayproj_lr"], "init_lr": hparams["model"]["bayproj_lr"]}
             ],
-            lr=self.hparams["learning_rate"],
-            weight_decay=self.hparams['weight_decay'])
-        self.cur_lr = self.hparams["learning_rate"]
+            lr=hparams["learning_rate"],
+            weight_decay=hparams['weight_decay'])
+        self.cur_lr = hparams["learning_rate"]
 
         self.coco = COCO("data/mscoco/person_keypoints_train2014.json")
 
         self.train_dataset = datasets.COCOSinglePose("data/mscoco/images",
                                                self.coco,
                                                "data/mscoco/sp_split.pth",
-                                               "data/mscoco/" + self.hparams["dataset"]["mean_std_file"],
+                                               "data/mscoco/" + hparams["dataset"]["mean_std_file"],
                                                True,
-                                               img_res=self.hparams["model"]["inp_shape"],
-                                               ext_border=self.hparams["dataset"]["ext_border"],
-                                               kpmap_res=self.hparams["model"]["out_shape"],
-                                               keypoint_res=self.hparams["model"]["out_shape"],
-                                               kpmap_sigma=self.hparams["model"]["gaussian_kernels"],
-                                               scale_factor=self.hparams["dataset"]["scale_factor"],
-                                               rot_factor=self.hparams["dataset"]["rotate_factor"],
-                                               trans_factor=self.hparams["dataset"]["translation_factor"])
+                                               img_res=hparams["model"]["inp_shape"],
+                                               ext_border=hparams["dataset"]["ext_border"],
+                                               kpmap_res=hparams["model"]["out_shape"],
+                                               keypoint_res=hparams["model"]["out_shape"],
+                                               kpmap_sigma=hparams["model"]["gaussian_kernels"],
+                                               scale_factor=hparams["dataset"]["scale_factor"],
+                                               rot_factor=hparams["dataset"]["rotate_factor"],
+                                               trans_factor=hparams["dataset"]["translation_factor"])
 
         self.val_dataset = datasets.COCOSinglePose("data/mscoco/images",
                                              self.coco,
                                              "data/mscoco/sp_split.pth",
-                                             "data/mscoco/" + self.hparams["dataset"]["mean_std_file"],
+                                             "data/mscoco/" + hparams["dataset"]["mean_std_file"],
                                              False,
-                                             img_res=self.hparams["model"]["inp_shape"],
-                                             ext_border=self.hparams["dataset"]["ext_border"],
-                                             kpmap_res=self.hparams["model"]["out_shape"],
-                                             keypoint_res=self.hparams["model"]["out_shape"],
-                                             kpmap_sigma=self.hparams["model"]["gaussian_kernels"],
-                                             scale_factor=self.hparams["dataset"]["scale_factor"],
-                                             rot_factor=self.hparams["dataset"]["rotate_factor"],
-                                             trans_factor=self.hparams["dataset"]["translation_factor"])
+                                             img_res=hparams["model"]["inp_shape"],
+                                             ext_border=hparams["dataset"]["ext_border"],
+                                             kpmap_res=hparams["model"]["out_shape"],
+                                             keypoint_res=hparams["model"]["out_shape"],
+                                             kpmap_sigma=hparams["model"]["gaussian_kernels"],
+                                             scale_factor=hparams["dataset"]["scale_factor"],
+                                             rot_factor=hparams["dataset"]["rotate_factor"],
+                                             trans_factor=hparams["dataset"]["translation_factor"])
 
         self.train_collate_fn = datasets.COCOSinglePose.collate_function
-        self.test_collate_fn = datasets.COCOSinglePose.collate_function
+        self.valid_collate_fn = datasets.COCOSinglePose.collate_function
         self.worker_init_fn = datasets.mscoco.worker_init
         self.print_iter_start = " | "
         if config.debug_nan:
@@ -162,7 +162,7 @@ class Experiment(BaseExperiment):
                 mean_s = -1
             else:
                 mean_s = np.mean(s[s>-1])
-            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, type_str), {title: mean_s}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, type_str), {title: mean_s}, step)
             return mean_s
 
         image_ids = preds["image_index"]
@@ -188,21 +188,21 @@ class Experiment(BaseExperiment):
 
             coco_eval.summarize()
         else:
-            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AP"), {"avg": -1.}, step)
-            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AP"), {"i50": -1.}, step)
-            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AP"), {"i75": -1.}, step)
-            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AP"), {"med": -1.}, step)
-            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AP"), {"lar": -1.}, step)
-            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AR"), {"avg": -1.}, step)
-            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AR"), {"i50": -1.}, step)
-            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AR"), {"i75": -1.}, step)
-            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AR"), {"med": -1.}, step)
-            config.tb_writer.add_scalars("{}/{}".format(config.exp_name, "AR"), {"lar": -1.}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"avg": -1.}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"i50": -1.}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"i75": -1.}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"med": -1.}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"lar": -1.}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"avg": -1.}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"i50": -1.}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"i75": -1.}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"med": -1.}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"lar": -1.}, step)
 
             print("No points")
 
     def epoch_start(self, epoch):
-        self.cur_lr = adjust_learning_rate(self.optimizer, epoch, self.hparams['learning_rate'], self.hparams['schedule'], self.hparams['lr_gamma'])
+        self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams['learning_rate'], hparams['schedule'], hparams['lr_gamma'])
 
     def iter_process(self, epoch_ctx, batch, is_train, progress):
         image_ids = batch["img_index"].tolist()
@@ -217,13 +217,13 @@ class Experiment(BaseExperiment):
         det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
         # dirty trick for debug
         if config.vis:
-            config.cur_img = img
+            globalvars.cur_img = img
         output_vars, intermediate_out = self.model(img)
         # Make sure the dirty trick, intermediate_out mechanism, not missing anything
         assert len(self.model.module._intermediate_out) == 0
         # dirty trick for debug, release
         if config.vis:
-            config.cur_img = None
+            globalvars.cur_img = None
 
         loss = 0.
         for ilabel, (outv, gtv) in enumerate(zip(output_vars, det_map_gt_vars)):
@@ -237,14 +237,14 @@ class Experiment(BaseExperiment):
 
         if intermediate_out is not None:
             loss_out_total, loss_in_total, count_point = intermediate_out
-            loss += self.hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / batch_size / count_point.sum()
-            loss += self.hparams["model"]["loss_close_cof"] * loss_in_total.sum() / batch_size / count_point.sum()
+            loss += hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / batch_size / count_point.sum()
+            loss += hparams["model"]["loss_close_cof"] * loss_in_total.sum() / batch_size / count_point.sum()
 
         if (loss.data != loss.data).any():
             import ipdb; ipdb.set_trace()
 
         if not is_train or config.vis:
-            pred, score = parse_map(output_vars[-1], thres=self.hparams["model"]["parse_threshold"], factor=FACTOR)
+            pred, score = parse_map(output_vars[-1], thres=hparams["model"]["parse_threshold"], factor=FACTOR)
             pred_affined = pred.copy()
             for samp_i in range(batch_size):
                 pred_affined[samp_i, :, :2] = kpt_affine(pred_affined[samp_i, :, :2] * FACTOR, np.linalg.pinv(transform_mat[samp_i])[:2])
@@ -434,7 +434,7 @@ class Bottleneck(nn.Module):
                 fig, axes = plt.subplots(3, 10, squeeze=False)
                 
                 for row, axes_row in enumerate(axes):
-                    img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                    img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
                     fts = x.data[row].cpu().numpy()
                     for col, ax in enumerate(axes_row):
                         if col == 0:
@@ -445,7 +445,7 @@ class Bottleneck(nn.Module):
 
                 fig, axes = plt.subplots(3, 10, squeeze=False)
                 for row, axes_row in enumerate(axes):
-                    img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                    img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
                     fts = extra_out[0].data[row].cpu().numpy()
                     for col, ax in enumerate(axes_row):
                         if col == 0:
@@ -688,7 +688,7 @@ def batch_resize(im, new_shape):
 if __name__ == "__main__":
     def test_main():
         from ruamel.yaml import YAML
-        import pose.utils.config as config
+        from utils.globals import config, hparams, globalvars
         import importlib
 
         exp_name = "baybase"
@@ -696,25 +696,25 @@ if __name__ == "__main__":
         with open('experiments/config.yaml', 'r') as f:
             conf = YAML(typ='safe').load(f)
             conf_data = conf["default"]
-            config.__dict__.update(conf_data.items())
+            config.update(conf_data.items())
 
-        config.exp_name = exp_name
+        globalvars.exp_name = exp_name
         with open("experiments/hparams.yaml", "r") as f:
-            hparams = YAML(typ="safe").load(f)[exp_name]
+            hparams.update(YAML().load(f)[exp_name])
 
         config.checkpoint = config.checkpoint.format(**{'exp': exp_name, 'id': hparams['id']})
         if config.resume is not None:
             config.resume = config.resume.format(**{'exp': exp_name, 'id': hparams['id']})
 
         exp_module = importlib.import_module('experiments.' + exp_name)
-        exp = exp_module.Experiment(hparams)
+        exp = exp_module.Experiment()
 
         exp.train_dataset.debug = True
 
         train_loader = torch.utils.data.DataLoader(
             exp.train_dataset,
             collate_fn=exp.train_collate_fn,
-            batch_size=exp.hparams['train_batch'],
+            batch_size=hparams['train_batch'],
             num_workers=0,
             shuffle=True,
             pin_memory=True,

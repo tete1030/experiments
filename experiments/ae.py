@@ -4,8 +4,8 @@ from torch.autograd import Variable
 import pose.models as models
 import pose.datasets as datasets
 from pose.utils.evaluation import PR_multi
-import pose.utils.config as config
-from pose.utils.misc import adjust_learning_rate
+from utils.globals import config, hparams, globalvars
+from utils.train import adjust_learning_rate
 from pose.utils.transforms import fliplr_chwimg, fliplr_map
 from pose.models import HeatmapLoss, AELoss
 from pose.utils.group import HeatmapParser
@@ -23,9 +23,9 @@ INP_EXTRA_RES = [INP_RES//2, INP_RES*2]
 INP_EVAL_RES = [INP_RES] + INP_EXTRA_RES
 
 class Experiment(object):
-    def __init__(self, hparams):
+    def __init__(self):
         self.num_parts = datasets.mscoco.NUM_PARTS
-        self.hparams = hparams
+
         self.model = torch.nn.DataParallel(
             models.PoseHGNet(
                 inp_dim=3,
@@ -73,13 +73,13 @@ class Experiment(object):
                                              kpmap_select="all",
                                              keypoint_res=OUT_RES)
 
-        self.parser = HeatmapParser(detection_val=0.1, max_num_people=self.hparams["model"]["max_num_people"])
+        self.parser = HeatmapParser(detection_val=0.1, max_num_people=hparams["model"]["max_num_people"])
 
         self.train_collate_fn = datasets.COCOPose.collate_function
         self.test_collate_fn = datasets.COCOPose.collate_function
 
     def epoch(self, epoch):
-        self.hparams['learning_rate'] = adjust_learning_rate(self.optimizer, epoch, self.hparams['learning_rate'], self.hparams['schedule'], self.hparams['lr_gamma'])
+        hparams['learning_rate'] = adjust_learning_rate(self.optimizer, epoch, hparams['learning_rate'], hparams['schedule'], hparams['lr_gamma'])
 
     # def summary_image(self, img, pred, gt, title, step):
     #     tb_num = 3
@@ -105,11 +105,11 @@ class Experiment(object):
     #         show_img[tb_num + iimg] = cur_pred
 
     #     show_img = vutils.make_grid(torch.from_numpy(show_img), nrow=tb_num, range=(0, 1))
-    #     config.tb_writer.add_image(title, show_img, step)
+    #     globalvars.tb_writer.add_image(title, show_img, step)
 
     def summary_histogram(self, n_iter):
         for name, param in self.model.named_parameters():
-            config.tb_writer.add_histogram(config.exp_name + "." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
+            globalvars.tb_writer.add_histogram(globalvars.exp_name + "." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
 
     def evaluate(self, image_ids, ans):
         if len(ans) > 0:
@@ -141,7 +141,7 @@ class Experiment(object):
         volatile = not train
         kpmap_var = Variable(kpmap.cuda(async=True), volatile=volatile)
         mask_var = Variable(mask.cuda(async=True), volatile=volatile)
-        keypoint_gt_ae = torch.zeros(len(keypoint_gt), self.hparams["model"]["max_num_people"], self.num_parts, 2).long()
+        keypoint_gt_ae = torch.zeros(len(keypoint_gt), hparams["model"]["max_num_people"], self.num_parts, 2).long()
 
         for bi, keypoint_gt_i in enumerate(keypoint_gt):
             person_counter = 0
@@ -163,7 +163,7 @@ class Experiment(object):
 
         loss_dets = []
         loss_tags = []
-        for j in range(0, self.hparams["model"]["nstack"]):
+        for j in range(0, hparams["model"]["nstack"]):
             output_j = output_var[j]
             loss_dets.append(mse_criterion(output_j[:, :self.num_parts], kpmap_var, mask_var))
             loss_tags.append(ae_criterion(output_j[:, self.num_parts:(self.num_parts*2)].contiguous().view(output_j.size()[0], -1, 1), keypoint_gt_ae))
@@ -171,16 +171,16 @@ class Experiment(object):
         loss_dets = torch.stack(loss_dets, dim=0)
         loss_tags = torch.stack(loss_tags, dim=0).cuda(output_var[0].get_device())
 
-        loss_det = loss_dets.mean() * self.hparams["model"]["loss_det_cof"]
-        loss_tag_push = loss_tags[:, :, 0].mean() * self.hparams["model"]["loss_push_cof"]
-        loss_tag_pull = loss_tags[:, :, 1].mean() * self.hparams["model"]["loss_pull_cof"]
+        loss_det = loss_dets.mean() * hparams["model"]["loss_det_cof"]
+        loss_tag_push = loss_tags[:, :, 0].mean() * hparams["model"]["loss_push_cof"]
+        loss_tag_pull = loss_tags[:, :, 1].mean() * hparams["model"]["loss_pull_cof"]
 
         loss = loss_det + loss_tag_push + loss_tag_pull
 
         phase_str = "train" if train else "valid"
-        config.tb_writer.add_scalars(config.exp_name + "/loss_det", {phase_str: loss_det}, detail["step"])
-        config.tb_writer.add_scalars(config.exp_name + "/loss_tag_push", {phase_str: loss_tag_push}, detail["step"])
-        config.tb_writer.add_scalars(config.exp_name + "/loss_tag_pull", {phase_str: loss_tag_pull}, detail["step"])
+        globalvars.tb_writer.add_scalars(globalvars.exp_name + "/loss_det", {phase_str: loss_det}, detail["step"])
+        globalvars.tb_writer.add_scalars(globalvars.exp_name + "/loss_tag_push", {phase_str: loss_tag_push}, detail["step"])
+        globalvars.tb_writer.add_scalars(globalvars.exp_name + "/loss_tag_pull", {phase_str: loss_tag_pull}, detail["step"])
 
         image_ids = None
         ans = None
@@ -228,7 +228,7 @@ class Experiment(object):
                 print("No avail result")
 
         # if ("summary" in detail and detail["summary"]):
-        #     self.summary_image(img, score_map.cpu(), target, config.exp_name + "/" + ("train" if train else "val"), detail["epoch"] + 1)
+        #     self.summary_image(img, score_map.cpu(), target, globalvars.exp_name + "/" + ("train" if train else "val"), detail["epoch"] + 1)
 
         result = {
             "loss": loss,

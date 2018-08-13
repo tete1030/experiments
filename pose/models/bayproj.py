@@ -3,7 +3,8 @@ import numpy as np
 import torch.nn as nn
 from torch.autograd import Function
 from pose.models.lacorr2d import LocalAutoCorr2DCUDA, PadInfo
-import pose.utils.config as config
+from pose.models.common import StrictNaNReLU
+from utils.globals import config, hparams
 
 class AutoCorr2D(nn.Module):
     def __init__(self, in_channels, out_channels, corr_channels, corr_kernel_size, corr_stride=0, pad=False, permute=True):
@@ -213,11 +214,8 @@ class LongRangeProj(nn.Module):
         Return:
             {torch.FloatTensor} -- [batch_size x channel_size x h x w]
         """
-        # TODO: range too long ? restrict the range, make it use visiblity
         batch_size = radius_mean.size(0)
         channel_size = radius_mean.size(1)
-        height = force_field.size(1)
-        width = force_field.size(2)
         cx = int(cx.item())
         cy = int(cy.item())
 
@@ -284,8 +282,6 @@ class LongRangeProj(nn.Module):
         """
         batch_size = radius_mean.size(0)
         channel_size = radius_mean.size(1)
-        height = force_field.size(1)
-        width = force_field.size(2)
 
         if self.training:
             radius_std = radius_std.view(1 if radius_std.dim() == 1 else batch_size, channel_size)
@@ -483,9 +479,6 @@ class AutoCorrProj(nn.Module):
 
     def _conv_regress(self, x):
         batch_size = x.size(0)
-        channel_size = x.size(1)
-        height = x.size(2)
-        width = x.size(3)
 
         # nb x ninnerchan x h x w
         x = self.acorr2d_sim(x)
@@ -552,7 +545,7 @@ class AutoCorrProj(nn.Module):
             import cv2
             fig, axes = plt.subplots(out.size(0), 10, squeeze=False)
             for row, axes_row in enumerate(axes):
-                # img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                # img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
                 fts = out.data[row].cpu().numpy()
                 for col, ax in enumerate(axes_row):
                     ax.imshow(fts[col])

@@ -4,14 +4,14 @@ import pose.models as models
 import pose.datasets as datasets
 from pose.utils.transforms import fliplr_chwimg, fliplr_map
 from pose.utils.evaluation import accuracy
-import pose.utils.config as config
-from pose.utils.misc import adjust_learning_rate
+from utils.globals import config, hparams, globalvars
+from utils.train import adjust_learning_rate
 
 POINT_NC = 16
 
 idx = [1,2,3,4,5,6,11,12,15,16]
 class Experiment:
-    def __init__(self, hparams):
+    def __init__(self):
         model = models.HourglassNet(models.Bottleneck,
                                         num_stacks=hparams['model']['stack'],
                                         num_blocks=hparams['model']['block'],
@@ -41,12 +41,12 @@ class Experiment:
                                          train=False,
                                          single_person=True)
 
-        self.hparams = hparams
+
     
     def epoch(self, epoch):
-        self.hparams['learning_rate'] = adjust_learning_rate(self.optimizer, epoch, self.hparams['learning_rate'], self.hparams['schedule'], self.hparams['lr_gamma'])
+        hparams['learning_rate'] = adjust_learning_rate(self.optimizer, epoch, hparams['learning_rate'], hparams['schedule'], hparams['lr_gamma'])
         # decay sigma
-        label_sigma_decay = self.hparams['dataset']['label_sigma_decay']
+        label_sigma_decay = hparams['dataset']['label_sigma_decay']
         if label_sigma_decay > 0:
             self.train_dataset.label_sigma *= label_sigma_decay
             self.val_dataset.label_sigma *= label_sigma_decay
@@ -64,7 +64,7 @@ class Experiment:
         for j in range(1, len(output)):
             loss += self.criterion(output[j], target_var)
     
-        if not train and self.hparams['model']['flip']:
+        if not train and hparams['model']['flip']:
             flip_input_var = torch.autograd.Variable(
                     torch.from_numpy(fliplr_chwimg(inputs.numpy())).float().cuda(), 
                     volatile=True

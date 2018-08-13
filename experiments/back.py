@@ -6,8 +6,8 @@ import torchvision.utils as vutils
 
 import pose.models as models
 import pose.datasets as datasets
-import pose.utils.config as config
-from pose.utils.misc import adjust_learning_rate
+from utils.globals import config, hparams, globalvars
+from utils.train import adjust_learning_rate
 
 from pycocotools.coco import COCO
 
@@ -32,20 +32,20 @@ INP_RES = 512
 OUT_RES = 128
 
 class Experiment(object):
-    def __init__(self, hparams):
-        self.hparams = hparams
+    def __init__(self):
+
         self.num_parts = datasets.mscoco.NUM_PARTS
 
         self.model = torch.nn.DataParallel(
             models.MergeHGNet(inp_dim=1, merge_inp_dim=3, out_dim=self.num_parts,
-                            hg_dim=self.hparams["model"]["hg_dim"],
-                            bn=self.hparams["model"]["bn"]).cuda())
+                            hg_dim=hparams["model"]["hg_dim"],
+                            bn=hparams["model"]["bn"]).cuda())
 
         self.criterion = models.HeatmapLoss().cuda()
 
         self.optimizer = torch.optim.Adam(list(self.model.parameters()),
-                                          lr=self.hparams["learning_rate"],
-                                          weight_decay=self.hparams["weight_decay"])
+                                          lr=hparams["learning_rate"],
+                                          weight_decay=hparams["weight_decay"])
 
         # Only used when train and valid dataset are all from train2014
         self.coco = COCO("data/mscoco/person_keypoints_train2014.json")
@@ -89,15 +89,15 @@ class Experiment(object):
 
         self.step_process = True
 
-        self.posemap_parser = models.PoseMapParser(cuda=True, threshold=self.hparams["model"]["parse_threshold"])
+        self.posemap_parser = models.PoseMapParser(cuda=True, threshold=hparams["model"]["parse_threshold"])
 
     def epoch(self, epoch):
-        self.hparams["learning_rate"] = adjust_learning_rate(
+        hparams["learning_rate"] = adjust_learning_rate(
             self.optimizer,
             epoch,
-            self.hparams["learning_rate"],
-            self.hparams["schedule"],
-            self.hparams["lr_gamma"])
+            hparams["learning_rate"],
+            hparams["schedule"],
+            hparams["lr_gamma"])
 
     def summary_image(self, img, locate_map, pred_map, keypoint_gt, matches, title, step):
         MATCH_COLOR = (95, 162, 44)
@@ -149,12 +149,12 @@ class Experiment(object):
 
         whole_img = vutils.make_grid(torch.from_numpy(whole_img.reshape((-1, 3, INP_RES, INP_RES))),
                                      nrow=ncols, range=(0, 1), pad_value=0.3)
-        config.tb_writer.add_image(title, whole_img, step)
+        globalvars.tb_writer.add_image(title, whole_img, step)
 
 
     def summary_histogram(self, n_iter):
         for name, param in self.model.named_parameters():
-            config.tb_writer.add_histogram("back." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
+            globalvars.tb_writer.add_histogram("back." + name, param.clone().cpu().data.numpy(), n_iter, bins="doane")
 
     @profile
     def process(self, batch, train, detail=None):

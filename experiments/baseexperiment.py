@@ -1,5 +1,5 @@
 from pose.utils.evaluation import AverageMeter
-import pose.utils.config as config
+from utils.globals import config, hparams, globalvars
 from torch.utils.data.dataloader import default_collate
 
 class EpochContext(object):
@@ -17,8 +17,7 @@ class EpochContext(object):
         self.stat_avg[sname] = stat_avg
 
 class BaseExperiment(object):
-    def __init__(self, hparams):
-        self.hparams = hparams
+    def __init__(self):
         self.model = None
         self.criterion = None
         self.optimizer = None
@@ -55,16 +54,16 @@ class BaseExperiment(object):
             if not epoch_ctx.stat_avg[scalar_name]:
                 continue
             if phase is not None:
-                config.tb_writer.add_scalars("{}/{}".format(config.exp_name, scalar_name), {phase: scalar_value.avg}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, scalar_name), {phase: scalar_value.avg}, step)
             else:
-                config.tb_writer.add_scalar("{}/{}".format(config.exp_name, scalar_name), scalar_value.avg, step)
+                globalvars.tb_writer.add_scalar("{}/{}".format(globalvars.exp_name, scalar_name), scalar_value.avg, step)
 
     def summary_scalar(self, epoch_ctx, step, phase=None):
         for scalar_name, scalar_value in epoch_ctx.scalar.items():
             if phase is not None:
-                config.tb_writer.add_scalars("{}/{}".format(config.exp_name, scalar_name), {phase: scalar_value.val}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, scalar_name), {phase: scalar_value.val}, step)
             else:
-                config.tb_writer.add_scalar("{}/{}".format(config.exp_name, scalar_name), scalar_value.val, step)
+                globalvars.tb_writer.add_scalar("{}/{}".format(globalvars.exp_name, scalar_name), scalar_value.val, step)
             
     def print_iter(self, epoch_ctx):
         val_list = list()
