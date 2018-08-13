@@ -40,6 +40,7 @@ import collections
 from tensorboardX import SummaryWriter
 import datetime
 from experiments.baseexperiment import BaseExperiment, EpochContext
+from utils.miscs import ask, load_pretrained_loose
 
 # Handle sigint
 import signal
@@ -54,29 +55,6 @@ def enable_sigint_handler():
         if is_main_process():
             print("[SIGINT DETECTED]")
     signal.signal(signal.SIGINT, sigint_handler)
-
-def ask(question, posstr="y", negstr="n", ansretry=False, ansdefault=False):
-    if ansretry is False:
-        ansretry = 1
-    else:
-        assert isinstance(ansretry, int)
-
-    retry_count = 0
-    while True:
-        ans = input(question + " (%s|%s) :" % (posstr, negstr))
-        retry_count += 1
-
-        if ans == posstr:
-            return True
-        elif ans == negstr:
-            return False
-        else:
-            if retry_count < ansretry:
-                print("[Error] Illegal answer! Retry")
-                continue
-            else:
-                print("[Error] Illegal answer!")
-                return ansdefault
 
 def check_hparams_consistency(old_hparams, new_hparams):
     def safe_yaml_convert(rt_yaml):
@@ -213,7 +191,10 @@ def load_checkpoint(exp, checkpoint_folder, checkpoint_file, ignore_hparams_mism
     print("==> Loading checkpoint '{}'".format(checkpoint_full))
     checkpoint = torch.load(checkpoint_full)
     exp.hparams["before_epoch"] = checkpoint["epoch"]
-    exp.model.load_state_dict(checkpoint["state_dict"], strict=not args.no_strict_model_load)
+    if args.no_strict_model_load:
+        load_pretrained_loose(exp.model, checkpoint["state_dict"])
+    else:
+        exp.model.load_state_dict(checkpoint["state_dict"])
     if not args.no_criterion_load:
         exp.criterion.load_state_dict(checkpoint["criterion"])
     if not args.no_optimizer_load:

@@ -24,6 +24,7 @@ from .baseexperiment import BaseExperiment
 import cv2
 
 from utils.sync_batchnorm import SynchronizedBatchNorm2d, DataParallelWithCallback
+from utils.miscs import load_pretrained_loose
 
 FACTOR = 4
 
@@ -404,27 +405,6 @@ class ResNet(nn.Module):
 
         return [x4, x3, x2, x1]
 
-def load_pretrained(model, pretrained, pause_model_missing=True, pause_model_extra=True):
-    from collections import OrderedDict
-    state_dict = model.state_dict()
-    pretrained_state_dict = torch.load(pretrained)
-    model_missing_keys = set(pretrained_state_dict.keys()) - set(state_dict.keys())
-    model_extra_keys = set(state_dict.keys()) - set(pretrained_state_dict.keys())
-    if len(model_missing_keys) > 0:
-        print("Model missing keys: " + str(model_missing_keys))
-    if len(model_extra_keys) > 0:
-        print("Model extra keys: " + str(model_extra_keys))
-    if (pause_model_missing and len(model_missing_keys) > 0) or (pause_model_extra and len(model_extra_keys) > 0):
-        import utils.miscs as miscs
-        print("Press any key to continue")
-        miscs.wait_key()
-
-    for k, v in pretrained_state_dict.items():
-        if k not in state_dict:
-            continue
-        state_dict[k] = v
-    model.load_state_dict(state_dict)
-
 def resnet50(pretrained=None, **kwargs):
     """Constructs a ResNet-50 model.
     Args:
@@ -433,7 +413,7 @@ def resnet50(pretrained=None, **kwargs):
     model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
     if pretrained is not None:
         print("Loading pretrained resnet50 ...")
-        load_pretrained(model, pretrained)
+        load_pretrained_loose(model, torch.load(pretrained))
     return model
 
 
@@ -445,7 +425,7 @@ def resnet101(pretrained=None, **kwargs):
     model = ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
     if pretrained is not None:
         print("Loading pretrained resnet101 ...")
-        load_pretrained(model, pretrained)
+        load_pretrained_loose(model, torch.load(pretrained))
     return model
 
 class globalNet(nn.Module):
