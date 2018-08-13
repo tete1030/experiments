@@ -47,7 +47,8 @@ class AutoCorr2D(nn.Module):
             raise ValueError("pad must be one of values: False, int, tuple, PadInfo, 'k'")
         self.pad = pad
         self.permute = permute
-        self.extract_input = nn.Conv2d(in_channels, corr_channels, kernel_size=3, padding=1)
+        self.extract_input = nn.Sequential(nn.Conv2d(in_channels, corr_channels, kernel_size=3, padding=1),
+                                           StrictNaNReLU(inplace=True))
         self.corr2d = LocalAutoCorr2DCUDA(corr_kernel_size,
                                           corr_stride,
                                           pad)
@@ -389,7 +390,8 @@ class AutoCorrProj(nn.Module):
             else:
                 assert len(stride) == 2 and isinstance(stride[0], int) and isinstance(stride[1], int)
                 assert stride[0] > 0 and stride[1] > 0
-            self.acorr2d_sim = nn.Conv2d(in_channels, inner_channels, kernel_size=3, padding=1)
+            self.acorr2d_sim = nn.Sequential(nn.Conv2d(in_channels, inner_channels, kernel_size=3, padding=1),
+                                             StrictNaNReLU(inplace=True))
             regressor_kwargs["stride"] = stride
             regressor_kwargs["padding"] = pad
             self._kernel_size = kernel_size
