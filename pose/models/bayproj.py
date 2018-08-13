@@ -178,7 +178,7 @@ fgacos = FriendlyGradArcCosine.apply
 selblock = SelectBlocker.apply
 
 class LongRangeProj(nn.Module):
-    def __init__(self, channel_size=None, radius_std_init=1., input_std=False, mode="prob", summary_mode="max"):
+    def __init__(self, channel_size=None, radius_std_init=1., input_std=False, mode="prob", summary_mode="max", use_conv_final=False):
         super(LongRangeProj, self).__init__()
         assert mode in ["prob", "samp"]
         assert summary_mode in ["max", "sum"]
@@ -186,6 +186,9 @@ class LongRangeProj(nn.Module):
         self.summary_mode = summary_mode
         self._float32_eps = np.finfo(np.float32).eps.item()
         self.input_std = input_std
+        self.use_conv_final = use_conv_final
+        if use_conv_final:
+            self.conv_final = nn.Conv2d(channel_size, channel_size, kernel_size=3, stride=1, padding=1)
         if not input_std:
             self.radius_std = nn.Parameter(torch.FloatTensor(channel_size))
             self.angle_std = nn.Parameter(torch.FloatTensor(channel_size))
@@ -346,10 +349,13 @@ class LongRangeProj(nn.Module):
                     else:
                         raise ValueError("illegal summary_mode=" + self.summary_mode)
 
+        if self.use_conv_final:
+            out = self.conv_final(out)
+
         return out
 
 class AutoCorrProj(nn.Module):
-    def __init__(self, use_acorr, in_channels, out_channels, inner_channels, kernel_size, stride, regress_std, proj_mode, proj_summary_mode, pad=False):
+    def __init__(self, use_acorr, in_channels, out_channels, inner_channels, kernel_size, stride, regress_std, proj_mode, proj_summary_mode, proj_use_conv_final, pad=False):
         super(AutoCorrProj, self).__init__()
         self.use_acorr = use_acorr
         regressor_kwargs = {}
@@ -396,9 +402,9 @@ class AutoCorrProj(nn.Module):
             self.radius_std_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
             self.angle_std_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
             # TODO: improve initialization
-            self.projector = LongRangeProj(input_std=True, mode=proj_mode, summary_mode=proj_summary_mode)
+            self.projector = LongRangeProj(input_std=True, mode=proj_mode, summary_mode=proj_summary_mode, use_conv_final=proj_use_conv_final)
         else:
-            self.projector = LongRangeProj(input_std=False, channel_size=out_channels, radius_std_init=10, mode=proj_mode, summary_mode=proj_summary_mode)
+            self.projector = LongRangeProj(input_std=False, channel_size=out_channels, radius_std_init=10, mode=proj_mode, summary_mode=proj_summary_mode, use_conv_final=proj_use_conv_final)
         self.conf_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -416,7 +422,7 @@ class AutoCorrProj(nn.Module):
         # For finetune
         # TODO: improve initialization
         # self.radius_regressor.weight.data.uniform_(2, 8)
-        self.radius_regressor.bias.data.uniform_(0, 0.5)
+        self.radius_regressor.bias.data.uniform_(1, 7)
         # self.angle_regressor.weight.data.uniform_(-1e-3, 1e-3)
         self.angle_regressor.bias.data.uniform_(-np.pi, np.pi)
         if regress_std:

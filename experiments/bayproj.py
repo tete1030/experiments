@@ -30,6 +30,9 @@ from utils.miscs import load_pretrained_loose
 
 FACTOR = 4
 
+EXTRA_MOD_REGRESS_CHANNELS = 128
+EXTRA_MOD_OUT_CHANNELS = 128
+
 class GroupNormWrapper(nn.GroupNorm):
     def __init__(self, num_features, eps=1e-5, num_groups=32):
         assert num_features % num_groups == 0, "num_features({}) is not dividend by num_groups({})".format(num_features, num_groups)
@@ -274,7 +277,7 @@ class Experiment(BaseExperiment):
                             cv2.circle(draw_img, (int(pt[0] * FACTOR), int(pt[1] * FACTOR)), radius=2, color=(0, 0, 255), thickness=-1)
                     axes.flat[i].imshow(draw_img[..., ::-1])
 
-            if False:
+            if True:
                 for i in range(min(1, batch_size)):
                     nrows = 3; ncols = 6
                     for i_out in range(len(output_vars)):
@@ -375,9 +378,11 @@ class BasicBlock(nn.Module):
 class Bottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None, extra_mod=None):
+    def __init__(self, inplanes, planes, stride=1, downsample=None, extra_mod=None, extra_mod_conv=False):
         super(Bottleneck, self).__init__()
-        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
+        self.conv1 = nn.Conv2d(inplanes + EXTRA_MOD_OUT_CHANNELS if extra_mod_conv else inplanes, planes, kernel_size=1, bias=False)
+        self.inplanes = inplanes
+        self.extra_mod_conv = extra_mod_conv
         self.bn1 = BatchNorm2dImpl(planes)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
                                padding=1, bias=False)
@@ -392,12 +397,14 @@ class Bottleneck(nn.Module):
             mod = extra_mod[0]
             self._extra_mod_lock = extra_mod[1]
             self._extra_mod_interm_out = extra_mod[2]
-            self.extra_mod = mod(False, inplanes, inplanes, 32, kernel_size=(7, 7), stride=(3, 3), regress_std=False, proj_mode="samp", proj_summary_mode="sum")
+            self.extra_mod = mod(False, inplanes, EXTRA_MOD_OUT_CHANNELS, EXTRA_MOD_REGRESS_CHANNELS, kernel_size=(7, 7), stride=(3, 3), regress_std=False, proj_mode="samp", proj_summary_mode="sum", proj_use_conv_final=True)
         else:
             self.extra_mod = None
 
     def forward(self, x):
         residual = x
+        if self.extra_mod_conv:
+            residual = residual[:, :self.inplanes]
 
         out = self.conv1(x)
         out = self.bn1(out)
@@ -419,36 +426,34 @@ class Bottleneck(nn.Module):
             extra_out = self.extra_mod(x)
             with self._extra_mod_lock:
                 self._extra_mod_interm_out.append(extra_out[1:])
-            if self.extra_mod.out_channels < out.size(1):
-                out = torch.cat([torch.max(out[:, :self.extra_mod.out_channels], extra_out[0]), out[:, self.extra_mod.out_channels:]], dim=1)
-            else:
-                out = torch.max(out, extra_out[0])
-                if config.vis:
-                    import matplotlib.pyplot as plt
-                    import cv2
-                    fig, axes = plt.subplots(3, 10, squeeze=False)
-                    
-                    for row, axes_row in enumerate(axes):
-                        img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
-                        fts = x.data[row].cpu().numpy()
-                        for col, ax in enumerate(axes_row):
-                            if col == 0:
-                                ax.imshow(img)
-                            else:
-                                ax.imshow(fts[col-1])
-                    fig.suptitle("bottleneck x")
+            out = torch.cat([out, extra_out[0]], dim=1)
 
-                    fig, axes = plt.subplots(3, 10, squeeze=False)
-                    for row, axes_row in enumerate(axes):
-                        img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
-                        fts = extra_out[0].data[row].cpu().numpy()
-                        for col, ax in enumerate(axes_row):
-                            if col == 0:
-                                ax.imshow(img)
-                            else:
-                                ax.imshow(fts[col-1])
-                    fig.suptitle("bottleneck extra_out")
-                    # plt.show()
+            if config.vis:
+                import matplotlib.pyplot as plt
+                import cv2
+                fig, axes = plt.subplots(3, 10, squeeze=False)
+                
+                for row, axes_row in enumerate(axes):
+                    img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                    fts = x.data[row].cpu().numpy()
+                    for col, ax in enumerate(axes_row):
+                        if col == 0:
+                            ax.imshow(img)
+                        else:
+                            ax.imshow(fts[col-1])
+                fig.suptitle("bottleneck x")
+
+                fig, axes = plt.subplots(3, 10, squeeze=False)
+                for row, axes_row in enumerate(axes):
+                    img = (config.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                    fts = extra_out[0].data[row].cpu().numpy()
+                    for col, ax in enumerate(axes_row):
+                        if col == 0:
+                            ax.imshow(img)
+                        else:
+                            ax.imshow(fts[col-1])
+                fig.suptitle("bottleneck extra_out")
+                # plt.show()
 
         out = self.relu(out)
 
@@ -495,6 +500,8 @@ class ResNet(nn.Module):
         for i in range(1, blocks):
             if extra_mod is not None and i == 1:
                 layers.append(block(self.inplanes, planes, extra_mod=extra_mod))
+            elif extra_mod is not None and i == 2:
+                layers.append(block(self.inplanes, planes, extra_mod_conv=True))
             else:
                 layers.append(block(self.inplanes, planes))
 
