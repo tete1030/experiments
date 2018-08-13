@@ -129,9 +129,9 @@ def main(args, unknown_args):
         
         if not load_checkpoint(exp, config.resume, args.resume_file,
                                ignore_hparams_mismatch=args.ignore_hparams_mismatch,
-                               no_strict_model_load=args.no_strict_model_load,
-                               no_criterion_load=args.no_criterion_load,
-                               no_optimizer_load=args.no_optimizer_load):
+                               no_strict_model_load=config.no_strict_model_load,
+                               no_criterion_load=config.no_criterion_load,
+                               no_optimizer_load=config.no_optimizer_load):
             print("[Error] hparams mismatch or loading failed")
             sys.exit(0)
 
@@ -444,9 +444,6 @@ def get_args():
     argp.add_argument("CONF", type=str)
     argp.add_argument("EXP", type=str)
     argp.add_argument("-r", dest="resume_file", type=str)
-    argp.add_argument("--no-strict-model-load", action="store_true")
-    argp.add_argument("--no-criterion-load", action="store_true")
-    argp.add_argument("--no-optimizer-load", action="store_true")
     argp.add_argument("--ptvsd", action="store_true")
     argp.add_argument("--ignore-hparams-mismatch", action="store_true")
     argp.add_argument("--override", nargs=2, metavar=("var", "value"), action="append")
@@ -476,4 +473,6 @@ if __name__ == "__main__":
             ptvsd.wait_for_attach()
             print("Debugger attached!")
 
+    # For now we do not need extra args
+    assert len(_unknown_args) == 0, "Unknown args: " + str(_unknown_args)
     main(_args, _unknown_args)

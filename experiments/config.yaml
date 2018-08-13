@@ -13,6 +13,9 @@ default: &DEFAULT
     vis: false
     debug_nan: false
     em_valid_int: 0
+    no_strict_model_load: false
+    no_criterion_load: false
+    no_optimizer_load: false
 
 profile: &PROFILE
     <<: *DEFAULT
@@ -45,6 +48,12 @@ fastresume:
 resume: &RESUME
     <<: *DEFAULT
     resume: 'checkpoint/{exp}/{id}'
+
+looseresume:
+    <<: *RESUME
+    no_strict_model_load: true
+    no_criterion_load: true
+    no_optimizer_load: true
 
 fasteval:
     <<: *DEFAULT
