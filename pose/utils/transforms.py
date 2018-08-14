@@ -1,12 +1,6 @@
-from __future__ import absolute_import
-
-import os
 import numpy as np
-import scipy.misc
-import matplotlib.pyplot as plt
 import torch
 
-from .misc import *
 from .imutils import *
 
 
@@ -124,5 +118,5 @@ def transform_preds(coords, center, ori_size, new_size):
     # coords = coords.view(-1, coords.size(-1))
     # print(coords.size())
     for p in range(coords.size(0)):
-        coords[p, 0:2] = to_torch(transform(coords[p, 0:2], center, ori_size, new_size))
+        coords[p, 0:2] = torch.from_numpy(transform(coords[p, 0:2].numpy(), center, ori_size, new_size))
     return coords

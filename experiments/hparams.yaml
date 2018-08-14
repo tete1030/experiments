@@ -188,6 +188,19 @@ bayproj:
         out_shape: [48, 64]
         gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
         parse_threshold: 0.1
+        detail:
+            out_channels: 128
+            regress_channels: 128
+            use_acorr: false
+            regress_std: false
+            proj_mode: samp
+            radius_std_init: 10
+            proj_data: false
+            proj_summary_mode: sum
+            proj_use_conv_final: true
+            regress_kernel_size: [7, 7]
+            regress_stride: [3, 3]
+            proj_samp_sigma: 1
     dataset:
         mean_std_file: mean_std_resnet_pretrained.pth
         ext_border: [0.1, 0.15]

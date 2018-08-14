@@ -1,11 +1,8 @@
-from __future__ import absolute_import
-
 import torch
 import torch.nn as nn
 import numpy as np
 import scipy.misc
 
-from .misc import *
 from PIL import ImageEnhance
 import matplotlib
 import matplotlib.pyplot as plt

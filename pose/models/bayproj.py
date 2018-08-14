@@ -180,7 +180,14 @@ fgacos = FriendlyGradArcCosine.apply
 selblock = SelectBlocker.apply
 
 class LongRangeProj(nn.Module):
-    def __init__(self, channel_size=None, radius_std_init=1., input_std=False, mode="prob", summary_mode="max", use_conv_final=False):
+    def __init__(self,
+                 channel_size=None,
+                 radius_std_init=1.,
+                 input_std=False,
+                 mode="prob",
+                 summary_mode="max",
+                 use_conv_final=False,
+                 proj_data=False):
         super(LongRangeProj, self).__init__()
         assert mode in ["prob", "samp"]
         assert summary_mode in ["max", "sum"]
@@ -189,6 +196,11 @@ class LongRangeProj(nn.Module):
         self._float32_eps = np.finfo(np.float32).eps.item()
         self.input_std = input_std
         self.use_conv_final = use_conv_final
+        if self.mode == "samp":
+            self.proj_samp_sigma = float(hparams["model"]["detail"]["proj_samp_sigma"])
+        self.proj_data = proj_data
+        if proj_data:
+            raise NotImplementedError("Not completed")
         if use_conv_final:
             self.conv_final = nn.Conv2d(channel_size, channel_size, kernel_size=3, stride=1, padding=1)
         if not input_std:
@@ -297,9 +309,9 @@ class LongRangeProj(nn.Module):
         # nb x nc x 2 x h x w
         force_field = force_field[None, None] - force_target[..., None, None]
         # TODO: parameterize std?
-        return torch.exp(- force_field.norm(dim=2) ** 2 / 2)
+        return torch.exp(- force_field.norm(dim=2) ** 2 / 2 / self.proj_samp_sigma ** 2)
 
-    def forward(self, force_field, force_norm, origin_x, origin_y, radius, angle, confidence, radius_std=None, angle_std=None):
+    def forward(self, force_field, force_norm, origin_x, origin_y, radius, angle, confidence, radius_std=None, angle_std=None, inp=None):
         """
         Arguments:
             force_field {torch.FloatTensor} -- [nh x nw x 2 x height x width]
@@ -314,6 +326,9 @@ class LongRangeProj(nn.Module):
         """
         batch_size = radius.size(0)
         channel_size = radius.size(3)
+
+        if self.proj_data or inp is not None:
+            raise NotImplementedError("Not completed")
 
         if self.input_std:
             assert radius_std is not None and angle_std is not None
@@ -352,11 +367,25 @@ class LongRangeProj(nn.Module):
         return out
 
 class AutoCorrProj(nn.Module):
-    def __init__(self, use_acorr, in_channels, out_channels, inner_channels, kernel_size, stride, regress_std, proj_mode, proj_summary_mode, proj_use_conv_final, pad=False):
+    def __init__(self,
+                 use_acorr,
+                 in_channels,
+                 out_channels,
+                 inner_channels,
+                 kernel_size,
+                 stride,
+                 regress_std,
+                 proj_mode,
+                 proj_summary_mode,
+                 proj_use_conv_final,
+                 proj_data=False,
+                 pad=False):
         super(AutoCorrProj, self).__init__()
         self.use_acorr = use_acorr
         regressor_kwargs = {}
         if use_acorr:
+            if proj_data:
+                raise NotImplementedError("proj_data currently not implemented for use_acorr")
             print("[Info] Using acorr")
             self.acorr2d = AutoCorr2D(in_channels, None, inner_channels, kernel_size, stride, pad=pad, permute=False)
             self._kernel_size = self.acorr2d.corr_kernel_size
@@ -386,7 +415,12 @@ class AutoCorrProj(nn.Module):
             else:
                 assert len(stride) == 2 and isinstance(stride[0], int) and isinstance(stride[1], int)
                 assert stride[0] > 0 and stride[1] > 0
-            self.acorr2d_sim = nn.Sequential(nn.Conv2d(in_channels, inner_channels, kernel_size=3, padding=1),
+
+            groups = 1
+            if proj_data:
+                assert in_channels == inner_channels, "proj_data requires in_channels == inner_channels"
+                groups = in_channels
+            self.acorr2d_sim = nn.Sequential(nn.Conv2d(in_channels, inner_channels, kernel_size=3, padding=1, groups=groups),
                                              StrictNaNReLU(inplace=True))
             regressor_kwargs["stride"] = stride
             regressor_kwargs["padding"] = pad
@@ -394,16 +428,30 @@ class AutoCorrProj(nn.Module):
             self._stride = stride
             self._pad_tl = pad
 
-        self.radius_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
-        self.angle_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
+        groups = 1
+        if proj_data:
+            assert out_channels == inner_channels, "proj_data requires out_channels == inner_channels"
+            groups = out_channels
+        self.radius_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, groups=groups, **regressor_kwargs)
+        self.angle_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, groups=groups, **regressor_kwargs)
         if regress_std:
-            self.radius_std_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
-            self.angle_std_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
+            self.radius_std_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, groups=groups, **regressor_kwargs)
+            self.angle_std_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, groups=groups, **regressor_kwargs)
             # TODO: improve initialization
-            self.projector = LongRangeProj(input_std=True, mode=proj_mode, summary_mode=proj_summary_mode, use_conv_final=proj_use_conv_final)
+            self.projector = LongRangeProj(input_std=True,
+                                           mode=proj_mode,
+                                           summary_mode=proj_summary_mode,
+                                           use_conv_final=proj_use_conv_final,
+                                           proj_data=proj_data)
         else:
-            self.projector = LongRangeProj(input_std=False, channel_size=out_channels, radius_std_init=10, mode=proj_mode, summary_mode=proj_summary_mode, use_conv_final=proj_use_conv_final)
-        self.conf_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, **regressor_kwargs)
+            self.projector = LongRangeProj(input_std=False,
+                                           channel_size=out_channels,
+                                           radius_std_init=hparams["model"]["detail"]["radius_std_init"],
+                                           mode=proj_mode,
+                                           summary_mode=proj_summary_mode,
+                                           use_conv_final=proj_use_conv_final,
+                                           proj_data=proj_data)
+        self.conf_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, groups=groups, **regressor_kwargs)
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.regress_std = regress_std
@@ -513,7 +561,7 @@ class AutoCorrProj(nn.Module):
                           (proj_cen_y[top_outsd] ** 2).sum() + ((proj_cen_y[bottom_outsd] - height) ** 2).sum())
         # count_out_total = (left_outsd | right_outsd | top_outsd | bottom_outsd).int().sum().float()
 
-        return loss_out_total 
+        return loss_out_total
 
     def forward(self, inp):
         height = inp.size(2)

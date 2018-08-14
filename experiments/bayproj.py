@@ -30,9 +30,6 @@ from utils.checkpoint import load_pretrained_loose
 
 FACTOR = 4
 
-EXTRA_MOD_REGRESS_CHANNELS = 128
-EXTRA_MOD_OUT_CHANNELS = 128
-
 class GroupNormWrapper(nn.GroupNorm):
     def __init__(self, num_features, eps=1e-5, num_groups=32):
         assert num_features % num_groups == 0, "num_features({}) is not dividend by num_groups({})".format(num_features, num_groups)
@@ -397,7 +394,17 @@ class Bottleneck(nn.Module):
             mod = extra_mod[0]
             self._extra_mod_lock = extra_mod[1]
             self._extra_mod_interm_out = extra_mod[2]
-            self.extra_mod = mod(False, inplanes, EXTRA_MOD_OUT_CHANNELS, EXTRA_MOD_REGRESS_CHANNELS, kernel_size=(7, 7), stride=(3, 3), regress_std=False, proj_mode="samp", proj_summary_mode="sum", proj_use_conv_final=True)
+            self.extra_mod = mod(use_acorr=hparams["model"]["detail"]["use_acorr"],
+                                 in_channels=inplanes,
+                                 out_channels=hparams["model"]["detail"]["out_channels"],
+                                 inner_channels=hparams["model"]["detail"]["regress_channels"],
+                                 kernel_size=tuple(hparams["model"]["detail"]["regress_kernel_size"]),
+                                 stride=tuple(hparams["model"]["detail"]["regress_stride"]),
+                                 regress_std=hparams["model"]["detail"]["regress_std"],
+                                 proj_mode=hparams["model"]["detail"]["proj_mode"],
+                                 proj_summary_mode=hparams["model"]["detail"]["proj_summary_mode"],
+                                 proj_use_conv_final=hparams["model"]["detail"]["proj_use_conv_final"],
+                                 proj_data=hparams["model"]["detail"]["proj_data"])
         else:
             self.extra_mod = None
 
@@ -458,7 +465,6 @@ class Bottleneck(nn.Module):
         out = self.relu(out)
 
         return out
-
 
 class ResNet(nn.Module):
 
