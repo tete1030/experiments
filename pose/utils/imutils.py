@@ -54,6 +54,13 @@ def gaussian(shape=(7,7),sigma=1):
 # derived from https://github.com/umich-vl/pose-ae-train
 class HeatmapGenerator(object):
     def __init__(self, out_res=None, sigma=None):
+        """HeatmapGenerator
+        
+        Keyword Arguments:
+            out_res {tuple or int} -- (w, h) or l (default: {None})
+            sigma {float} -- map gaussian kernel size (default: {None})
+        """
+
         self.out_res = out_res
         if sigma is not None:
             self.sigma = float(sigma)

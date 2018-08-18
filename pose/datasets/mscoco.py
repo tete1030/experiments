@@ -417,6 +417,27 @@ class COCOSinglePose(data.Dataset):
                  ext_border=(0., 0.),
                  kpmap_res=(48, 64), keypoint_res=None,
                  kpmap_sigma=1, scale_factor=0.25, rot_factor=30, trans_factor=0.05):
+        """COCO Keypoints Single Person
+        
+        Arguments:
+            img_folder {str} -- Image Folder
+            anno {COCO} -- COCO object
+            split_file {str} -- Split file
+            meanstd_file {str} -- Mean and Std store file
+            is_train {bool} -- Training mode indicator
+        
+        Keyword Arguments:
+            img_res {tuple of int} -- (W, H) (default: {(192, 256)})
+            minus_mean {bool} -- if mean should be deducted (default: {True})
+            ext_border {tuple of float} -- border extended scale (default: {(0., 0.)})
+            kpmap_res {tuple of int or None} -- (W, H) (default: {(48, 64)})
+            keypoint_res {tuple of int or None} -- (W, H) (default: {None})
+            kpmap_sigma {float} -- gaussian kernel size (default: {1})
+            scale_factor {float} -- data augmentation scale (default: {0.25})
+            rot_factor {float} -- data augmentation rotation (default: {30})
+            trans_factor {float} -- data augmentation translation (default: {0.05})
+        """
+
         self.img_folder = img_folder    # root image folders
         self.is_train = is_train           # training set or test set
         self.img_res = tuple(img_res)
@@ -582,7 +603,7 @@ class COCOSinglePose(data.Dataset):
 
         keypoints_tf_ret = keypoints_tf.copy()
         if self.keypoint_res and self.keypoint_res != self.kpmap_res:
-            keypoints_tf_ret[..., :2] = keypoints_tf_ret[..., :2] * (float(self.keypoint_res) / self.kpmap_res)
+            keypoints_tf_ret[..., :2] = keypoints_tf_ret[..., :2] * (float(self.keypoint_res[0]) / self.kpmap_res[0])
 
         if not isinstance(self.kpmap_sigma, list):
             kp_map = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)

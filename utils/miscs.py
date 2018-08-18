@@ -2,14 +2,16 @@ import os
 import sys
 import multiprocessing
 import errno
-
 if os.name == 'nt':
     import msvcrt
 else:
     import termios
+from utils.log import log_e
 
-def wait_key():
+def wait_key(tip=False):
     ''' Wait for a key press on the console and return it. '''
+    if tip:
+        print("Press any key to continue ...")
     result = None
     if os.name == 'nt':
         result = msvcrt.getch()
@@ -33,27 +35,43 @@ def wait_key():
 def is_main_process():
     return type(multiprocessing.current_process()) != multiprocessing.Process
 
-def ask(question, posstr="y", negstr="n", ansretry=False, ansdefault=False):
+def ask(question, posstr="y", negstr="n", ansretry=True, ansdefault=None):
     if ansretry is False:
         ansretry = 1
+    elif ansretry is True:
+        ansretry = float('inf')
     else:
         assert isinstance(ansretry, int)
 
+    posstr = posstr.lower()
+    negstr = negstr.lower()
+    if ansdefault is not None:
+        assert isinstance(ansdefault, bool)
+        if ansdefault:
+            posstr = posstr.upper()
+        else:
+            negstr = negstr.upper()
+    else:
+        assert ansretry == float('inf'), "No default answer for retry fallback"
+
     retry_count = 0
     while True:
-        ans = input(question + " (%s|%s) :" % (posstr, negstr))
+        ans = input(question + " ({}|{}):".format(posstr, negstr))
         retry_count += 1
 
-        if ans == posstr:
+        if ans.lower() == posstr.lower():
             return True
-        elif ans == negstr:
+        elif ans.lower() == negstr.lower():
             return False
+        elif ansdefault is not None and not ans:
+            return ansdefault
         else:
             if retry_count < ansretry:
-                print("[Error] Illegal answer! Retry")
+                log_e("Illegal answer! Retry")
                 continue
             else:
-                print("[Error] Illegal answer!")
+                # not possible to reach here when ansdefault is None
+                log_e("Illegal answer! Using default answer: " + negstr.lower())
                 return ansdefault
 
 def mkdir_p(dir_path):

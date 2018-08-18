@@ -1,6 +1,9 @@
+import os
 from pose.utils.evaluation import AverageMeter
-from utils.globals import config, hparams, globalvars
+from utils.globals import globalvars
+import torch
 from torch.utils.data.dataloader import default_collate
+from utils.checkpoint import load_pretrained_loose, save_checkpoint, RejectLoadError
 
 class EpochContext(object):
     def __init__(self):
@@ -32,13 +35,16 @@ class BaseExperiment(object):
         self.cur_lr = None
         self.init()
 
+    def init(self):
+        pass
+
     def evaluate(self, preds, step):
         pass
 
     def epoch_start(self, epoch):
         pass
 
-    def iter_process(self, epoch_ctx, batch, is_train, progress):
+    def iter_process(self, epoch_ctx: EpochContext, batch: dict, is_train: bool, progress: dict) -> dict:
         pass
 
     def iter_step(self, loss):
@@ -48,6 +54,36 @@ class BaseExperiment(object):
 
     def epoch_end(self, epoch):
         pass
+
+    def load_checkpoint(self, checkpoint_folder, checkpoint_file,
+                        no_strict_model_load=False,
+                        no_criterion_load=False,
+                        no_optimizer_load=False):
+
+        # Load checkpoint data
+        checkpoint_full = os.path.join(checkpoint_folder, checkpoint_file)
+        checkpoint = torch.load(checkpoint_full)
+        if no_strict_model_load:
+            try:
+                load_pretrained_loose(self.model, checkpoint["state_dict"])
+            except RejectLoadError:
+                return None
+        else:
+            self.model.load_state_dict(checkpoint["state_dict"])
+        if not no_criterion_load:
+            self.criterion.load_state_dict(checkpoint["criterion"])
+        if not no_optimizer_load:
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+        return checkpoint["epoch"]
+
+    def save_checkpoint(self, checkpoint_folder, checkpoint_file, epoch):
+        checkpoint_dict = {
+            "epoch": epoch,
+            "state_dict": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "criterion": self.criterion.state_dict()
+        }
+        save_checkpoint(checkpoint_dict, checkpoint_folder=checkpoint_folder, checkpoint_file=checkpoint_file, force_replace=True)
 
     def summary_scalar_avg(self, epoch_ctx, step, phase=None):
         for scalar_name, scalar_value in epoch_ctx.scalar.items():

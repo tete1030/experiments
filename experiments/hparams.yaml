@@ -171,7 +171,7 @@ baybase:
 bayproj:
     <<: *DEFAULT
     name: baybase
-    id: 11
+    id: 12
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 200
@@ -179,13 +179,15 @@ bayproj:
     train_batch: 32
     test_batch: 32
     freeze_backbone: false
+    bayproj_lr: 5.e-4
+    early_pred_start: 116
+    early_pred_end: 140
     model:
         resnet_pretrained: pretrained/resnet50_gn.pth
-        bayproj_lr: 5.e-4
         loss_outsider_cof: 0.001
         loss_close_cof: 0.001
-        inp_shape: [192, 256]
-        out_shape: [48, 64]
+        inp_shape: [192, 256] # W, H
+        out_shape: [48, 64] # W, H
         gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
         parse_threshold: 0.1
         detail:
@@ -201,6 +203,9 @@ bayproj:
             regress_kernel_size: [7, 7]
             regress_stride: [3, 3]
             proj_samp_sigma: 1
+            res_index: 2
+            block_index: 1
+            early_pred_kernel: 2. # with res_index==2 and block_index==1, should be same size in the second gaussian_kernel
     dataset:
         mean_std_file: mean_std_resnet_pretrained.pth
         ext_border: [0.1, 0.15]

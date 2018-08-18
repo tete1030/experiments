@@ -5,6 +5,7 @@ from torch.autograd import Function
 from pose.models.lacorr2d import LocalAutoCorr2DCUDA, PadInfo
 from pose.models.common import StrictNaNReLU
 from utils.globals import config, hparams
+from utils.log import log_i
 
 class AutoCorr2D(nn.Module):
     def __init__(self, in_channels, out_channels, corr_channels, corr_kernel_size, corr_stride=0, pad=False, permute=True):
@@ -266,7 +267,7 @@ class LongRangeProj(nn.Module):
                 def back_hook(grad):
                     for g in grad:
                         if (g.data != g.data).any():
-                            print("[LongRangeProj]" + hook_name + " contains NaN")
+                            print("LongRangeProj." + hook_name + " contains NaN")
                             import ipdb; ipdb.set_trace()
                 return back_hook
 
@@ -386,13 +387,13 @@ class AutoCorrProj(nn.Module):
         if use_acorr:
             if proj_data:
                 raise NotImplementedError("proj_data currently not implemented for use_acorr")
-            print("[Info] Using acorr")
+            log_i("Using acorr")
             self.acorr2d = AutoCorr2D(in_channels, None, inner_channels, kernel_size, stride, pad=pad, permute=False)
             self._kernel_size = self.acorr2d.corr_kernel_size
             self._stride = self.acorr2d.corr_stride
             self._pad_tl = (self.acorr2d.pad.top, self.acorr2d.pad.left)
         else:
-            print("[Info] Using fake acorr")
+            log_i("Using fake acorr")
             if pad is False:
                 pad = (0, 0)
             elif pad is True:
@@ -421,7 +422,7 @@ class AutoCorrProj(nn.Module):
                 assert in_channels == inner_channels, "proj_data requires in_channels == inner_channels"
                 groups = in_channels
             self.acorr2d_sim = nn.Sequential(nn.Conv2d(in_channels, inner_channels, kernel_size=3, padding=1, groups=groups),
-                                             StrictNaNReLU(inplace=True))
+                                             nn.Softplus())
             regressor_kwargs["stride"] = stride
             regressor_kwargs["padding"] = pad
             self._kernel_size = kernel_size
@@ -583,9 +584,9 @@ class AutoCorrProj(nn.Module):
         out = self.projector(self._force_field, self._force_norm, self._origin_x, self._origin_y, radius, angle, conf, radius_std=radius_std, angle_std=angle_std)
         
         if config.debug:
-            print(radius)
-            print(angle)
-            print(conf)
+            print(radius.contiguous())
+            print(angle.contiguous())
+            print(conf.contiguous())
             import ipdb; ipdb.set_trace()
 
         if config.vis and False:

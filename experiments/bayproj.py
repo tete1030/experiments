@@ -4,6 +4,7 @@ import numpy as np
 import torch.nn as nn
 from torch.nn import DataParallel
 from torch.nn import MSELoss
+from torch.nn.parallel.scatter_gather import gather
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
@@ -13,13 +14,14 @@ import torch.utils.model_zoo as model_zoo
 import pose.models as models
 import pose.datasets as datasets
 from utils.globals import config, hparams, globalvars
+from utils.log import log_i
 from pose.utils.transforms import fliplr_pts
 
 from utils.train import adjust_learning_rate
 
 from pose.models.bayproj import AutoCorrProj
 from pose.models.common import StrictNaNReLU
-from .baseexperiment import BaseExperiment
+from experiments.baseexperiment import BaseExperiment, EpochContext
 
 import cv2
 import re
@@ -29,6 +31,7 @@ from utils.sync_batchnorm import SynchronizedBatchNorm2d, DataParallelWithCallba
 from utils.checkpoint import load_pretrained_loose
 
 FACTOR = 4
+NUM_PARTS = datasets.mscoco.NUM_PARTS
 
 class GroupNormWrapper(nn.GroupNorm):
     def __init__(self, num_features, eps=1e-5, num_groups=32):
@@ -38,39 +41,104 @@ class GroupNormWrapper(nn.GroupNorm):
 DataParallelImpl = nn.DataParallel
 BatchNorm2dImpl = GroupNormWrapper
 
+_exp_instance = None
+
+class IntermediateOutput(object):
+    def __init__(self):
+        self._dict = dict()
+        self._lock = threading.Lock()
+
+    def set(self, k, v, device=None):
+        if device is None:
+            assert hasattr(v, "device"), "Specifying device or providing an cuda Tensor object"
+            device = v.device
+        with self._lock:
+            if k not in self._dict:
+                self._dict[k] = dict()
+            assert device.index not in self._dict[k], "Duplicate setting"
+            self._dict[k][device.index] = v
+
+    def pop_gathered(self, k, target_device=None):
+        v = self._dict[k]
+        if target_device is None:
+            assert 0 in v and hasattr(v[0], "device"), "Not a Tensor, please specify target_device"
+            target_device = v[0].device
+        if isinstance(target_device, torch.device):
+            target_device = target_device.index
+        if len(v) > 1:
+            v = tuple(zip(*sorted(v.items(), key=lambda x: x[0])))[1]
+            out = gather(v, target_device, dim=0)
+        else:
+            # Assume single device is index 0
+            out = v[0]
+        with self._lock:
+            del self._dict[k]
+        return out
+
+    def clear(self):
+        with self._lock:
+            self._dict.clear()
+
 class Experiment(BaseExperiment):
     def init(self):
-        self.num_parts = datasets.mscoco.NUM_PARTS
+        global _exp_instance
+        assert _exp_instance is None
+        _exp_instance = self
+        self._interm_out = IntermediateOutput()
+        self.num_parts = NUM_PARTS
         pretrained = hparams["model"]["resnet_pretrained"]
         if config.resume is not None:
             pretrained = None
         self.model = DataParallelImpl(BayProj(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda())
         self.criterion = MSELoss().cuda()
 
-        extra_mod_parameters = []
-        other_parameters = []
-        extra_mod_reg = re.compile(r"^(.+\.)?extra_mod(\..+)?$")
+        parameter_group_matchers = {
+            "early_pred": ("is", re.compile(r"^(.+\.)?(?:extra_mod|extra_mod_early_pred)(\..+)?$")),
+            "backbone": ("not", re.compile(r"^(.+\.)?(?:extra_mod|extra_mod_early_pred|extra_mod_adapter)(\..+)?$")),
+            "adapter": ("is", re.compile(r"^(.+\.)?(?:extra_mod_adapter)(\..+)?$"))
+        }
+        parameter_groups = dict()
         for para_name, para in self.model.named_parameters():
             if not para.requires_grad:
                 continue
-            if extra_mod_reg.match(para_name) is not None:
-                extra_mod_parameters.append(para)
-            else:
-                if not hparams["freeze_backbone"]:
-                    other_parameters.append(para)
-                else:
-                    para.requires_grad = False
+            for group_name in parameter_group_matchers:
+                if group_name not in parameter_groups:
+                    parameter_groups[group_name] = list()
+                sem, matcher = parameter_group_matchers[group_name]
+
+                if matcher.match(para_name):
+                    if sem == "is":
+                        parameter_groups[group_name].append(para)
+                elif sem == "not":
+                    parameter_groups[group_name].append(para)
+
+        if hparams["freeze_backbone"]:
+            for para in parameter_groups["backbone"]:
+                para.requires_grad = False
+
+        self.parameter_groups = parameter_groups
 
         self.optimizer = torch.optim.Adam([
-                {"params": other_parameters},
-                {"params": extra_mod_parameters, "lr": hparams["model"]["bayproj_lr"], "init_lr": hparams["model"]["bayproj_lr"]}
+                {"params": parameter_groups["backbone"], "lr": 5e-4, "init_lr": 5e-4},
+                {"params": parameter_groups["early_pred"], "lr": 5e-4, "init_lr": 5e-4},
+                {"params": parameter_groups["adapter"]}
             ],
             lr=hparams["learning_rate"],
             weight_decay=hparams['weight_decay'])
+
+        self.optimizer_extra_mod = torch.optim.Adam([
+                {"params": parameter_groups["early_pred"], "init_lr": hparams["bayproj_lr"]}
+            ],
+            lr=hparams["bayproj_lr"],
+            weight_decay=hparams['weight_decay'])
+
         self.cur_lr = hparams["learning_rate"]
 
         self.coco = COCO("data/mscoco/person_keypoints_train2014.json")
 
+        # [early_pred]
+        self.mode = "normal"
+        # [early_pred]
         self.train_dataset = datasets.COCOSinglePose("data/mscoco/images",
                                                self.coco,
                                                "data/mscoco/sp_split.pth",
@@ -80,11 +148,11 @@ class Experiment(BaseExperiment):
                                                ext_border=hparams["dataset"]["ext_border"],
                                                kpmap_res=hparams["model"]["out_shape"],
                                                keypoint_res=hparams["model"]["out_shape"],
-                                               kpmap_sigma=hparams["model"]["gaussian_kernels"],
+                                               kpmap_sigma=hparams["model"]["gaussian_kernels"] + [hparams["model"]["detail"]["early_pred_kernel"]],
                                                scale_factor=hparams["dataset"]["scale_factor"],
                                                rot_factor=hparams["dataset"]["rotate_factor"],
                                                trans_factor=hparams["dataset"]["translation_factor"])
-
+        # [early_pred]
         self.val_dataset = datasets.COCOSinglePose("data/mscoco/images",
                                              self.coco,
                                              "data/mscoco/sp_split.pth",
@@ -94,7 +162,7 @@ class Experiment(BaseExperiment):
                                              ext_border=hparams["dataset"]["ext_border"],
                                              kpmap_res=hparams["model"]["out_shape"],
                                              keypoint_res=hparams["model"]["out_shape"],
-                                             kpmap_sigma=hparams["model"]["gaussian_kernels"],
+                                             kpmap_sigma=hparams["model"]["gaussian_kernels"] + [hparams["model"]["detail"]["early_pred_kernel"]],
                                              scale_factor=hparams["dataset"]["scale_factor"],
                                              rot_factor=hparams["dataset"]["rotate_factor"],
                                              trans_factor=hparams["dataset"]["translation_factor"])
@@ -108,13 +176,13 @@ class Experiment(BaseExperiment):
 
     def _setup_debug_nan(self):
         def get_backward_hook(mod_name):
-                def _backward_hook(module, grad_input, grad_output):
-                    exp = self
-                    for ginp in grad_input:
-                        if isinstance(ginp, torch.Tensor) and (ginp.data != ginp.data).any():
-                            print(mod_name + " contains NaN during backward")
-                            import ipdb; ipdb.set_trace()
-                return _backward_hook
+            def _backward_hook(module, grad_input, grad_output):
+                exp = self
+                for ginp in grad_input:
+                    if isinstance(ginp, torch.Tensor) and (ginp.data != ginp.data).any():
+                        print(mod_name + " contains NaN during backward")
+                        import ipdb; ipdb.set_trace()
+            return _backward_hook
 
         def get_forward_hook(mod_name):
             def _forward_hook(module, input, output):
@@ -164,7 +232,7 @@ class Experiment(BaseExperiment):
 
         image_ids = preds["image_index"]
         ans = preds["annotate"]
-        if len(ans) > 0:
+        if ans is not None and len(ans) > 0:
             coco_dets = self.coco.loadRes(ans)
             coco_eval = COCOeval(self.coco, coco_dets, "keypoints")
             coco_eval.params.imgIds = list(image_ids)
@@ -198,10 +266,34 @@ class Experiment(BaseExperiment):
 
             print("No points")
 
-    def epoch_start(self, epoch):
-        self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams['learning_rate'], hparams['schedule'], hparams['lr_gamma'])
+    def iter_step(self, loss):
+        # [early_pred]
+        if self.mode == "normal":
+            BaseExperiment.iter_step(self, loss)
+        else:
+            self.optimizer_extra_mod.zero_grad()
+            loss.backward()
+            self.optimizer_extra_mod.step()
 
-    def iter_process(self, epoch_ctx, batch, is_train, progress):
+    def epoch_start(self, epoch):
+        # [early_pred]
+        if epoch >= hparams["early_pred_start"] and epoch < hparams["early_pred_end"]:
+            if self.mode != "early_pred":
+                log_i("Switching to early_pred training mode")
+            self.mode = "early_pred"
+            for para in (self.parameter_groups["backbone"] + self.parameter_groups["adapter"]):
+                para.requires_grad = False
+            for para in self.parameter_groups["early_pred"]:
+                para.requires_grad = True
+        else:
+            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
+            if self.mode != "normal":
+                log_i("Switching to normal training mode")
+            self.mode = "normal"
+            for para in (self.parameter_groups["backbone"] + self.parameter_groups["adapter"] + self.parameter_groups["early_pred"]):
+                para.requires_grad = True
+
+    def iter_normal(self, epoch_ctx: EpochContext, batch: dict, is_train: bool, progress: dict) -> dict:
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
         det_maps_gt = batch["keypoint_map"]
@@ -215,30 +307,39 @@ class Experiment(BaseExperiment):
         # dirty trick for debug
         if config.vis:
             globalvars.cur_img = img
-        output_vars, intermediate_out = self.model(img)
-        # Make sure the dirty trick, intermediate_out mechanism, not missing anything
-        assert len(self.model.module._intermediate_out) == 0
+        output_vars = self.model(img)
         # dirty trick for debug, release
         if config.vis:
             globalvars.cur_img = None
 
         loss = 0.
-        for ilabel, (outv, gtv) in enumerate(zip(output_vars, det_map_gt_vars)):
+        # last of det_map_gt_vars should be early_pred
+        # [early_pred]
+        for ilabel, (outv, gtv) in enumerate(zip(output_vars, det_map_gt_vars[:-1])):
             # if ilabel < len(det_map_gt_vars) - 1:
             #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
             if ilabel < len(det_map_gt_vars) - 1:
-                loss += ((outv - gtv).pow(2) * \
+                loss = loss + ((outv - gtv).pow(2) * \
                     (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
             else:
-                loss += (outv - gtv).pow(2).mean().sqrt()
+                loss = loss + (outv - gtv).pow(2).mean().sqrt()
 
-        if intermediate_out is not None:
-            loss_out_total, loss_in_total, count_point = intermediate_out
-            loss += hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / batch_size / count_point.sum()
-            loss += hparams["model"]["loss_close_cof"] * loss_in_total.sum() / batch_size / count_point.sum()
+        # loss_out_total, loss_in_total, count_point = self._interm_out.pop_gathered("extra_mod", target_device=self.model.output_device)
+        # loss = loss + hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / batch_size / count_point.sum()
+        # loss = loss + hparams["model"]["loss_close_cof"] * loss_in_total.sum() / batch_size / count_point.sum()
+        
+        epoch_ctx.add_scalar("loss", loss.item(), progress["iter_len"])
+
+        # Make sure no reference
+        self._interm_out.clear()
 
         if (loss.data != loss.data).any():
             import ipdb; ipdb.set_trace()
+
+        if config.vis and False:
+            # show figures plot during forwarding
+            import matplotlib.pyplot as plt
+            plt.show()
 
         if not is_train or config.vis:
             pred, score = parse_map(output_vars[-1], thres=hparams["model"]["parse_threshold"], factor=FACTOR)
@@ -251,10 +352,6 @@ class Experiment(BaseExperiment):
         else:
             pred = None
             ans = None
-
-        if config.vis:
-            import matplotlib.pyplot as plt
-            plt.show()
 
         if config.vis and False:
             import matplotlib.pyplot as plt
@@ -291,127 +388,214 @@ class Experiment(BaseExperiment):
                             ax.set_title(datasets.mscoco.PART_LABELS[j])
                     plt.show()
 
-            # if loss.item() > 0.1:
-            #     import ipdb; ipdb.set_trace()
-        epoch_ctx.add_scalar("loss", loss.item(), progress["iter_len"])
+        result = {
+            "loss": loss,
+            "index": batch["index"],
+            "save": None,
+            "pred": {"image_index": image_ids, "annotate": ans} if ans is not None else None
+        }
+
+        return result
+
+    def iter_early_pred(self, epoch_ctx: EpochContext, batch: dict, is_train: bool, progress: dict) -> dict:
+        image_ids = batch["img_index"].tolist()
+        img = batch["img"]
+        det_maps_gt = batch["keypoint_map"]
+        transform_mat = batch["img_transform"]
+        img_flipped = batch["img_flipped"]
+        img_ori_size = batch["img_ori_size"]
+        keypoint = batch["keypoint"]
+        batch_size = img.size(0)
+
+        det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
+        # dirty trick for debug
+        if config.vis:
+            globalvars.cur_img = img
+        self.model(img)
+        # dirty trick for debug, release
+        if config.vis:
+            globalvars.cur_img = None
+
+        early_pred_out = self._interm_out.pop_gathered("early_pred")
+        loss = (early_pred_out - det_map_gt_vars[-1]).pow(2).mean().sqrt()
+        loss_out_total, loss_in_total, count_point = self._interm_out.pop_gathered("extra_mod", target_device=self.model.output_device)
+        loss = loss + hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / batch_size / count_point.sum()
+        epoch_ctx.add_scalar("loss_early", loss.item(), progress["iter_len"])
+
+        # Make sure no reference
+        self._interm_out.clear()
+
+        if (loss.data != loss.data).any():
+            import ipdb; ipdb.set_trace()
+
+        if config.vis and False:
+            # show figures plot during forwarding
+            import matplotlib.pyplot as plt
+            plt.show()
 
         result = {
             "loss": loss,
             "index": batch["index"],
             "save": None,
-            "pred": {"image_index": image_ids, "annotate": ans}
+            "pred": None
         }
 
         return result
 
+    def iter_process(self, *args, **kwargs):
+        if self.mode == "normal":
+            return self.iter_normal(*args, **kwargs)
+        elif self.mode == "early_pred":
+            return self.iter_early_pred(*args, **kwargs)
+        else:
+            assert False
+
 class BayProj(nn.Module):
     def __init__(self, output_shape, num_points, pretrained=None):
-        super(BayProj, self).__init__()
-        # referenced in every copy of modules
-        self._intermediate_out = list()
-        self._lock = threading.Lock()
-        self.resnet50 = resnet50(pretrained=pretrained, extra_mod=[
-            None,
-            None,
-            (AutoCorrProj, self._lock, self._intermediate_out),
-            None])
-        self.global_net = globalNet([2048, 1024, 512, 256], output_shape, num_points)
+        """BayProj Model
+        
+        Arguments:
+            output_shape {tuple} -- (H, W) !!!!!!!
+            num_points {int} -- number of parts
+        
+        Keyword Arguments:
+            pretrained {str} -- pretrained resnet filename (default: {None})
+        """
 
-    def _clear_intermediate_out(self):
-        with self._lock:
-            self._intermediate_out.clear()
+        super(BayProj, self).__init__()
+        self.resnet50 = resnet50(pretrained=pretrained)
+        self.global_net = GlobalNet([2048, 1024, 512, 256], output_shape, num_points)
 
     def forward(self, x):
         res_out = self.resnet50(x)
+        # [early_pred]
+        if _exp_instance.mode == "early_pred":
+            return
         global_re, global_out = self.global_net(res_out)
-        interm_out = None
-        # at least current thread should have pushed one into _intermediate_out
-        if len(self._intermediate_out) > 0:
-            with self._lock:
-                for i, _int_out in enumerate(self._intermediate_out.copy()):
-                    if x.device == _int_out[0].device:
-                        interm_out = _int_out
-                        del self._intermediate_out[i]
-                        break
-            assert interm_out is not None
-        return global_out, interm_out
-
-def conv3x3(in_planes, out_planes, stride=1):
-    "3x3 convolution with padding"
-    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1, bias=False)
-
-class BasicBlock(nn.Module):
-    expansion = 1
-
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
-        super(BasicBlock, self).__init__()
-        self.conv1 = conv3x3(inplanes, planes, stride)
-        self.bn1 = BatchNorm2dImpl(planes)
-        self.relu = StrictNaNReLU(inplace=True)
-        self.conv2 = conv3x3(planes, planes)
-        self.bn2 = BatchNorm2dImpl(planes)
-        self.downsample = downsample
-        self.stride = stride
-
-    def forward(self, x):
-        residual = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-
-        if self.downsample is not None:
-            residual = self.downsample(x)
-
-        out += residual
-        out = self.relu(out)
-
-        return out
+        return global_out
 
 class Bottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None, extra_mod=None, extra_mod_conv=False):
+    def __init__(self, inplanes, planes, inshape_factor, res_index, block_index, stride=1, downsample=None):
         super(Bottleneck, self).__init__()
-        self.conv1 = nn.Conv2d(inplanes + EXTRA_MOD_OUT_CHANNELS if extra_mod_conv else inplanes, planes, kernel_size=1, bias=False)
+        if res_index == hparams["model"]["detail"]["res_index"] and \
+             block_index == hparams["model"]["detail"]["block_index"]:
+            use_extra_mod = True
+        else:
+            use_extra_mod = False
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         self.inplanes = inplanes
-        self.extra_mod_conv = extra_mod_conv
         self.bn1 = BatchNorm2dImpl(planes)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
                                padding=1, bias=False)
         self.bn2 = BatchNorm2dImpl(planes)
         self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
         self.bn3 = BatchNorm2dImpl(planes * 4)
-        self.relu = StrictNaNReLU(inplace=True)
+        if use_extra_mod:
+            self.relu = StrictNaNReLU(inplace=False)
+        else:
+            self.relu = StrictNaNReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
-        if extra_mod is not None:
+        self.inshape_factor = inshape_factor
+        self.res_index = res_index
+        self.block_index = block_index
+        if use_extra_mod:
             assert self.downsample is None, "extra_mod require equal-sized input output"
-            mod = extra_mod[0]
-            self._extra_mod_lock = extra_mod[1]
-            self._extra_mod_interm_out = extra_mod[2]
-            self.extra_mod = mod(use_acorr=hparams["model"]["detail"]["use_acorr"],
-                                 in_channels=inplanes,
-                                 out_channels=hparams["model"]["detail"]["out_channels"],
-                                 inner_channels=hparams["model"]["detail"]["regress_channels"],
-                                 kernel_size=tuple(hparams["model"]["detail"]["regress_kernel_size"]),
-                                 stride=tuple(hparams["model"]["detail"]["regress_stride"]),
-                                 regress_std=hparams["model"]["detail"]["regress_std"],
-                                 proj_mode=hparams["model"]["detail"]["proj_mode"],
-                                 proj_summary_mode=hparams["model"]["detail"]["proj_summary_mode"],
-                                 proj_use_conv_final=hparams["model"]["detail"]["proj_use_conv_final"],
-                                 proj_data=hparams["model"]["detail"]["proj_data"])
+            self.extra_mod = AutoCorrProj(use_acorr=hparams["model"]["detail"]["use_acorr"],
+                                          in_channels=inplanes,
+                                          out_channels=hparams["model"]["detail"]["out_channels"],
+                                          inner_channels=hparams["model"]["detail"]["regress_channels"],
+                                          kernel_size=tuple(hparams["model"]["detail"]["regress_kernel_size"]),
+                                          stride=tuple(hparams["model"]["detail"]["regress_stride"]),
+                                          regress_std=hparams["model"]["detail"]["regress_std"],
+                                          proj_mode=hparams["model"]["detail"]["proj_mode"],
+                                          proj_summary_mode=hparams["model"]["detail"]["proj_summary_mode"],
+                                          proj_use_conv_final=hparams["model"]["detail"]["proj_use_conv_final"],
+                                          proj_data=hparams["model"]["detail"]["proj_data"])
+            # [early_pred]
+            width_img = hparams["model"]["inp_shape"][0]
+            height_img = hparams["model"]["inp_shape"][1]
+            self.extra_mod_early_pred = self._predict(inplanes=hparams["model"]["detail"]["out_channels"],
+                                                      output_shape=(int(height_img) // FACTOR, int(width_img) // FACTOR),
+                                                      num_class=NUM_PARTS)
+            self.extra_mod_adapter = nn.Sequential(nn.Conv2d(hparams["model"]["detail"]["out_channels"], inplanes, kernel_size=1, stride=1, bias=False))
         else:
             self.extra_mod = None
+            self.extra_mod_early_pred = None
+            self.extra_mod_adapter = None
+
+    # [early_pred]
+    def _predict(self, inplanes, output_shape, num_class):
+        """generate predict module
+        
+        Arguments:
+            inplanes {int} -- number of input channels
+            output_shape {tuple of int} -- (H, W)
+            num_class {int} -- number of parts
+        
+        Returns:
+            nn.Sequential -- predict model compact
+        """
+
+        layers = []
+        layers.append(nn.Conv2d(inplanes, inplanes,
+            kernel_size=1, stride=1, bias=False))
+        layers.append(BatchNorm2dImpl(inplanes))
+        layers.append(StrictNaNReLU(inplace=True))
+
+        layers.append(nn.Conv2d(inplanes, num_class,
+            kernel_size=3, stride=1, padding=1, bias=False))
+        layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
+        layers.append(nn.Conv2d(num_class, num_class,
+            kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
+
+        return nn.Sequential(*layers)
+
+    def forward_extra_mod(self, x):
+        if self.extra_mod is not None:
+            extra_out = self.extra_mod(x)
+            _exp_instance._interm_out.set("extra_mod", extra_out[1:], device=x.device)
+            # [early_pred]
+            if _exp_instance.mode == "early_pred":
+                _exp_instance._interm_out.set("early_pred", self.extra_mod_early_pred(extra_out[0]))
+
+            if config.vis:
+                import matplotlib.pyplot as plt
+                import cv2
+                fig, axes = plt.subplots(3, 30, figsize=(100, 12), squeeze=False)
+                
+                for row, axes_row in enumerate(axes):
+                    img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                    fts = x.data[row].cpu().numpy()
+                    for col, ax in enumerate(axes_row):
+                        if col == 0:
+                            ax.imshow(img)
+                        else:
+                            ax.imshow(fts[col-1])
+                fig.suptitle("bottleneck x")
+
+                fig, axes = plt.subplots(3, 30, figsize=(100, 12), squeeze=False)
+                for row, axes_row in enumerate(axes):
+                    img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                    fts = extra_out[0].data[row].cpu().numpy()
+                    for col, ax in enumerate(axes_row):
+                        if col == 0:
+                            ax.imshow(img)
+                        else:
+                            ax.imshow(fts[col-1])
+                fig.suptitle("bottleneck extra_out")
+                plt.show()
+
+            return x + self.extra_mod_adapter(extra_out[0])
+        else:
+            return x
 
     def forward(self, x):
+        x = self.forward_extra_mod(x)
+
         residual = x
-        if self.extra_mod_conv:
-            residual = residual[:, :self.inplanes]
 
         out = self.conv1(x)
         out = self.bn1(out)
@@ -427,40 +611,7 @@ class Bottleneck(nn.Module):
         if self.downsample is not None:
             residual = self.downsample(x)
 
-        out += residual
-
-        if self.extra_mod is not None:
-            extra_out = self.extra_mod(x)
-            with self._extra_mod_lock:
-                self._extra_mod_interm_out.append(extra_out[1:])
-            out = torch.cat([out, extra_out[0]], dim=1)
-
-            if config.vis:
-                import matplotlib.pyplot as plt
-                import cv2
-                fig, axes = plt.subplots(3, 10, squeeze=False)
-                
-                for row, axes_row in enumerate(axes):
-                    img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
-                    fts = x.data[row].cpu().numpy()
-                    for col, ax in enumerate(axes_row):
-                        if col == 0:
-                            ax.imshow(img)
-                        else:
-                            ax.imshow(fts[col-1])
-                fig.suptitle("bottleneck x")
-
-                fig, axes = plt.subplots(3, 10, squeeze=False)
-                for row, axes_row in enumerate(axes):
-                    img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
-                    fts = extra_out[0].data[row].cpu().numpy()
-                    for col, ax in enumerate(axes_row):
-                        if col == 0:
-                            ax.imshow(img)
-                        else:
-                            ax.imshow(fts[col-1])
-                fig.suptitle("bottleneck extra_out")
-                # plt.show()
+        out = out + residual
 
         out = self.relu(out)
 
@@ -468,18 +619,21 @@ class Bottleneck(nn.Module):
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, num_classes=1000, extra_mod=[None, None, None, None]):
+    def __init__(self, block, layers):
         self.inplanes = 64
+        self.inshape_factor = 1
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
                                bias=False)
+        self.inshape_factor *= 2
         self.bn1 = BatchNorm2dImpl(64)
         self.relu = StrictNaNReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, 64, layers[0], extra_mod=extra_mod[0])
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2, extra_mod=extra_mod[1])
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2, extra_mod=extra_mod[2])
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2, extra_mod=extra_mod[3])
+        self.inshape_factor *= 2
+        self.layer1 = self._make_layer(block, 64, layers[0], res_index=0)
+        self.layer2 = self._make_layer(block, 128, layers[1], res_index=1, stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], res_index=2, stride=2)
+        self.layer4 = self._make_layer(block, 512, layers[3], res_index=3, stride=2)
 
         for mod_name, m in self.named_modules():
             if re.match(r"^(.+\.)?extra_mod(\..+)?$", mod_name):
@@ -491,7 +645,7 @@ class ResNet(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-    def _make_layer(self, block, planes, blocks, stride=1, extra_mod=None):
+    def _make_layer(self, block, planes, blocks, res_index, stride=1):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
@@ -501,15 +655,12 @@ class ResNet(nn.Module):
             )
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample))
+        layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=0, stride=stride, downsample=downsample))
+        if downsample is not None:
+            self.inshape_factor *= 2
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
-            if extra_mod is not None and i == 1:
-                layers.append(block(self.inplanes, planes, extra_mod=extra_mod))
-            elif extra_mod is not None and i == 2:
-                layers.append(block(self.inplanes, planes, extra_mod_conv=True))
-            else:
-                layers.append(block(self.inplanes, planes))
+            layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=i))
 
         return nn.Sequential(*layers)
 
@@ -549,9 +700,9 @@ def resnet101(pretrained=None, **kwargs):
         load_pretrained_loose(model, torch.load(pretrained))
     return model
 
-class globalNet(nn.Module):
+class GlobalNet(nn.Module):
     def __init__(self, channel_settings, output_shape, num_class):
-        super(globalNet, self).__init__()
+        super(GlobalNet, self).__init__()
         self.channel_settings = channel_settings
         laterals, upsamples, predict = [], [], []
         for i in range(len(channel_settings)):

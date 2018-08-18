@@ -50,6 +50,12 @@ def fliplr_chwimg(x):
 def get_transform(center, ori_size, new_size, rot=0, scale=None):
     """
     General image processing functions
+    Arguments:
+        center -- (x, y)
+        ori_size -- (width, height) or length
+        new_size -- (width, height) or length
+        rot -- rotation degree (not rad)
+        scale -- (x_scale, y_scale) or scale
     """
     # Generate transformation matrix
     assert (ori_size is not None and scale is None) or (ori_size is None and scale is not None)
