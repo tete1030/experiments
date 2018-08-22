@@ -7,7 +7,6 @@ from random import randint
 from sklearn.linear_model import LinearRegression
 import torch
 
-from .misc import *
 from .transforms import transform, transform_preds
 import munkres
 
