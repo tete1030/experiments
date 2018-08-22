@@ -64,10 +64,12 @@ class BaseExperiment(object):
         checkpoint_full = os.path.join(checkpoint_folder, checkpoint_file)
         checkpoint = torch.load(checkpoint_full)
         if no_strict_model_load:
+            model_state_dict = self.model.state_dict()
             try:
-                load_pretrained_loose(self.model, checkpoint["state_dict"])
+                model_state_dict = load_pretrained_loose(model_state_dict, checkpoint["state_dict"])
             except RejectLoadError:
                 return None
+            self.model.load_state_dict(model_state_dict)
         else:
             self.model.load_state_dict(checkpoint["state_dict"])
         if not no_criterion_load:

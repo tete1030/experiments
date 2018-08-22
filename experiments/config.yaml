@@ -1,5 +1,5 @@
 default: &DEFAULT
-    workers: 8
+    workers: 16
     debug: false
     profile: false
     skip_val: 1

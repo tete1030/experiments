@@ -188,7 +188,9 @@ class LongRangeProj(nn.Module):
                  mode="prob",
                  summary_mode="max",
                  use_conv_final=False,
-                 proj_data=False):
+                 samp_sigma=1.,
+                 proj_data=False,
+                 local_mask_sigma=0):
         super(LongRangeProj, self).__init__()
         assert mode in ["prob", "samp"]
         assert summary_mode in ["max", "sum"]
@@ -198,8 +200,20 @@ class LongRangeProj(nn.Module):
         self.input_std = input_std
         self.use_conv_final = use_conv_final
         if self.mode == "samp":
-            self.proj_samp_sigma = float(hparams["model"]["detail"]["proj_samp_sigma"])
+            self.proj_samp_sigma = float(samp_sigma)
         self.proj_data = proj_data
+        self._local_mask_sigma = local_mask_sigma
+
+        self._nh = None
+        self._nw = None
+        self._height = None
+        self._width = None
+        self._force_field = None
+        self._force_norm = None
+        self._local_mask = None
+        self._origin_x = None
+        self._origin_y = None
+
         if proj_data:
             raise NotImplementedError("Not completed")
         if use_conv_final:
@@ -209,8 +223,43 @@ class LongRangeProj(nn.Module):
             self.angle_std = nn.Parameter(torch.FloatTensor(channel_size))
 
             # TODO: improve initialization
-            self.radius_std.data.uniform_(radius_std_init * (1-0.2), radius_std_init * (1+0.2))
+            self.radius_std.data.uniform_(float(radius_std_init) * (1-0.2), float(radius_std_init) * (1+0.2))
             self.angle_std.data.uniform_(np.pi * (1-0.2), np.pi * (1+0.2))
+
+    def init_buffer(self, nh, nw, height, width, kernel_size, stride, pad, device=torch.device("cpu")):
+        """
+        Init:
+            _force_field {torch.FloatTensor} -- [nh x nw x 2 x height x width]
+            _force_norm {torch.FloatTensor} -- [nh x nw x height x width]
+            _local_mask {torch.FloatTensor} -- [nh x nw x height x width]
+            _origin_x {torch.FloatTensor} -- [nw]
+            _origin_y {torch.FloatTensor} -- [nh]
+        """
+        if self._nh != nh or self._nw != nw or self._height != height or self._width != width or self._force_field.device != device:
+            self._nh = nh
+            self._nw = nw
+            self._height = height
+            self._width = width
+
+            x_orig = torch.arange(nw, dtype=torch.float32, device=device)
+            x_orig = x_orig * stride[1] - pad[1] + kernel_size[1] // 2
+            y_orig = torch.arange(nh, dtype=torch.float32, device=device)
+            y_orig = y_orig * stride[0] - pad[0] + kernel_size[0] // 2
+            self._origin_x = x_orig
+            self._origin_y = y_orig
+
+            origin_x = x_orig.view(1, -1, 1, 1)
+            origin_y = y_orig.view(-1, 1, 1, 1)
+            x_out = torch.arange(width, dtype=torch.float32, device=device).view(1, 1, 1, -1)
+            y_out = torch.arange(height, dtype=torch.float32, device=device).view(1, 1, -1, 1)
+
+            self._force_field = torch.stack([
+                    (x_out-origin_x).expand(nh, -1, height, -1),
+                    (y_out-origin_y).expand(-1, nw, -1, width)
+                ], dim=2)
+            self._force_norm = torch.norm(self._force_field, dim=2)
+            if self._local_mask_sigma > 0:
+                self._local_mask = 1 - torch.exp(- self._force_norm ** 2 / 2 / self._local_mask_sigma ** 2)
 
     def _proj_prob(self, force_field, force_norm, cx, cy, radius_mean, angle_mean, radius_std, angle_std):
         """
@@ -297,10 +346,12 @@ class LongRangeProj(nn.Module):
         channel_size = radius_mean.size(1)
 
         if self.training:
-            radius_std = radius_std.view(1 if radius_std.dim() == 1 else batch_size, channel_size)
-            angle_std = angle_std.view(1 if angle_std.dim() == 1 else batch_size, channel_size)
-            radius = radius_mean.abs() + torch.randn(batch_size, channel_size, device=force_field.device) * radius_std
-            angle = angle_mean + torch.randn(batch_size, channel_size, device=force_field.device) * angle_std
+            # radius_std = radius_std.view(1 if radius_std.dim() == 1 else batch_size, channel_size)
+            # angle_std = angle_std.view(1 if angle_std.dim() == 1 else batch_size, channel_size)
+            # radius = radius_mean.abs() + torch.randn(batch_size, channel_size, device=force_field.device) * radius_std
+            # angle = angle_mean + torch.randn(batch_size, channel_size, device=force_field.device) * angle_std
+            radius = radius_mean.abs()
+            angle = angle_mean
         else:
             radius = radius_mean.abs()
             angle = angle_mean
@@ -312,13 +363,24 @@ class LongRangeProj(nn.Module):
         # TODO: parameterize std?
         return torch.exp(- force_field.norm(dim=2) ** 2 / 2 / self.proj_samp_sigma ** 2)
 
-    def forward(self, force_field, force_norm, origin_x, origin_y, radius, angle, confidence, radius_std=None, angle_std=None, inp=None):
+    def _sum_outsider(self, radius, angle):
+        # b x nh x nw x chan
+        proj_cen_x = radius * torch.cos(angle) + self._origin_x.view(1, 1, -1, 1)
+        proj_cen_y = radius * torch.sin(angle) + self._origin_y.view(1, -1, 1, 1)
+
+        left_outsd = (proj_cen_x.data < 0)
+        right_outsd = (proj_cen_x.data >= self._width)
+        top_outsd = (proj_cen_y.data < 0)
+        bottom_outsd = (proj_cen_y.data >= self._height)
+        loss_out_total = ((proj_cen_x[left_outsd] ** 2).sum() + ((proj_cen_x[right_outsd] - self._width) ** 2).sum() + \
+                          (proj_cen_y[top_outsd] ** 2).sum() + ((proj_cen_y[bottom_outsd] - self._height) ** 2).sum())
+        # count_out_total = (left_outsd | right_outsd | top_outsd | bottom_outsd).int().sum().float()
+
+        return loss_out_total
+
+    def forward(self, radius, angle, confidence, radius_std=None, angle_std=None, inp=None):
         """
         Arguments:
-            force_field {torch.FloatTensor} -- [nh x nw x 2 x height x width]
-            force_norm {torch.FloatTensor} -- [nh x nw x height x width]
-            origin_x {torch.FloatTensor} -- [nw]
-            origin_y {torch.FloatTensor} -- [nh]
             radius {torch.FloatTensor} -- [nb x nh x nw x nchan], >= 0
             angle {torch.FloatTensor} -- [nb x nh x nw x nchan]
             confidence {torch.FloatTensor} -- [nb x nh x nw x nchan]
@@ -344,14 +406,18 @@ class LongRangeProj(nn.Module):
         for iy in range(radius.size(1)):
             for ix in range(radius.size(2)):
                 proj = confidence[:, iy, ix].view(batch_size, channel_size, 1, 1) * \
-                       projector(force_field[iy, ix],
-                                  force_norm[iy, ix],
-                                  origin_x[ix],
-                                  origin_y[iy],
-                                  radius[:, iy, ix],
-                                  angle[:, iy, ix],
-                                  radius_std[:, iy, ix] if self.input_std else radius_std,
-                                  angle_std[:, iy, ix] if self.input_std else angle_std)
+                       projector(self._force_field[iy, ix],
+                                 self._force_norm[iy, ix],
+                                 self._origin_x[ix],
+                                 self._origin_y[iy],
+                                 radius[:, iy, ix],
+                                 angle[:, iy, ix],
+                                 radius_std[:, iy, ix] if self.input_std else radius_std,
+                                 angle_std[:, iy, ix] if self.input_std else angle_std)
+
+                if self._local_mask_sigma > 0:
+                    proj = proj * self._local_mask
+
                 if out is None:
                     out = proj
                 else:
@@ -365,7 +431,11 @@ class LongRangeProj(nn.Module):
         if self.use_conv_final:
             out = self.conv_final(out)
 
-        return out
+        loss_out_total = self._sum_outsider(radius, angle)
+        count_point = torch.tensor([radius.size(3) * self._nh * self._nw], dtype=torch.float, device=loss_out_total.device)
+        loss_in_total = torch.relu(1 - radius).sum()
+
+        return out, loss_out_total, loss_in_total, count_point
 
 class AutoCorrProj(nn.Module):
     def __init__(self,
@@ -380,7 +450,10 @@ class AutoCorrProj(nn.Module):
                  proj_summary_mode,
                  proj_use_conv_final,
                  proj_data=False,
-                 pad=False):
+                 pad=False,
+                 proj_samp_sigma=1.,
+                 radius_std_init=10.,
+                 proj_local_mask_sigma=0):
         super(AutoCorrProj, self).__init__()
         self.use_acorr = use_acorr
         regressor_kwargs = {}
@@ -394,6 +467,14 @@ class AutoCorrProj(nn.Module):
             self._pad_tl = (self.acorr2d.pad.top, self.acorr2d.pad.left)
         else:
             log_i("Using fake acorr")
+            assert isinstance(kernel_size, int) or isinstance(kernel_size, tuple)
+            if isinstance(kernel_size, int):
+                assert kernel_size > 0
+                kernel_size = (kernel_size, kernel_size)
+            else:
+                assert len(kernel_size) == 2 and isinstance(kernel_size[0], int) and isinstance(kernel_size[1], int)
+                assert kernel_size[0] > 0 and kernel_size[1] > 0
+
             if pad is False:
                 pad = (0, 0)
             elif pad is True:
@@ -402,13 +483,7 @@ class AutoCorrProj(nn.Module):
                 pad = (pad, pad)
             elif not isinstance(pad, tuple) and len(pad) == 2:
                 raise ValueError("Illegal pad argument")
-            assert isinstance(kernel_size, int) or isinstance(kernel_size, tuple)
-            if isinstance(kernel_size, int):
-                assert kernel_size > 0
-                kernel_size = (kernel_size, kernel_size)
-            else:
-                assert len(kernel_size) == 2 and isinstance(kernel_size[0], int) and isinstance(kernel_size[1], int)
-                assert kernel_size[0] > 0 and kernel_size[1] > 0
+
             assert isinstance(stride, int) or isinstance(stride, tuple)
             if isinstance(stride, int):
                 assert stride > 0
@@ -443,26 +518,27 @@ class AutoCorrProj(nn.Module):
                                            mode=proj_mode,
                                            summary_mode=proj_summary_mode,
                                            use_conv_final=proj_use_conv_final,
-                                           proj_data=proj_data)
+                                           proj_data=proj_data,
+                                           local_mask_sigma=proj_local_mask_sigma)
         else:
             self.projector = LongRangeProj(input_std=False,
                                            channel_size=out_channels,
-                                           radius_std_init=hparams["model"]["detail"]["radius_std_init"],
+                                           radius_std_init=radius_std_init,
                                            mode=proj_mode,
                                            summary_mode=proj_summary_mode,
                                            use_conv_final=proj_use_conv_final,
-                                           proj_data=proj_data)
+                                           proj_data=proj_data,
+                                           local_mask_sigma=proj_local_mask_sigma)
         self.conf_regressor = nn.Conv2d(inner_channels, out_channels, kernel_size=kernel_size, bias=True, groups=groups, **regressor_kwargs)
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.regress_std = regress_std
+        
 
         self._nh = None
         self._nw = None
         self._height = None
         self._width = None
-        self._force_field = None
-        self._force_norm = None
         self._origin_x = None
         self._origin_y = None
 
@@ -477,31 +553,6 @@ class AutoCorrProj(nn.Module):
             self.angle_std_regressor.bias.data.fill_(np.pi)
         # self.conf_regressor.weight.data.uniform_(0.1, 0.3)
         self.conf_regressor.bias.data.uniform_(0.1, 1.0)
-
-    def _init_force(self, nh, nw, height, width, device=torch.device("cpu")):
-        if self._nh != nh or self._nw != nw or self._height != height or self._width != width or self._force_field.device != device:
-            self._nh = nh
-            self._nw = nw
-            self._height = height
-            self._width = width
-
-            x_orig = torch.arange(nw, dtype=torch.float32, device=device)
-            x_orig = x_orig * self._stride[1] - self._pad_tl[1] + self._kernel_size[1] // 2
-            y_orig = torch.arange(nh, dtype=torch.float32, device=device)
-            y_orig = y_orig * self._stride[0] - self._pad_tl[0] + self._kernel_size[0] // 2
-            self._origin_x = x_orig
-            self._origin_y = y_orig
-
-            x_orig = x_orig.view(1, -1, 1, 1)
-            y_orig = y_orig.view(-1, 1, 1, 1)
-            x_out = torch.arange(width, dtype=torch.float32, device=device).view(1, 1, 1, -1)
-            y_out = torch.arange(height, dtype=torch.float32, device=device).view(1, 1, -1, 1)
-
-            self._force_field = torch.stack([
-                    (x_out-x_orig).expand(nh, -1, height, -1),
-                    (y_out-y_orig).expand(-1, nw, -1, width)
-                ], dim=2)
-            self._force_norm = torch.norm(self._force_field, dim=2)
 
     def _corr_regress(self, x):
         batch_size = x.size(0)
@@ -548,22 +599,6 @@ class AutoCorrProj(nn.Module):
 
         return radius, angle, radius_std, angle_std, conf, nh, nw
 
-    @staticmethod
-    def _sum_outsider(radius, angle, origin_x, origin_y, height, width):
-        # b x nh x nw x chan
-        proj_cen_x = radius * torch.cos(angle) + origin_x.view(1, 1, -1, 1)
-        proj_cen_y = radius * torch.sin(angle) + origin_y.view(1, -1, 1, 1)
-
-        left_outsd = (proj_cen_x.data < 0)
-        right_outsd = (proj_cen_x.data >= width)
-        top_outsd = (proj_cen_y.data < 0)
-        bottom_outsd = (proj_cen_y.data >= height)
-        loss_out_total = ((proj_cen_x[left_outsd] ** 2).sum() + ((proj_cen_x[right_outsd] - width) ** 2).sum() + \
-                          (proj_cen_y[top_outsd] ** 2).sum() + ((proj_cen_y[bottom_outsd] - height) ** 2).sum())
-        # count_out_total = (left_outsd | right_outsd | top_outsd | bottom_outsd).int().sum().float()
-
-        return loss_out_total
-
     def forward(self, inp):
         height = inp.size(2)
         width = inp.size(3)
@@ -574,30 +609,27 @@ class AutoCorrProj(nn.Module):
         else:
             # b x nh x nw x chan
             radius, angle, radius_std, angle_std, conf, nh, nw = self._conv_regress(inp)
-        self._init_force(nh, nw, height, width, device=inp.device)
-
-        loss_out_total = self._sum_outsider(radius, angle, self._origin_x, self._origin_y, height, width)
-        count_point = torch.tensor([radius.size(3) * nh * nw], dtype=torch.float, device=loss_out_total.device)
-        loss_in_total = torch.relu(1 - radius).sum()
+        self.projector.init_buffer(nh, nw, height, width, self._kernel_size, self._stride, self._pad_tl, device=inp.device)
 
         # b x chan x h x w
-        out = self.projector(self._force_field, self._force_norm, self._origin_x, self._origin_y, radius, angle, conf, radius_std=radius_std, angle_std=angle_std)
-        
+        out, loss_out_total, loss_in_total, count_point = self.projector(radius, angle, conf, radius_std=radius_std, angle_std=angle_std)
+
         if config.debug:
-            print(radius.contiguous())
-            print(angle.contiguous())
-            print(conf.contiguous())
             import ipdb; ipdb.set_trace()
 
         if config.vis and False:
             import matplotlib.pyplot as plt
             import cv2
+            mean_out = out.data.mean()
+            std_out = out.data.std()
+            vmax = mean_out + 3 * std_out
+            vmin = mean_out - 3 * std_out
             fig, axes = plt.subplots(out.size(0), 10, squeeze=False)
             for row, axes_row in enumerate(axes):
                 # img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
                 fts = out.data[row].cpu().numpy()
                 for col, ax in enumerate(axes_row):
-                    ax.imshow(fts[col])
+                    ax.imshow(fts[col], vmin=vmin, vmax=vmax)
             plt.show()
 
         return out, loss_out_total, loss_in_total, count_point

@@ -67,7 +67,6 @@ def check_hparams_consistency(old_hparams, new_hparams, ignore_hparams_mismatch=
         YAML().dump(rt_yaml, sio)
         return YAML(typ="safe").load(sio.getvalue())
 
-    import ipdb; ipdb.set_trace()
     if safe_yaml_convert(old_hparams) != safe_yaml_convert(new_hparams):
         log_w("hparams from config and from checkpoint are not equal")
         if not ignore_hparams_mismatch:

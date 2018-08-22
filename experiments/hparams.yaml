@@ -171,17 +171,17 @@ baybase:
 bayproj:
     <<: *DEFAULT
     name: baybase
-    id: 12
+    id: 13
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 200
     schedule: []
     train_batch: 32
-    test_batch: 32
+    test_batch: 3
     freeze_backbone: false
     bayproj_lr: 5.e-4
-    early_pred_start: 116
-    early_pred_end: 140
+    early_pred_start: 1000
+    early_pred_end: 1000
     model:
         resnet_pretrained: pretrained/resnet50_gn.pth
         loss_outsider_cof: 0.001
@@ -191,21 +191,76 @@ bayproj:
         gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
         parse_threshold: 0.1
         detail:
-            out_channels: 128
-            regress_channels: 128
-            use_acorr: false
+            block_index: [null, 1, null, null]
+            use_acorr: true
             regress_std: false
             proj_mode: samp
-            radius_std_init: 10
+            radius_std_init: [7, 5, 3, 1]
             proj_data: false
             proj_summary_mode: sum
-            proj_use_conv_final: true
-            regress_kernel_size: [7, 7]
-            regress_stride: [3, 3]
-            proj_samp_sigma: 1
-            res_index: 2
-            block_index: 1
+            proj_use_conv_final: false
+            regress_kernel_size: [7, 7, 3, 3]
+            regress_stride: [3, 3, 1, 1]
+            proj_samp_sigma: [10., 7., 4., 2.]
             early_pred_kernel: 2. # with res_index==2 and block_index==1, should be same size in the second gaussian_kernel
+            proj_local_mask_sigma: [0, 0, 0, 0]
+    dataset:
+        mean_std_file: mean_std_resnet_pretrained.pth
+        ext_border: [0.1, 0.15]
+        scale_factor: 0.25
+        rotate_factor: 30
+        translation_factor: 0.05
+
+baymini:
+    <<: *DEFAULT
+    name: baymini
+    id: 2
+    learning_rate: 5.e-4
+    lr_gamma: 0.5
+    epochs: 100
+    schedule: []
+    train_batch: 16
+    test_batch: 3
+    model:
+        resnet_pretrained: null
+        inp_shape: [192, 256] # W, H
+        out_shape: [48, 64] # W, H
+        gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
+        parse_threshold: 0.1
+        detail:
+            block_index: [null, 1, null, null]
+            channels_per_pos: 3
+            displace_stride: 4
+    dataset:
+        mean_std_file: mean_std.pth
+        ext_border: [0.1, 0.15]
+        scale_factor: 0.25
+        rotate_factor: 30
+        translation_factor: 0.05
+
+baycrf:
+    <<: *DEFAULT
+    name: baybase
+    id: 14
+    learning_rate: 5.e-4
+    lr_gamma: 0.5
+    epochs: 200
+    schedule: []
+    train_batch: 32
+    test_batch: 32
+    model:
+        resnet_pretrained: pretrained/resnet50_gn.pth
+        use_pretrained_before:
+            res_index: 1
+            block_index: 1
+        inp_shape: [192, 256] # W, H
+        out_shape: [48, 64] # W, H
+        gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
+        parse_threshold: 0.1
+        detail:
+            block_index: [null, 1, null, null]
+            channels_per_pos: 3
+            displace_stride: 4
     dataset:
         mean_std_file: mean_std_resnet_pretrained.pth
         ext_border: [0.1, 0.15]

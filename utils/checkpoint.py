@@ -9,6 +9,7 @@ import scipy.io
 import matplotlib.pyplot as plt
 from utils.miscs import ask, wait_key
 from utils.log import log_w, log_i, log_q
+from copy import deepcopy
 
 __all__ = ["save_checkpoint", "detect_checkpoint", "save_pred", "load_pretrained_loose"]
 
@@ -83,11 +84,12 @@ def save_pred(preds, checkpoint_folder, pred_file, force_replace=False):
 class RejectLoadError(Exception):
     pass
 
-def load_pretrained_loose(model, pretrained_state_dict, pause_model_mismatch=True, confirm_model_size_mismatch=True):
+def load_pretrained_loose(model_state_dict, pretrained_state_dict, pause_model_mismatch=True, confirm_model_size_mismatch=True, inplace=True):
     from collections import OrderedDict
-    state_dict = model.state_dict()
-    model_missing_keys = set(list(pretrained_state_dict.keys())) - set(list(state_dict.keys()))
-    model_extra_keys = set(list(state_dict.keys())) - set(list(pretrained_state_dict.keys()))
+    if not inplace:
+        model_state_dict = deepcopy(model_state_dict)
+    model_missing_keys = set(list(pretrained_state_dict.keys())) - set(list(model_state_dict.keys()))
+    model_extra_keys = set(list(model_state_dict.keys())) - set(list(pretrained_state_dict.keys()))
     if len(model_missing_keys) > 0:
         log_w("Model missing keys: " + str(model_missing_keys))
     if len(model_extra_keys) > 0:
@@ -98,7 +100,7 @@ def load_pretrained_loose(model, pretrained_state_dict, pause_model_mismatch=Tru
     for k, v in pretrained_state_dict.items():
         if k in model_missing_keys:
             continue
-        model_k_size = state_dict[k].size()
+        model_k_size = model_state_dict[k].size()
         pretr_k_size = v.size()
         if model_k_size != pretr_k_size and k.endswith(".weight") and len(model_k_size) == len(pretr_k_size) and len(model_k_size) == 4:
             # Output more than pretrained
@@ -124,7 +126,7 @@ def load_pretrained_loose(model, pretrained_state_dict, pause_model_mismatch=Tru
             min_output_channels = min(model_k_size[0], pretr_k_size[0])
             min_input_channels = min(model_k_size[1], pretr_k_size[1])
 
-            state_dict[k].data[:min_output_channels, :min_input_channels] = v[:min_output_channels, :min_input_channels]
+            model_state_dict[k].data[:min_output_channels, :min_input_channels] = v[:min_output_channels, :min_input_channels]
         else:
-            state_dict[k] = v
-    model.load_state_dict(state_dict)
+            model_state_dict[k] = v
+    return model_state_dict

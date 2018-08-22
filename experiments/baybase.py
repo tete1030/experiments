@@ -256,7 +256,7 @@ class BayBaseline(nn.Module):
     def __init__(self, output_shape, num_points, pretrained=None):
         super(BayBaseline, self).__init__()
         self.resnet50 = resnet50(pretrained=pretrained)
-        self.global_net = globalNet([2048, 1024, 512, 256], output_shape, num_points)
+        self.global_net = GlobalNet([2048, 1024, 512, 256], output_shape, num_points)
 
     def forward(self, x):
         res_out = self.resnet50(x)
@@ -413,7 +413,9 @@ def resnet50(pretrained=None, **kwargs):
     model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
     if pretrained is not None:
         print("Loading pretrained resnet50 ...")
-        load_pretrained_loose(model, torch.load(pretrained))
+        model_state_dict = model.state_dict()
+        model_state_dict = load_pretrained_loose(model_state_dict, torch.load(pretrained))
+        model.load_state_dict(model_state_dict)
     return model
 
 
@@ -425,12 +427,14 @@ def resnet101(pretrained=None, **kwargs):
     model = ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
     if pretrained is not None:
         print("Loading pretrained resnet101 ...")
-        load_pretrained_loose(model, torch.load(pretrained))
+        model_state_dict = model.state_dict()
+        model_state_dict = load_pretrained_loose(model_state_dict, torch.load(pretrained))
+        model.load_state_dict(model_state_dict)
     return model
 
-class globalNet(nn.Module):
+class GlobalNet(nn.Module):
     def __init__(self, channel_settings, output_shape, num_class):
-        super(globalNet, self).__init__()
+        super(GlobalNet, self).__init__()
         self.channel_settings = channel_settings
         laterals, upsamples, predict = [], [], []
         for i in range(len(channel_settings)):

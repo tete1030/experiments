@@ -1,35 +1,27 @@
-#!python3
 import torch
-import numpy as np
 import torch.nn as nn
 from torch.nn import DataParallel
-from torch.nn import MSELoss
-from torch.nn.parallel.scatter_gather import gather
+import numpy as np
+import cv2
+
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
-import math
-import torch.utils.model_zoo as model_zoo
+from experiments.baseexperiment import BaseExperiment, EpochContext
 
 import pose.models as models
 import pose.datasets as datasets
-from utils.globals import config, hparams, globalvars
-from utils.log import log_i
-from pose.utils.transforms import fliplr_pts
-
-from utils.train import adjust_learning_rate
-
 from pose.models.bayproj import AutoCorrProj
 from pose.models.common import StrictNaNReLU
-from experiments.baseexperiment import BaseExperiment, EpochContext
-
-import cv2
-import re
-import threading
+from pose.models.displace import DisplaceChannel
+from pose.utils.transforms import fliplr_pts
+from utils.globals import config, hparams, globalvars
+from utils.log import log_i
+from utils.train import adjust_learning_rate
 
 from utils.sync_batchnorm import SynchronizedBatchNorm2d, DataParallelWithCallback
 from utils.checkpoint import load_pretrained_loose
-from utils.miscs import wait_key
+import math
 
 FACTOR = 4
 NUM_PARTS = datasets.mscoco.NUM_PARTS
@@ -39,71 +31,25 @@ class GroupNormWrapper(nn.GroupNorm):
         assert num_features % num_groups == 0, "num_features({}) is not dividend by num_groups({})".format(num_features, num_groups)
         super(GroupNormWrapper, self).__init__(num_groups, num_features, eps=1e-5)
 
-DataParallelImpl = nn.DataParallel
 BatchNorm2dImpl = GroupNormWrapper
-
-_exp_instance = None
-
-class IntermediateOutput(object):
-    def __init__(self):
-        self._dict = dict()
-        self._lock = threading.Lock()
-
-    def set(self, k, v, device=None):
-        if device is None:
-            assert hasattr(v, "device"), "Specifying device or providing an cuda Tensor object"
-            device = v.device
-        with self._lock:
-            if k not in self._dict:
-                self._dict[k] = dict()
-            assert device.index not in self._dict[k], "Duplicate setting"
-            self._dict[k][device.index] = v
-
-    def pop_gathered(self, k, target_device=None):
-        v = self._dict[k]
-        if target_device is None:
-            assert 0 in v and hasattr(v[0], "device"), "Not a Tensor, please specify target_device"
-            target_device = v[0].device
-        if isinstance(target_device, torch.device):
-            target_device = target_device.index
-        if len(v) > 1:
-            v = tuple(zip(*sorted(v.items(), key=lambda x: x[0])))[1]
-            out = gather(v, target_device, dim=0)
-        else:
-            # Assume single device is index 0
-            out = v[0]
-        with self._lock:
-            del self._dict[k]
-        return out
-
-    def keys(self):
-        return list(self._dict.keys())
-
-    def clear(self):
-        with self._lock:
-            self._dict.clear()
 
 class Experiment(BaseExperiment):
     def init(self):
-        global _exp_instance
-        _exp_instance = self
-        self._interm_out = IntermediateOutput()
         self.num_parts = NUM_PARTS
         pretrained = hparams["model"]["resnet_pretrained"]
         if config.resume is not None:
             pretrained = None
-        self.model = DataParallelImpl(BayProj(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda())
-        self.criterion = MSELoss().cuda()
 
-        self._init_optimizer()
-
+        self.model = nn.DataParallel(BayMini(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda())
+        self.optimizer = torch.optim.Adam(
+            filter(lambda x: x.requires_grad, self.model.parameters()),
+            lr=hparams["learning_rate"],
+            weight_decay=hparams['weight_decay'])
+        self.criterion = nn.MSELoss()
+        
         self.cur_lr = hparams["learning_rate"]
 
         self.coco = COCO("data/mscoco/person_keypoints_train2014.json")
-
-        # [early_pred]
-        self.mode = "normal"
-        # [early_pred]
         self.train_dataset = datasets.COCOSinglePose("data/mscoco/images",
                                                self.coco,
                                                "data/mscoco/sp_split.pth",
@@ -113,11 +59,11 @@ class Experiment(BaseExperiment):
                                                ext_border=hparams["dataset"]["ext_border"],
                                                kpmap_res=hparams["model"]["out_shape"],
                                                keypoint_res=hparams["model"]["out_shape"],
-                                               kpmap_sigma=hparams["model"]["gaussian_kernels"] + [hparams["model"]["detail"]["early_pred_kernel"]],
+                                               kpmap_sigma=hparams["model"]["gaussian_kernels"],
                                                scale_factor=hparams["dataset"]["scale_factor"],
                                                rot_factor=hparams["dataset"]["rotate_factor"],
                                                trans_factor=hparams["dataset"]["translation_factor"])
-        # [early_pred]
+
         self.val_dataset = datasets.COCOSinglePose("data/mscoco/images",
                                              self.coco,
                                              "data/mscoco/sp_split.pth",
@@ -127,114 +73,15 @@ class Experiment(BaseExperiment):
                                              ext_border=hparams["dataset"]["ext_border"],
                                              kpmap_res=hparams["model"]["out_shape"],
                                              keypoint_res=hparams["model"]["out_shape"],
-                                             kpmap_sigma=hparams["model"]["gaussian_kernels"] + [hparams["model"]["detail"]["early_pred_kernel"]],
+                                             kpmap_sigma=hparams["model"]["gaussian_kernels"],
                                              scale_factor=hparams["dataset"]["scale_factor"],
                                              rot_factor=hparams["dataset"]["rotate_factor"],
                                              trans_factor=hparams["dataset"]["translation_factor"])
-
+        
         self.train_collate_fn = datasets.COCOSinglePose.collate_function
         self.valid_collate_fn = datasets.COCOSinglePose.collate_function
         self.worker_init_fn = datasets.mscoco.worker_init
         self.print_iter_start = " | "
-        if config.debug_nan:
-            self._setup_debug_nan()
-
-    def _init_optimizer(self):
-        parameter_group_matchers = {
-            "extra_mod": ("is", re.compile(r"^(.+\.)?(?:extra_mod)(\..+)?$")),
-            "early_pred": ("is", re.compile(r"^(.+\.)?(?:extra_mod_early_pred)(\..+)?$")),
-            "adapter": ("is", re.compile(r"^(.+\.)?(?:extra_mod_adapter)(\..+)?$")),
-            "backbone": ("not", re.compile(r"^(.+\.)?(?:extra_mod|extra_mod_early_pred|extra_mod_adapter)(\..+)?$")),
-            "all": None
-        }
-
-        parameter_groups = dict()
-        parameter_name_groups = dict()
-        for para_name, para in self.model.named_parameters():
-            if not para.requires_grad:
-                continue
-            for group_name in parameter_group_matchers:
-                if group_name not in parameter_groups:
-                    parameter_groups[group_name] = list()
-                    parameter_name_groups[group_name] = list()
-                if parameter_group_matchers[group_name] is None:
-                    parameter_groups[group_name].append(para)
-                    parameter_name_groups[group_name].append(para_name)
-                    continue
-                sem, matcher = parameter_group_matchers[group_name]
-
-                if matcher.match(para_name):
-                    if sem == "is":
-                        parameter_groups[group_name].append(para)
-                        parameter_name_groups[group_name].append(para_name)
-                elif sem == "not":
-                    parameter_groups[group_name].append(para)
-                    parameter_name_groups[group_name].append(para_name)
-
-        assert set(parameter_name_groups["all"]) == set(parameter_name_groups["extra_mod"]) | \
-                                                    set(parameter_name_groups["early_pred"]) | \
-                                                    set(parameter_name_groups["adapter"]) | \
-                                                    set(parameter_name_groups["backbone"])
-        assert len(parameter_name_groups["all"]) == len(parameter_name_groups["extra_mod"]) + \
-                                                    len(parameter_name_groups["early_pred"]) + \
-                                                    len(parameter_name_groups["adapter"]) + \
-                                                    len(parameter_name_groups["backbone"])
-
-        print()
-        print("extra_mod:")
-        print(parameter_name_groups["extra_mod"])
-        print()
-        print("early_pred:")
-        print(parameter_name_groups["early_pred"])
-        print()
-        print("backbone:")
-        print(parameter_name_groups["backbone"])
-        print()
-        print("adapter:")
-        print(parameter_name_groups["adapter"])
-
-        if hparams["freeze_backbone"]:
-            for para in parameter_groups["backbone"]:
-                para.requires_grad = False
-
-        self.parameter_groups = parameter_groups
-
-        self.optimizer = torch.optim.Adam([
-                {"params": parameter_groups["backbone"] + parameter_groups["adapter"]},
-                {"params": parameter_groups["extra_mod"] + parameter_groups["early_pred"], "lr": hparams["bayproj_lr"], "init_lr": hparams["bayproj_lr"]}
-            ],
-            lr=hparams["learning_rate"],
-            weight_decay=hparams['weight_decay'])
-
-        self.optimizer_extra_mod = torch.optim.Adam([
-                {"params": parameter_groups["extra_mod"] + parameter_groups["early_pred"], "init_lr": hparams["bayproj_lr"]}
-            ],
-            lr=hparams["bayproj_lr"],
-            weight_decay=hparams['weight_decay'])
-
-    def _setup_debug_nan(self):
-        def get_backward_hook(mod_name):
-            def _backward_hook(module, grad_input, grad_output):
-                exp = self
-                for ginp in grad_input:
-                    if isinstance(ginp, torch.Tensor) and (ginp.data != ginp.data).any():
-                        print(mod_name + " contains NaN during backward")
-                        import ipdb; ipdb.set_trace()
-            return _backward_hook
-
-        def get_forward_hook(mod_name):
-            def _forward_hook(module, input, output):
-                exp = self
-                for out in output:
-                    if isinstance(out, torch.Tensor) and (out.data != out.data).any():
-                        print(mod_name + " contains NaN during forward")
-                        import ipdb; ipdb.set_trace()
-            return _forward_hook
-
-        print("!!!!!PERFORMANCE WARN: FORWARD BACKWARD NAN DEBUGGING ENABLED!!!!!")
-        for modname, mod in self.model.named_modules():
-            mod.register_forward_hook(get_forward_hook(modname))
-            mod.register_backward_hook(get_backward_hook(modname))
 
     def evaluate(self, preds, step):
         def _summarize(eval_result, params, ap, iou_thr=None, area_rng="all", max_dets=100, title=None):
@@ -304,35 +151,10 @@ class Experiment(BaseExperiment):
 
             print("No points")
 
-    def iter_step(self, loss):
-        # [early_pred]
-        if self.mode == "normal":
-            BaseExperiment.iter_step(self, loss)
-        else:
-            self.optimizer_extra_mod.zero_grad()
-            loss.backward()
-            self.optimizer_extra_mod.step()
-
     def epoch_start(self, epoch):
-        # [early_pred]
-        if epoch >= hparams["early_pred_start"] and epoch < hparams["early_pred_end"]:
-            if self.mode != "early_pred":
-                log_i("Switching to early_pred training mode")
-                wait_key()
-                self.mode = "early_pred"
-                for para in (self.parameter_groups["backbone"] + self.parameter_groups["adapter"]):
-                    para.requires_grad = False
-                for para in self.parameter_groups["early_pred"] + self.parameter_groups["extra_mod"]:
-                    para.requires_grad = True
-        else:
-            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
-            if self.mode != "normal":
-                log_i("Switching to normal training mode")
-                self.mode = "normal"
-                for para in self.parameter_groups["all"]:
-                    para.requires_grad = True
+        self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
 
-    def iter_normal(self, epoch_ctx: EpochContext, batch: dict, is_train: bool, progress: dict) -> dict:
+    def iter_process(self, epoch_ctx: EpochContext, batch: dict, is_train: bool, progress: dict) -> dict:
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
         det_maps_gt = batch["keypoint_map"]
@@ -352,9 +174,7 @@ class Experiment(BaseExperiment):
             globalvars.cur_img = None
 
         loss = 0.
-        # last of det_map_gt_vars should be early_pred
-        # [early_pred]
-        for ilabel, (outv, gtv) in enumerate(zip(output_vars, det_map_gt_vars[:-1])):
+        for ilabel, (outv, gtv) in enumerate(zip(output_vars, det_map_gt_vars)):
             # if ilabel < len(det_map_gt_vars) - 1:
             #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
             if ilabel < len(det_map_gt_vars) - 1:
@@ -363,25 +183,10 @@ class Experiment(BaseExperiment):
             else:
                 loss = loss + (outv - gtv).pow(2).mean().sqrt()
 
-        for extra_mod_out_key in self._interm_out.keys():
-            if not re.match(r"extra_mod_\d+_\d+", extra_mod_out_key):
-                continue
-            loss_out_total, loss_in_total, count_point = self._interm_out.pop_gathered(extra_mod_out_key, target_device=self.model.output_device)
-            loss = loss + hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / batch_size / count_point.sum()
-            # loss = loss + hparams["model"]["loss_close_cof"] * loss_in_total.sum() / batch_size / count_point.sum()
-
         epoch_ctx.add_scalar("loss", loss.item(), progress["iter_len"])
-
-        # Make sure no reference
-        self._interm_out.clear()
 
         if (loss.data != loss.data).any():
             import ipdb; ipdb.set_trace()
-
-        if config.vis and False:
-            # show figures plot during forwarding
-            import matplotlib.pyplot as plt
-            plt.show()
 
         if not is_train or config.vis:
             pred, score = parse_map(output_vars[-1], thres=hparams["model"]["parse_threshold"])
@@ -439,82 +244,118 @@ class Experiment(BaseExperiment):
 
         return result
 
-    def iter_early_pred(self, epoch_ctx: EpochContext, batch: dict, is_train: bool, progress: dict) -> dict:
-        image_ids = batch["img_index"].tolist()
-        img = batch["img"]
-        det_maps_gt = batch["keypoint_map"]
-        transform_mat = batch["img_transform"]
-        img_flipped = batch["img_flipped"]
-        img_ori_size = batch["img_ori_size"]
-        keypoint = batch["keypoint"]
-        batch_size = img.size(0)
 
-        det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
-        # dirty trick for debug
-        if config.vis:
-            globalvars.cur_img = img
-        self.model(img)
-        # dirty trick for debug, release
-        if config.vis:
-            globalvars.cur_img = None
-
-        early_pred_out = self._interm_out.pop_gathered("early_pred")
-        loss = (early_pred_out - det_map_gt_vars[-1]).pow(2).mean().sqrt()
-        loss_out_total, loss_in_total, count_point = self._interm_out.pop_gathered("extra_mod", target_device=self.model.output_device)
-        loss = loss + hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / batch_size / count_point.sum()
-        epoch_ctx.add_scalar("loss_early", loss.item(), progress["iter_len"])
-
-        # Make sure no reference
-        self._interm_out.clear()
-
-        if (loss.data != loss.data).any():
-            import ipdb; ipdb.set_trace()
-
-        if config.vis and False:
-            # show figures plot during forwarding
-            import matplotlib.pyplot as plt
-            plt.show()
-
-        result = {
-            "loss": loss,
-            "index": batch["index"],
-            "save": None,
-            "pred": None
-        }
-
-        return result
-
-    def iter_process(self, *args, **kwargs):
-        if self.mode == "normal":
-            return self.iter_normal(*args, **kwargs)
-        elif self.mode == "early_pred":
-            return self.iter_early_pred(*args, **kwargs)
-        else:
-            assert False
-
-class BayProj(nn.Module):
+class BayMini(nn.Module):
     def __init__(self, output_shape, num_points, pretrained=None):
-        """BayProj Model
-        
-        Arguments:
-            output_shape {tuple} -- (H, W) !!!!!!!
-            num_points {int} -- number of parts
-        
-        Keyword Arguments:
-            pretrained {str} -- pretrained resnet filename (default: {None})
-        """
-
-        super(BayProj, self).__init__()
-        self.resnet50 = resnet50(pretrained=pretrained)
-        self.global_net = GlobalNet([2048, 1024, 512, 256], output_shape, num_points)
+        super(BayMini, self).__init__()
+        self.resnet18 = resnet18(pretrained=pretrained)
+        self.global_net = GlobalNet([512, 256, 128, 64], output_shape, num_points)
 
     def forward(self, x):
-        res_out = self.resnet50(x)
-        # [early_pred]
-        if _exp_instance.mode == "early_pred":
-            return
+        res_out = self.resnet18(x)
         global_re, global_out = self.global_net(res_out)
         return global_out
+
+def conv3x3(in_planes, out_planes, stride=1):
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, inshape_factor, res_index, block_index, stride=1, downsample=None):
+        super(BasicBlock, self).__init__()
+        if block_index == hparams["model"]["detail"]["block_index"][res_index]:
+            use_extra_mod = True
+        else:
+            use_extra_mod = False
+        self.conv1 = conv3x3(inplanes, planes, stride)
+        self.bn1 = BatchNorm2dImpl(planes)
+        if use_extra_mod:
+            self.relu = StrictNaNReLU(inplace=False)
+        else:
+            self.relu = StrictNaNReLU(inplace=True)
+        self.conv2 = conv3x3(planes, planes)
+        self.bn2 = BatchNorm2dImpl(planes)
+        self.downsample = downsample
+        self.stride = stride
+        self.inshape_factor = inshape_factor
+        self.res_index = res_index
+        self.block_index = block_index
+        if use_extra_mod:
+            assert self.downsample is None, "extra_mod require equal-sized input output"
+            width = hparams["model"]["inp_shape"][0] // inshape_factor
+            height = hparams["model"]["inp_shape"][1] // inshape_factor
+            _, _, num_pos = DisplaceChannel.calc_num_positions(height, width, hparams["model"]["detail"]["displace_stride"])
+            out_channels = hparams["model"]["detail"]["channels_per_pos"] * num_pos
+            print("inp_channels=" + str(inplanes))
+            print("out_channels=" + str(out_channels))
+            self.extra_mod = nn.Sequential(nn.Conv2d(inplanes, out_channels, kernel_size=1, stride=1),
+                                           StrictNaNReLU(inplace=True),
+                                           DisplaceChannel(hparams["model"]["detail"]["displace_stride"]),
+                                           nn.Conv2d(out_channels, inplanes, kernel_size=3, stride=1, padding=1),
+                                           StrictNaNReLU(inplace=True),
+                                           nn.Conv2d(inplanes, inplanes, kernel_size=3, stride=1, padding=1),
+                                           BatchNorm2dImpl(inplanes),
+                                           StrictNaNReLU(inplace=True))
+        else:
+            self.extra_mod = None
+
+    def forward_extra_mod(self, x):
+        if self.extra_mod is not None:
+            extra_out = self.extra_mod(x)
+
+            if config.vis:
+                import matplotlib.pyplot as plt
+                import cv2
+                fig, axes = plt.subplots(3, 30, figsize=(100, 12), squeeze=False)
+                
+                for row, axes_row in enumerate(axes):
+                    img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                    fts = x.data[row].cpu().numpy()
+                    for col, ax in enumerate(axes_row):
+                        if col == 0:
+                            ax.imshow(img)
+                        else:
+                            ax.imshow(fts[col-1])
+                fig.suptitle("BasicBlock x")
+
+                fig, axes = plt.subplots(3, 30, figsize=(100, 12), squeeze=False)
+                for row, axes_row in enumerate(axes):
+                    img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
+                    fts = extra_out.data[row].cpu().numpy()
+                    for col, ax in enumerate(axes_row):
+                        if col == 0:
+                            ax.imshow(img)
+                        else:
+                            ax.imshow(fts[col-1])
+                fig.suptitle("BasicBlock extra_out")
+                plt.show()
+
+            return x + extra_out
+        else:
+            return x
+
+    def forward(self, x):
+        x = self.forward_extra_mod(x)
+
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out = out + residual
+        out = self.relu(out)
+
+        return out
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -544,66 +385,23 @@ class Bottleneck(nn.Module):
         self.block_index = block_index
         if use_extra_mod:
             assert self.downsample is None, "extra_mod require equal-sized input output"
-            self.extra_mod = AutoCorrProj(use_acorr=hparams["model"]["detail"]["use_acorr"],
-                                          in_channels=inplanes,
-                                          out_channels=inplanes // 4,
-                                          inner_channels=inplanes // 4,
-                                          kernel_size=hparams["model"]["detail"]["regress_kernel_size"][res_index],
-                                          stride=hparams["model"]["detail"]["regress_stride"][res_index],
-                                          regress_std=hparams["model"]["detail"]["regress_std"],
-                                          proj_mode=hparams["model"]["detail"]["proj_mode"],
-                                          proj_summary_mode=hparams["model"]["detail"]["proj_summary_mode"],
-                                          proj_use_conv_final=hparams["model"]["detail"]["proj_use_conv_final"],
-                                          proj_samp_sigma=hparams["model"]["detail"]["proj_samp_sigma"][res_index],
-                                          proj_data=hparams["model"]["detail"]["proj_data"],
-                                          radius_std_init=hparams["model"]["detail"]["radius_std_init"][res_index],
-                                          proj_local_mask_sigma=hparams["model"]["detail"]["proj_local_mask_sigma"][res_index])
-            # [early_pred]
-            width_img = hparams["model"]["inp_shape"][0]
-            height_img = hparams["model"]["inp_shape"][1]
-            self.extra_mod_early_pred = self._predict(inplanes=inplanes // 4,
-                                                      output_shape=(int(height_img) // FACTOR, int(width_img) // FACTOR),
-                                                      num_class=NUM_PARTS)
-            self.extra_mod_adapter = nn.Sequential(nn.Conv2d(inplanes // 4, inplanes, kernel_size=1, stride=1, bias=False))
+            width = hparams["model"]["inp_shape"][0] // inshape_factor
+            height = hparams["model"]["inp_shape"][1] // inshape_factor
+            _, _, num_pos = DisplaceChannel.calc_num_positions(height, width, hparams["model"]["detail"]["displace_stride"])
+            out_channels = hparams["model"]["detail"]["channels_per_pos"] * num_pos
+            print("inp_channels=" + str(inplanes))
+            print("out_channels=" + str(out_channels))
+            self.extra_mod = nn.Sequential(nn.Conv2d(inplanes, out_channels, kernel_size=3, stride=1, padding=1),
+                                           StrictNaNReLU(inplace=True),
+                                           DisplaceChannel(hparams["model"]["detail"]["displace_stride"]),
+                                           nn.Conv2d(out_channels, inplanes, kernel_size=3, stride=1, padding=1),
+                                           StrictNaNReLU(inplace=True))
         else:
             self.extra_mod = None
-            self.extra_mod_early_pred = None
-            self.extra_mod_adapter = None
-
-    # [early_pred]
-    def _predict(self, inplanes, output_shape, num_class):
-        """generate predict module
-        
-        Arguments:
-            inplanes {int} -- number of input channels
-            output_shape {tuple of int} -- (H, W)
-            num_class {int} -- number of parts
-        
-        Returns:
-            nn.Sequential -- predict model compact
-        """
-
-        layers = []
-        layers.append(nn.Conv2d(inplanes, inplanes,
-            kernel_size=1, stride=1, bias=False))
-        layers.append(BatchNorm2dImpl(inplanes))
-        layers.append(StrictNaNReLU(inplace=True))
-
-        layers.append(nn.Conv2d(inplanes, num_class,
-            kernel_size=3, stride=1, padding=1, bias=False))
-        layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
-        layers.append(nn.Conv2d(num_class, num_class,
-            kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
-
-        return nn.Sequential(*layers)
 
     def forward_extra_mod(self, x):
         if self.extra_mod is not None:
             extra_out = self.extra_mod(x)
-            _exp_instance._interm_out.set("extra_mod_{}_{}".format(self.res_index, self.block_index), extra_out[1:], device=x.device)
-            # [early_pred]
-            if _exp_instance.mode == "early_pred":
-                _exp_instance._interm_out.set("early_pred_{}_{}".format(self.res_index, self.block_index), self.extra_mod_early_pred(extra_out[0]))
 
             if config.vis:
                 import matplotlib.pyplot as plt
@@ -623,7 +421,7 @@ class Bottleneck(nn.Module):
                 fig, axes = plt.subplots(3, 30, figsize=(100, 12), squeeze=False)
                 for row, axes_row in enumerate(axes):
                     img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
-                    fts = extra_out[0].data[row].cpu().numpy()
+                    fts = extra_out.data[row].cpu().numpy()
                     for col, ax in enumerate(axes_row):
                         if col == 0:
                             ax.imshow(img)
@@ -632,7 +430,7 @@ class Bottleneck(nn.Module):
                 fig.suptitle("bottleneck extra_out")
                 plt.show()
 
-            return x * self.extra_mod_adapter(extra_out[0])
+            return x + extra_out
         else:
             return x
 
@@ -680,8 +478,8 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(block, 512, layers[3], res_index=3, stride=2)
 
         for mod_name, m in self.named_modules():
-            if re.match(r"^(.+\.)?extra_mod(\..+)?$", mod_name):
-                continue
+            # if re.match(r"^(.+\.)?extra_mod(\..+)?$", mod_name):
+            #     continue
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
                 m.weight.data.normal_(0, math.sqrt(2. / n))
@@ -721,28 +519,14 @@ class ResNet(nn.Module):
 
         return [x4, x3, x2, x1]
 
-def resnet50(pretrained=None, **kwargs):
-    """Constructs a ResNet-50 model.
+def resnet18(pretrained=None, **kwargs):
+    """Constructs a ResNet-18 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
-    model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
+    model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained is not None:
-        print("Loading pretrained resnet50 ...")
-        model_state_dict = model.state_dict()
-        model_state_dict = load_pretrained_loose(model_state_dict, torch.load(pretrained))
-        model.load_state_dict(model_state_dict)
-    return model
-
-
-def resnet101(pretrained=None, **kwargs):
-    """Constructs a ResNet-101 model.
-    Args:
-        pretrained (bool): If True, returns a model pre-trained on ImageNet
-    """
-    model = ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
-    if pretrained is not None:
-        print("Loading pretrained resnet101 ...")
+        print("Loading pretrained resnet18 ...")
         model_state_dict = model.state_dict()
         model_state_dict = load_pretrained_loose(model_state_dict, torch.load(pretrained))
         model.load_state_dict(model_state_dict)
@@ -820,6 +604,7 @@ class GlobalNet(nn.Module):
 
         return global_fms, global_outs
 
+
 def parse_map(det_map, thres=0.1):
     det_map = det_map.detach()
     if det_map.is_cuda:
@@ -889,43 +674,3 @@ def batch_resize(im, new_shape):
         return im
     im = im.reshape((-1,) + im_post_shape)
     return np.array([cv2.resize(im[i], (new_shape[1], new_shape[0])) for i in range(im.shape[0])]).reshape(im_pre_shape + new_shape)
-
-if __name__ == "__main__":
-    def test_main():
-        from ruamel.yaml import YAML
-        from utils.globals import config, hparams, globalvars
-        import importlib
-
-        exp_name = "baybase"
-
-        with open('experiments/config.yaml', 'r') as f:
-            conf = YAML(typ='safe').load(f)
-            conf_data = conf["default"]
-            config.update(conf_data.items())
-
-        globalvars.exp_name = exp_name
-        with open("experiments/hparams.yaml", "r") as f:
-            hparams.update(YAML().load(f)[exp_name])
-
-        config.checkpoint = config.checkpoint.format(**{'exp': exp_name, 'id': hparams['id']})
-        if config.resume is not None:
-            config.resume = config.resume.format(**{'exp': exp_name, 'id': hparams['id']})
-
-        exp_module = importlib.import_module('experiments.' + exp_name)
-        exp = exp_module.Experiment()
-
-        exp.train_dataset.debug = True
-
-        train_loader = torch.utils.data.DataLoader(
-            exp.train_dataset,
-            collate_fn=exp.train_collate_fn,
-            batch_size=hparams['train_batch'],
-            num_workers=0,
-            shuffle=True,
-            pin_memory=True,
-            drop_last=exp.train_drop_last if hasattr(exp, "train_drop_last") else False)
-
-        for batch in train_loader:
-            continue
-
-    test_main()
