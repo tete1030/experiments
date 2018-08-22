@@ -333,7 +333,7 @@ class BasicBlock(nn.Module):
                 fig.suptitle("BasicBlock extra_out")
                 plt.show()
 
-            return x + extra_out
+            return x * extra_out
         else:
             return x
 

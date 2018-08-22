@@ -214,13 +214,13 @@ bayproj:
 baymini:
     <<: *DEFAULT
     name: baymini
-    id: 1
+    id: 3
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
     schedule: []
     train_batch: 16
-    test_batch: 3
+    test_batch: 16
     model:
         resnet_pretrained: null
         inp_shape: [192, 256] # W, H
@@ -228,7 +228,7 @@ baymini:
         gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
         parse_threshold: 0.1
         detail:
-            block_index: [null, null, null, null]
+            block_index: [null, 1, null, null]
             channels_per_pos: 3
             displace_stride: 4
     dataset:
