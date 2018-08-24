@@ -65,7 +65,7 @@ class Displace(Function):
         return grad_inp, None, None, None
 
 class DisplaceChannel(nn.Module):
-    def __init__(self, height, width, init_stride, fill=False, learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5, disable_displace=False):
+    def __init__(self, height, width, init_stride, fill=False, learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5, disable_displace=False, random_offset=None):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -73,6 +73,7 @@ class DisplaceChannel(nn.Module):
         self.fill = fill
         self.learnable_offset = learnable_offset
         self.disable_displace = disable_displace
+        self.random_offset = random_offset
         if not fill:
             self.num_y = (height - init_stride) // init_stride * 2 + 1
             self.num_x = (width - init_stride) // init_stride * 2 + 1
@@ -108,6 +109,9 @@ class DisplaceChannel(nn.Module):
     def init_offset(self):
         nh, nw = self.num_y, self.num_x
         if not self.fill:
+            if self.random_offset is not None and self.random_offset > 0:
+                self.offset.data.uniform_(-self.random_offset, self.random_offset)
+                return
             count_off = 0
             for ih in range(-(nh // 2), nh // 2 + 1):
                 for iw in range(-(nw // 2), nw // 2 + 1):
@@ -117,6 +121,9 @@ class DisplaceChannel(nn.Module):
                     self.offset.data[count_off, 1] = ih * self.init_stride
                     count_off += 1
         else:
+            if self.random_offset is not None and self.random_offset > 0:
+                self.offset.data.uniform_(0, self.random_offset)
+                return
             count_off = 0
             for ih in range(0, nh):
                 for iw in range(0, nw):

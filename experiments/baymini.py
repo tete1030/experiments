@@ -327,7 +327,7 @@ class BasicBlock(nn.Module):
             assert self.downsample is None, "extra_mod require equal-sized input output"
             width = hparams["model"]["inp_shape"][0] // inshape_factor
             height = hparams["model"]["inp_shape"][1] // inshape_factor
-            displace = DisplaceChannel(height, width, hparams["model"]["detail"]["displace_stride"], fill=hparams["model"]["detail"]["displace_fill"], learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"], disable_displace=hparams["model"]["detail"]["disable_displace"])
+            displace = DisplaceChannel(height, width, hparams["model"]["detail"]["displace_stride"], fill=hparams["model"]["detail"]["displace_fill"], learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"], disable_displace=hparams["model"]["detail"]["disable_displace"], random_offset=hparams["model"]["detail"]["random_offset"])
             offset_channels = hparams["model"]["detail"]["channels_per_pos"] * displace.num_pos
             print("inp_channels=" + str(inplanes))
             print("offset_channels=" + str(offset_channels))

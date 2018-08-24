@@ -214,7 +214,7 @@ bayproj:
 baymini:
     <<: *DEFAULT
     name: baymini
-    id: 9
+    id: 10
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -236,6 +236,7 @@ baymini:
             displace_learnable_offset: true
             displace_LO_min_step: 6544
             disable_displace: false
+            random_offset: 10.
     dataset:
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
