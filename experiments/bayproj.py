@@ -304,10 +304,10 @@ class Experiment(BaseExperiment):
 
             print("No points")
 
-    def iter_step(self, loss):
+    def iter_step(self, loss, cur_step):
         # [early_pred]
         if self.mode == "normal":
-            BaseExperiment.iter_step(self, loss)
+            BaseExperiment.iter_step(self, loss, cur_step)
         else:
             self.optimizer_extra_mod.zero_grad()
             loss.backward()

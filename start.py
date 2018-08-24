@@ -325,7 +325,7 @@ def train(train_loader, exp, epoch, cur_step, em_valid_int=0, val_loader=None):
             result = exp.iter_process(epoch_ctx, batch, True, progress=progress)
             loss = result["loss"]
 
-            exp.iter_step(loss)
+            exp.iter_step(loss, cur_step)
 
             loss = loss.item() if loss is not None else None
 

@@ -235,31 +235,43 @@ class LongRangeProj(nn.Module):
             _origin_x {torch.FloatTensor} -- [nw]
             _origin_y {torch.FloatTensor} -- [nh]
         """
-        if self._nh != nh or self._nw != nw or self._height != height or self._width != width or self._force_field.device != device:
+        if self._force_field is None or self._nh != nh or self._nw != nw or self._height != height or self._width != width:
+            device_cpu = torch.device("cpu")
             self._nh = nh
             self._nw = nw
             self._height = height
             self._width = width
 
-            x_orig = torch.arange(nw, dtype=torch.float32, device=device)
+            x_orig = torch.arange(nw, dtype=torch.float32)
             x_orig = x_orig * stride[1] - pad[1] + kernel_size[1] // 2
-            y_orig = torch.arange(nh, dtype=torch.float32, device=device)
+            y_orig = torch.arange(nh, dtype=torch.float32)
             y_orig = y_orig * stride[0] - pad[0] + kernel_size[0] // 2
-            self._origin_x = x_orig
-            self._origin_y = y_orig
+            self._origin_x = dict()
+            self._origin_x[device_cpu] = x_orig
+            self._origin_y = dict()
+            self._origin_y[device_cpu] = y_orig
 
             origin_x = x_orig.view(1, -1, 1, 1)
             origin_y = y_orig.view(-1, 1, 1, 1)
-            x_out = torch.arange(width, dtype=torch.float32, device=device).view(1, 1, 1, -1)
-            y_out = torch.arange(height, dtype=torch.float32, device=device).view(1, 1, -1, 1)
+            x_out = torch.arange(width, dtype=torch.float32).view(1, 1, 1, -1)
+            y_out = torch.arange(height, dtype=torch.float32).view(1, 1, -1, 1)
 
-            self._force_field = torch.stack([
+            self._force_field = dict()
+            self._force_field[device_cpu] = torch.stack([
                     (x_out-origin_x).expand(nh, -1, height, -1),
                     (y_out-origin_y).expand(-1, nw, -1, width)
                 ], dim=2)
-            self._force_norm = torch.norm(self._force_field, dim=2)
+            self._force_norm = dict()
+            self._force_norm[device_cpu] = torch.norm(self._force_field, dim=2)
             if self._local_mask_sigma > 0:
-                self._local_mask = 1 - torch.exp(- self._force_norm ** 2 / 2 / self._local_mask_sigma ** 2)
+                self._local_mask = dict()
+                self._local_mask[device_cpu] = 1 - torch.exp(- self._force_norm ** 2 / 2 / self._local_mask_sigma ** 2)
+
+        if device not in self._force_field:
+            device_cpu = torch.device("cpu")
+            self._force_field[device] = self._force_field[device_cpu].to(device)
+            self._force_norm[device] = self._force_norm[device_cpu].to(device)
+            self._local_mask[device] = self._local_mask[device_cpu].to(device)
 
     def _proj_prob(self, force_field, force_norm, cx, cy, radius_mean, angle_mean, radius_std, angle_std):
         """
@@ -365,8 +377,8 @@ class LongRangeProj(nn.Module):
 
     def _sum_outsider(self, radius, angle):
         # b x nh x nw x chan
-        proj_cen_x = radius * torch.cos(angle) + self._origin_x.view(1, 1, -1, 1)
-        proj_cen_y = radius * torch.sin(angle) + self._origin_y.view(1, -1, 1, 1)
+        proj_cen_x = radius * torch.cos(angle) + self._origin_x[radius.device].view(1, 1, -1, 1)
+        proj_cen_y = radius * torch.sin(angle) + self._origin_y[radius.device].view(1, -1, 1, 1)
 
         left_outsd = (proj_cen_x.data < 0)
         right_outsd = (proj_cen_x.data >= self._width)
@@ -389,6 +401,7 @@ class LongRangeProj(nn.Module):
         """
         batch_size = radius.size(0)
         channel_size = radius.size(3)
+        device = radius.device
 
         if self.proj_data or inp is not None:
             raise NotImplementedError("Not completed")
@@ -406,17 +419,17 @@ class LongRangeProj(nn.Module):
         for iy in range(radius.size(1)):
             for ix in range(radius.size(2)):
                 proj = confidence[:, iy, ix].view(batch_size, channel_size, 1, 1) * \
-                       projector(self._force_field[iy, ix],
-                                 self._force_norm[iy, ix],
-                                 self._origin_x[ix],
-                                 self._origin_y[iy],
+                       projector(self._force_field[device][iy, ix],
+                                 self._force_norm[device][iy, ix],
+                                 self._origin_x[device][ix],
+                                 self._origin_y[device][iy],
                                  radius[:, iy, ix],
                                  angle[:, iy, ix],
                                  radius_std[:, iy, ix] if self.input_std else radius_std,
                                  angle_std[:, iy, ix] if self.input_std else angle_std)
 
                 if self._local_mask_sigma > 0:
-                    proj = proj * self._local_mask
+                    proj = proj * self._local_mask[device]
 
                 if out is None:
                     out = proj
@@ -539,8 +552,6 @@ class AutoCorrProj(nn.Module):
         self._nw = None
         self._height = None
         self._width = None
-        self._origin_x = None
-        self._origin_y = None
 
         # For finetune
         # TODO: improve initialization

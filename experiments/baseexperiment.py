@@ -47,7 +47,7 @@ class BaseExperiment(object):
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, is_train: bool, progress: dict) -> dict:
         pass
 
-    def iter_step(self, loss):
+    def iter_step(self, loss, cur_step):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
