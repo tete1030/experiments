@@ -3,6 +3,8 @@ import torch.nn as nn
 from torch.nn import DataParallel
 import numpy as np
 import cv2
+import re
+import os
 
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
@@ -41,10 +43,24 @@ class Experiment(BaseExperiment):
             pretrained = None
 
         self.model = nn.DataParallel(BayMini(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda())
+            
+        RE_OFFSET = re.compile(r".+\.extra_mod.*\.offset")
+        normal_parameters = list(zip(*filter(lambda kv: not RE_OFFSET.match(kv[0]) and kv[1].requires_grad, self.model.named_parameters())))[1]
+        offset_parameter = list(zip(*filter(lambda kv: RE_OFFSET.match(kv[0]) and kv[1].requires_grad, self.model.named_parameters())))[1]
+        assert len(offset_parameter) == 1
+
         self.optimizer = torch.optim.Adam(
-            filter(lambda x: x.requires_grad, self.model.parameters()),
+            normal_parameters,
             lr=hparams["learning_rate"],
             weight_decay=hparams['weight_decay'])
+
+        self.offset_optimizer = torch.optim.Adam(
+            [
+                {"params": offset_parameter, "lr": 2e-3, "init_lr": 2e-3}
+            ],
+            lr=hparams["learning_rate"],
+            weight_decay=hparams['weight_decay'])
+
         self.criterion = nn.MSELoss()
         
         self.cur_lr = hparams["learning_rate"]
@@ -156,6 +172,16 @@ class Experiment(BaseExperiment):
     def epoch_start(self, epoch):
         self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
 
+    def iter_step(self, loss, cur_step):
+        self.optimizer.zero_grad()
+        self.offset_optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        if cur_step >= hparams["model"]["detail"]["displace_LO_min_step"]:
+            self.offset_optimizer.step()
+            # FIXME: find a better way
+            globalvars.displace_mod.reset_outsider()
+
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, is_train: bool, progress: dict) -> dict:
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
@@ -172,6 +198,9 @@ class Experiment(BaseExperiment):
                 delta_offset = current_offset - self.last_offset
                 epoch_ctx.add_scalar("move_dis", delta_offset.abs().mean().item(), progress["iter_len"])
             self.last_offset = current_offset
+        else:
+            if progress["iter"] == 0:
+                torch.save(globalvars.displace_mod.offset.detach().cpu(), os.path.join(config.checkpoint, "offset_{}.pth".format(progress["step"])))
 
         det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
         # dirty trick for debug
