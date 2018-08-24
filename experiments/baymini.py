@@ -56,9 +56,9 @@ class Experiment(BaseExperiment):
             assert len(offset_parameter) == 1
             self.offset_optimizer = torch.optim.Adam(
                 [
-                    {"params": offset_parameter, "lr": 2e-3, "init_lr": 2e-3}
+                    {"params": offset_parameter, "lr": hparams["offset_lr"], "init_lr": hparams["offset_lr"]}
                 ],
-                lr=hparams["learning_rate"],
+                lr=hparams["offset_lr"],
                 weight_decay=hparams['weight_decay'])
 
         self.criterion = nn.MSELoss()
