@@ -65,13 +65,14 @@ class Displace(Function):
         return grad_inp, None, None, None
 
 class DisplaceChannel(nn.Module):
-    def __init__(self, height, width, init_stride, fill=False, learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5):
+    def __init__(self, height, width, init_stride, fill=False, learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5, disable_displace=False):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
         self.init_stride = init_stride
         self.fill = fill
         self.learnable_offset = learnable_offset
+        self.disable_displace = disable_displace
         if not fill:
             self.num_y = (height - init_stride) // init_stride * 2 + 1
             self.num_x = (width - init_stride) // init_stride * 2 + 1
@@ -79,21 +80,23 @@ class DisplaceChannel(nn.Module):
             self.num_y = (height - init_stride) // init_stride + 1
             self.num_x = (width - init_stride) // init_stride + 1
         self.num_pos = self.num_y * self.num_x - 1
-        self.offset = nn.parameter.Parameter(torch.Tensor(self.num_pos, 2), requires_grad=False)
-        self.init_offset()
-        if learnable_offset:
-            assert isinstance(LO_kernel_size, int)
-            assert LO_kernel_size % 2 == 1
 
-            self.LO_kernel_size = LO_kernel_size
-            self.LO_sigma = LO_sigma
-            self.offset.requires_grad = True
-            self.offset.register_hook(self.balance_offset_grad)
+        if not disable_displace:
+            self.offset = nn.parameter.Parameter(torch.Tensor(self.num_pos, 2), requires_grad=False)
+            self.init_offset()
+            if learnable_offset:
+                assert isinstance(LO_kernel_size, int)
+                assert LO_kernel_size % 2 == 1
 
-            x = torch.arange(LO_kernel_size, dtype=torch.float).view(1, -1, 1).expand(LO_kernel_size, -1, -1) - float(LO_kernel_size // 2)
-            y = torch.arange(LO_kernel_size, dtype=torch.float).view(-1, 1, 1).expand(-1, LO_kernel_size, -1) - float(LO_kernel_size // 2)
-            self.field = dict()
-            self.field[torch.device("cpu")] = torch.cat([x, y], dim=2).expand(1, -1, -1, -1).repeat(self.num_pos, 1, 1, 1)
+                self.LO_kernel_size = LO_kernel_size
+                self.LO_sigma = LO_sigma
+                self.offset.requires_grad = True
+                self.offset.register_hook(self.balance_offset_grad)
+
+                x = torch.arange(LO_kernel_size, dtype=torch.float).view(1, -1, 1).expand(LO_kernel_size, -1, -1) - float(LO_kernel_size // 2)
+                y = torch.arange(LO_kernel_size, dtype=torch.float).view(-1, 1, 1).expand(-1, LO_kernel_size, -1) - float(LO_kernel_size // 2)
+                self.field = dict()
+                self.field[torch.device("cpu")] = torch.cat([x, y], dim=2).expand(1, -1, -1, -1).repeat(self.num_pos, 1, 1, 1)
 
     def balance_offset_grad(self, grad):
         if not self.fill:
@@ -144,31 +147,34 @@ class DisplaceChannel(nn.Module):
         assert self.height == height and self.width == width
         assert num_channels % self.num_pos == 0, "num of channels cannot be divided by number of positions"
 
-        if device not in self.field:
-            self.field[device] = self.field[torch.device("cpu")].to(device)
-            assert len(self.field.keys()) < 10
-        field = self.field[device]
+        if not self.disable_displace:
+            if device not in self.field:
+                self.field[device] = self.field[torch.device("cpu")].to(device)
+                assert len(self.field.keys()) < 10
+            field = self.field[device]
 
-        chan_per_pos = num_channels // self.num_pos
-        if self.fill:
-            inpinp = inp.repeat(1, 1, 2, 2)
-            out = Displace.apply(inpinp, self.offset.detach().round().int(), chan_per_pos, True)
+            chan_per_pos = num_channels // self.num_pos
+            if self.fill:
+                inpinp = inp.repeat(1, 1, 2, 2)
+                out = Displace.apply(inpinp, self.offset.detach().round().int(), chan_per_pos, True)
+            else:
+                out = Displace.apply(inp, self.offset.detach().round().int(), chan_per_pos, False)
+
+            # out: nsamp x npos*chan_per_pos x height x width
+
+            if self.learnable_offset:
+                # npos x kh x kw
+                # The offset means which direction and how long we should move the image,
+                # while for each kernel at each individual place, -offset is the center where it should 'look at',
+                # so the field becomes to force - (-offset.float) -> force + offset.float
+                kernel = torch.exp(- (field + (self.offset - self.offset.detach().round())[:, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
+                kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
+                # npos*chan_per_pos x kh x kw
+                kernel = kernel.view(self.num_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_per_pos, 1, 1).view(self.num_pos*chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size)
+                # nsamp x npos*chan_per_pos x height x width
+                out = F.conv2d(out, kernel, None, (1, 1), (self.LO_kernel_size // 2, self.LO_kernel_size // 2), (1, 1), self.num_pos*chan_per_pos)
         else:
-            out = Displace.apply(inp, self.offset.detach().round().int(), chan_per_pos, False)
-
-        # out: nsamp x npos*chan_per_pos x height x width
-
-        if self.learnable_offset:
-            # npos x kh x kw
-            # The offset means which direction and how long we should move the image,
-            # while for each kernel at each individual place, -offset is the center where it should 'look at',
-            # so the field becomes to force - (-offset.float) -> force + offset.float
-            kernel = torch.exp(- (field + (self.offset - self.offset.detach().round())[:, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
-            kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
-            # npos*chan_per_pos x kh x kw
-            kernel = kernel.view(self.num_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_per_pos, 1, 1).view(self.num_pos*chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size)
-            # nsamp x npos*chan_per_pos x height x width
-            out = F.conv2d(out, kernel, None, (1, 1), (self.LO_kernel_size // 2, self.LO_kernel_size // 2), (1, 1), self.num_pos*chan_per_pos)
+            out = inp
 
         if config.vis:
             import matplotlib.pyplot as plt

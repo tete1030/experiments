@@ -46,20 +46,20 @@ class Experiment(BaseExperiment):
             
         RE_OFFSET = re.compile(r".+\.extra_mod.*\.offset")
         normal_parameters = list(zip(*filter(lambda kv: not RE_OFFSET.match(kv[0]) and kv[1].requires_grad, self.model.named_parameters())))[1]
-        offset_parameter = list(zip(*filter(lambda kv: RE_OFFSET.match(kv[0]) and kv[1].requires_grad, self.model.named_parameters())))[1]
-        assert len(offset_parameter) == 1
-
         self.optimizer = torch.optim.Adam(
             normal_parameters,
             lr=hparams["learning_rate"],
             weight_decay=hparams['weight_decay'])
 
-        self.offset_optimizer = torch.optim.Adam(
-            [
-                {"params": offset_parameter, "lr": 2e-3, "init_lr": 2e-3}
-            ],
-            lr=hparams["learning_rate"],
-            weight_decay=hparams['weight_decay'])
+        if not hparams["model"]["detail"]["disable_displace"]:
+            offset_parameter = list(zip(*filter(lambda kv: RE_OFFSET.match(kv[0]) and kv[1].requires_grad, self.model.named_parameters())))[1]
+            assert len(offset_parameter) == 1
+            self.offset_optimizer = torch.optim.Adam(
+                [
+                    {"params": offset_parameter, "lr": 2e-3, "init_lr": 2e-3}
+                ],
+                lr=hparams["learning_rate"],
+                weight_decay=hparams['weight_decay'])
 
         self.criterion = nn.MSELoss()
         
@@ -174,10 +174,11 @@ class Experiment(BaseExperiment):
 
     def iter_step(self, loss, cur_step):
         self.optimizer.zero_grad()
-        self.offset_optimizer.zero_grad()
+        if not hparams["model"]["detail"]["disable_displace"]:
+            self.offset_optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-        if cur_step >= hparams["model"]["detail"]["displace_LO_min_step"]:
+        if not hparams["model"]["detail"]["disable_displace"] and cur_step >= hparams["model"]["detail"]["displace_LO_min_step"]:
             self.offset_optimizer.step()
             # FIXME: find a better way
             globalvars.displace_mod.reset_outsider()
@@ -192,15 +193,16 @@ class Experiment(BaseExperiment):
         keypoint = batch["keypoint"]
         batch_size = img.size(0)
 
-        if is_train:
-            current_offset = globalvars.displace_mod.offset.detach().cpu()
-            if self.last_offset is not None:
-                delta_offset = current_offset - self.last_offset
-                epoch_ctx.add_scalar("move_dis", delta_offset.abs().mean().item(), progress["iter_len"])
-            self.last_offset = current_offset
-        else:
-            if progress["iter"] == 0:
-                torch.save(globalvars.displace_mod.offset.detach().cpu(), os.path.join(config.checkpoint, "offset_{}.pth".format(progress["step"])))
+        if not hparams["model"]["detail"]["disable_displace"]:
+            if is_train:
+                current_offset = globalvars.displace_mod.offset.detach().cpu()
+                if self.last_offset is not None:
+                    delta_offset = current_offset - self.last_offset
+                    epoch_ctx.add_scalar("move_dis", delta_offset.abs().mean().item(), progress["iter_len"])
+                self.last_offset = current_offset
+            else:
+                if progress["iter"] == 0:
+                    torch.save(globalvars.displace_mod.offset.detach().cpu(), os.path.join(config.checkpoint, "offset_{}.pth".format(progress["step"])))
 
         det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
         # dirty trick for debug
@@ -325,7 +327,7 @@ class BasicBlock(nn.Module):
             assert self.downsample is None, "extra_mod require equal-sized input output"
             width = hparams["model"]["inp_shape"][0] // inshape_factor
             height = hparams["model"]["inp_shape"][1] // inshape_factor
-            displace = DisplaceChannel(height, width, hparams["model"]["detail"]["displace_stride"], fill=hparams["model"]["detail"]["displace_fill"], learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"])
+            displace = DisplaceChannel(height, width, hparams["model"]["detail"]["displace_stride"], fill=hparams["model"]["detail"]["displace_fill"], learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"], disable_displace=hparams["model"]["detail"]["disable_displace"])
             offset_channels = hparams["model"]["detail"]["channels_per_pos"] * displace.num_pos
             print("inp_channels=" + str(inplanes))
             print("offset_channels=" + str(offset_channels))
