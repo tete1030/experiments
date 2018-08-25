@@ -23,6 +23,7 @@ from utils.train import adjust_learning_rate
 
 from utils.sync_batchnorm import SynchronizedBatchNorm2d, DataParallelWithCallback
 from utils.checkpoint import load_pretrained_loose
+from utils.lambdalayer import Lambda
 import math
 
 FACTOR = 4
@@ -171,6 +172,12 @@ class Experiment(BaseExperiment):
 
     def epoch_start(self, epoch, step):
         self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
+        if not hparams["model"]["detail"]["disable_displace"] and step >= hparams["model"]["detail"]["displace_LO_min_step"]:
+            step_offset = step - hparams["model"]["detail"]["displace_LO_min_step"]
+            cur_lr_offset = hparams["offset_lr"] * (hparams["offset_lr_gamma"] ** (float(step_offset) / hparams["offset_lr_decay_step"]))
+            log_i("Set offset_lr to %.5f" % (cur_lr_offset))
+            for param_group in self.offset_optimizer.param_groups:
+                param_group["lr"] = cur_lr_offset
 
     def iter_step(self, loss, cur_step):
         self.optimizer.zero_grad()
@@ -337,8 +344,9 @@ class BasicBlock(nn.Module):
                                            nn.Conv2d(offset_channels, inplanes, kernel_size=3, stride=1, padding=1),
                                            StrictNaNReLU(inplace=True),
                                            nn.Conv2d(inplanes, inplanes, kernel_size=3, stride=1, padding=1),
-                                           BatchNorm2dImpl(inplanes),
-                                           StrictNaNReLU(inplace=True))
+                                           Lambda(lambda x: x.view(x.size(0), x.size(1), -1)),
+                                           nn.Softmax(dim=2),
+                                           Lambda(lambda x: x.view(x.size(0), x.size(1), height, width)))
             # FIXME: DEBUG
             assert globalvars.get("displace_mod") is None
             globalvars.displace_mod = displace
@@ -376,7 +384,7 @@ class BasicBlock(nn.Module):
                 fig.suptitle("BasicBlock extra_out")
                 plt.show()
 
-            return x + extra_out
+            return x + x * extra_out
         else:
             return x
 

@@ -214,7 +214,7 @@ bayproj:
 baymini:
     <<: *DEFAULT
     name: baymini
-    id: 10
+    id: 11
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -222,6 +222,8 @@ baymini:
     train_batch: 16
     test_batch: 16
     offset_lr: 1.e-2
+    offset_lr_gamma: 0.2
+    offset_lr_decay_step: 50000
     model:
         resnet_pretrained: null
         inp_shape: [192, 256] # W, H
@@ -234,9 +236,9 @@ baymini:
             displace_stride: 4
             displace_fill: false
             displace_learnable_offset: true
-            displace_LO_min_step: 6544
+            displace_LO_min_step: 100
             disable_displace: false
-            random_offset: 10.
+            random_offset: null
     dataset:
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
