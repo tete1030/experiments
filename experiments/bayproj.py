@@ -313,7 +313,7 @@ class Experiment(BaseExperiment):
             loss.backward()
             self.optimizer_extra_mod.step()
 
-    def epoch_start(self, epoch):
+    def epoch_start(self, epoch, step):
         # [early_pred]
         if epoch >= hparams["early_pred_start"] and epoch < hparams["early_pred_end"]:
             if self.mode != "early_pred":

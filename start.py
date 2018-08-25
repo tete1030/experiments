@@ -255,7 +255,7 @@ def main(args, unknown_args):
 def train_eval_loop(exp, start_epoch, stop_epoch, train_loader, val_loader):
     cur_step = len(train_loader) * (start_epoch - 1)
     for epoch in range(start_epoch, stop_epoch):
-        exp.epoch_start(epoch)
+        exp.epoch_start(epoch, cur_step)
 
         print()
         log_progress("Epoch: %d | LR: %.8f" % (epoch, exp.cur_lr))

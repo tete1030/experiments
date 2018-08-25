@@ -161,7 +161,7 @@ class Experiment(BaseExperiment):
 
             print("No points")
 
-    def epoch_start(self, epoch):
+    def epoch_start(self, epoch, step):
         self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams['learning_rate'], hparams['schedule'], hparams['lr_gamma'])
 
     def iter_process(self, epoch_ctx, batch, is_train, progress):

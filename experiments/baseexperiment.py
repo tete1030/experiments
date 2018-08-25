@@ -41,7 +41,7 @@ class BaseExperiment(object):
     def evaluate(self, preds, step):
         pass
 
-    def epoch_start(self, epoch):
+    def epoch_start(self, epoch, step):
         pass
 
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, is_train: bool, progress: dict) -> dict:
