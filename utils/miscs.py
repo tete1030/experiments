@@ -48,8 +48,10 @@ def ask(question, posstr="y", negstr="n", ansretry=True, ansdefault=None):
     if ansdefault is not None:
         assert isinstance(ansdefault, bool)
         if ansdefault:
+            ansdefault_str = posstr.lower()
             posstr = posstr.upper()
         else:
+            ansdefault_str = negstr.lower()
             negstr = negstr.upper()
     else:
         assert ansretry == float('inf'), "No default answer for retry fallback"
@@ -71,7 +73,7 @@ def ask(question, posstr="y", negstr="n", ansretry=True, ansdefault=None):
                 continue
             else:
                 # not possible to reach here when ansdefault is None
-                log_e("Illegal answer! Using default answer: " + negstr.lower())
+                log_e("Illegal answer! Using default answer: " + ansdefault_str)
                 return ansdefault
 
 def mkdir_p(dir_path):
