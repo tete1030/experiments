@@ -375,9 +375,8 @@ class BasicBlock(nn.Module):
                                            nn.Conv2d(offset_channels, inplanes, kernel_size=3, stride=1, padding=1),
                                            StrictNaNReLU(inplace=True),
                                            nn.Conv2d(inplanes, inplanes, kernel_size=3, stride=1, padding=1),
-                                           Lambda(lambda x: x.view(x.size(0), x.size(1), -1)),
-                                           nn.Softmax(dim=2),
-                                           Lambda(lambda x: x.view(x.size(0), x.size(1), height, width)))
+                                           BatchNorm2dImpl(inplanes),
+                                           StrictNaNReLU(inplace=True))
             # FIXME: DEBUG
             assert globalvars.get("displace_mod") is None
             globalvars.displace_mod = displace
@@ -438,7 +437,7 @@ class BasicBlock(nn.Module):
         out = self.relu(out)
 
         if extra_out is not None:
-            return out * extra_out
+            return out + extra_out
         return out
 
 class ResNet(nn.Module):

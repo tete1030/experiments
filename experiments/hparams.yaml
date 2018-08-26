@@ -214,7 +214,7 @@ bayproj:
 baymini:
     <<: *DEFAULT
     name: baymini
-    id: 14
+    id: 15
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
