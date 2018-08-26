@@ -232,6 +232,8 @@ class Experiment(BaseExperiment):
             if self.last_offset is not None:
                 delta_offset = current_offset - self.last_offset
                 epoch_ctx.add_scalar("move_dis", delta_offset.abs().mean().item(), progress["iter_len"])
+            else:
+                torch.save(globalvars.displace_mod.offset.detach().cpu(), os.path.join(config.checkpoint, "offset_{}.pth".format(progress["step"])))
             self.last_offset = current_offset
 
         det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
@@ -437,111 +439,6 @@ class BasicBlock(nn.Module):
 
         if extra_out is not None:
             return out + out * extra_out
-        return out
-
-class Bottleneck(nn.Module):
-    expansion = 4
-
-    def __init__(self, inplanes, planes, inshape_factor, res_index, block_index, stride=1, downsample=None):
-        super(Bottleneck, self).__init__()
-        if block_index == hparams["model"]["detail"]["block_index"][res_index]:
-            use_extra_mod = True
-        else:
-            use_extra_mod = False
-        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
-        self.inplanes = inplanes
-        self.bn1 = BatchNorm2dImpl(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
-                               padding=1, bias=False)
-        self.bn2 = BatchNorm2dImpl(planes)
-        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
-        self.bn3 = BatchNorm2dImpl(planes * 4)
-        if use_extra_mod:
-            self.relu = StrictNaNReLU(inplace=False)
-        else:
-            self.relu = StrictNaNReLU(inplace=True)
-        self.downsample = downsample
-        self.stride = stride
-        self.inshape_factor = inshape_factor
-        self.res_index = res_index
-        self.block_index = block_index
-        if use_extra_mod:
-            assert self.downsample is None, "extra_mod require equal-sized input output"
-            width = hparams["model"]["inp_shape"][0] // inshape_factor
-            height = hparams["model"]["inp_shape"][1] // inshape_factor
-            displace = DisplaceChannel(height, width, hparams["model"]["detail"]["displace_stride"], fill=hparams["model"]["detail"]["displace_fill"], learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"])
-            offset_channels = hparams["model"]["detail"]["channels_per_pos"] * displace.num_pos
-            print("inp_channels=" + str(inplanes))
-            print("offset_channels=" + str(offset_channels))
-            self.extra_mod = nn.Sequential(nn.Conv2d(inplanes, offset_channels, kernel_size=1, stride=1),
-                                           StrictNaNReLU(inplace=True),
-                                           displace,
-                                           nn.Conv2d(offset_channels, inplanes, kernel_size=3, stride=1, padding=1),
-                                           StrictNaNReLU(inplace=True),
-                                           nn.Conv2d(inplanes, inplanes, kernel_size=3, stride=1, padding=1),
-                                           BatchNorm2dImpl(inplanes),
-                                           StrictNaNReLU(inplace=True))
-        else:
-            self.extra_mod = None
-
-    def forward_extra_mod(self, x):
-        if self.extra_mod is not None:
-            extra_out = self.extra_mod(x)
-
-            if config.vis:
-                import matplotlib.pyplot as plt
-                import cv2
-                fig, axes = plt.subplots(3, 30, figsize=(100, 12), squeeze=False)
-                
-                for row, axes_row in enumerate(axes):
-                    img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
-                    fts = x.data[row].cpu().numpy()
-                    for col, ax in enumerate(axes_row):
-                        if col == 0:
-                            ax.imshow(img)
-                        else:
-                            ax.imshow(fts[col-1])
-                fig.suptitle("bottleneck x")
-
-                fig, axes = plt.subplots(3, 30, figsize=(100, 12), squeeze=False)
-                for row, axes_row in enumerate(axes):
-                    img = (globalvars.cur_img.data[row].clamp(0, 1).permute(1, 2, 0) * 255).round().byte().numpy()
-                    fts = extra_out.data[row].cpu().numpy()
-                    for col, ax in enumerate(axes_row):
-                        if col == 0:
-                            ax.imshow(img)
-                        else:
-                            ax.imshow(fts[col-1])
-                fig.suptitle("bottleneck extra_out")
-                plt.show()
-
-            return x + extra_out
-        else:
-            return x
-
-    def forward(self, x):
-        x = self.forward_extra_mod(x)
-
-        residual = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out = self.relu(out)
-
-        out = self.conv3(out)
-        out = self.bn3(out)
-
-        if self.downsample is not None:
-            residual = self.downsample(x)
-
-        out = out + residual
-
-        out = self.relu(out)
-
         return out
 
 class ResNet(nn.Module):

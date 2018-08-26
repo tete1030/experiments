@@ -140,10 +140,10 @@ class DisplaceChannel(nn.Module):
 
     def reset_outsider(self):
         if not self.fill:
-            self.offset.data[:, 0].clamp_(min=-self.width + 0.5 + np.finfo(np.float32).eps.item(),
-                                          max=self.width - 0.5 - np.finfo(np.float32).eps.item())
-            self.offset.data[:, 1].clamp_(min=-self.height + 0.5 + np.finfo(np.float32).eps.item(),
-                                          max=self.height - 0.5 - np.finfo(np.float32).eps.item())
+            self.offset.data[:, 0].clamp_(min=-self.width + 0.6,
+                                          max=self.width - 0.6)
+            self.offset.data[:, 1].clamp_(min=-self.height + 0.6,
+                                          max=self.height - 0.6)
         else:
             off_x_rounded = self.offset.data[:, 0].round()
             off_y_rounded = self.offset.data[:, 1].round()
