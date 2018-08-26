@@ -438,7 +438,7 @@ class BasicBlock(nn.Module):
         out = self.relu(out)
 
         if extra_out is not None:
-            return out + out * extra_out
+            return out * extra_out
         return out
 
 class ResNet(nn.Module):
