@@ -33,6 +33,7 @@ class BaseExperiment(object):
         self.print_iter_start = "\n\t"
         self.print_iter_sep = " | "
         self.cur_lr = None
+        self.use_post = False
         self.init()
 
     def init(self):
@@ -44,10 +45,10 @@ class BaseExperiment(object):
     def epoch_start(self, epoch, step):
         pass
 
-    def iter_process(self, epoch_ctx: EpochContext, batch: dict, is_train: bool, progress: dict) -> dict:
+    def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict) -> dict:
         pass
 
-    def iter_step(self, loss, cur_step):
+    def iter_step(self, loss: torch.Tensor, progress: dict):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()

@@ -7,6 +7,7 @@ data/mpii/images
 data/mscoco/images
 data/mscoco/person_keypoints_*.json
 runs
+runs_archived
 .vscode
 sftp-config.json
 pose/models/ae_loss/lib

@@ -190,7 +190,7 @@ class Experiment(BaseExperiment):
             # FIXME: find a better way
             globalvars.displace_mod.reset_outsider()
 
-    def iter_process(self, epoch_ctx: EpochContext, batch: dict, is_train: bool, progress: dict) -> dict:
+    def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict) -> dict:
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
         det_maps_gt = batch["keypoint_map"]
@@ -198,6 +198,7 @@ class Experiment(BaseExperiment):
         img_flipped = batch["img_flipped"]
         img_ori_size = batch["img_ori_size"]
         keypoint = batch["keypoint"]
+        is_train = progress["train"]
         batch_size = img.size(0)
 
         if not hparams["model"]["detail"]["disable_displace"]:

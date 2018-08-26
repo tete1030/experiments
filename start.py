@@ -268,6 +268,13 @@ def train_eval_loop(exp, start_epoch, stop_epoch, train_loader, val_loader):
 
         cur_step += len(train_loader)
 
+        if exp.use_post:
+            log_progress("Post train:")
+            post_train(train_loader, exp, epoch, cur_step)
+
+        if globalvars.sigint_triggered:
+            return False
+
         # evaluate on validation set
         if config.skip_val > 0 and epoch % config.skip_val == 0:
             log_progress("Validation:")
@@ -319,13 +326,14 @@ def train(train_loader, exp, epoch, cur_step, em_valid_int=0, val_loader=None):
                 "epoch": epoch,
                 "iter": i,
                 "iter_len": iter_length,
-                "step": cur_step
+                "step": cur_step,
+                "train": True
             }
 
-            result = exp.iter_process(epoch_ctx, batch, True, progress=progress)
+            result = exp.iter_process(epoch_ctx, batch, progress=progress)
             loss = result["loss"]
 
-            exp.iter_step(loss, cur_step)
+            exp.iter_step(loss, progress=progress)
 
             loss = loss.item() if loss is not None else None
 
@@ -366,6 +374,68 @@ def train(train_loader, exp, epoch, cur_step, em_valid_int=0, val_loader=None):
                 break
 
             cur_step += 1
+
+def post_train(train_loader, exp, epoch, cur_step):
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    epoch_ctx = EpochContext()
+
+    # switch to train mode
+    exp.model.train()
+
+    end = time.time()
+    start_time = time.time()
+
+    iter_length = len(train_loader)
+
+    with torch.autograd.enable_grad():
+        for i, batch in enumerate(train_loader):
+
+            # measure data loading time
+            data_time.update(time.time() - end)
+
+            progress = {
+                "epoch": epoch,
+                "iter": i,
+                "iter_len": iter_length,
+                "step": cur_step,
+                "train": True,
+                "post": True
+            }
+
+            result = exp.iter_process(epoch_ctx, batch, progress=progress)
+            loss = result["loss"]
+
+            exp.iter_step(loss, progress=progress)
+
+            loss = loss.item() if loss is not None else None
+
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) data: {data:.6f}s | batch: {bt:.3f}s | total: {total:3.1f}s").format(
+                epoch=epoch,
+                batch=i + 1,
+                size_width=len(str(iter_length)),
+                size=iter_length,
+                data=data_time.val,
+                bt=batch_time.val,
+                total=time.time() - start_time,
+            )
+            print(loginfo, end="")
+            exp.print_iter(epoch_ctx)
+            exp.summary_scalar(epoch_ctx, cur_step+i, "post_train")
+
+            if globalvars.sigint_triggered:
+                break
+
+            if globalvars.sigint_triggered:
+                break
+
+            if config.fast_pass_train > 0 and (i+1) >= config.fast_pass_train:
+                log_progress("Fast Pass!")
+                break
 
 def combine_result(prev, cur):
     assert type(prev) == type(cur)
@@ -414,10 +484,11 @@ def validate(val_loader, exp, epoch, cur_step, store_result=True):
                 "epoch": epoch,
                 "iter": i,
                 "iter_len": iter_length,
-                "step": cur_step
+                "step": cur_step,
+                "train": False
             }
 
-            result = exp.iter_process(epoch_ctx, batch, False, progress=progress)
+            result = exp.iter_process(epoch_ctx, batch, progress=progress)
 
             if result["pred"] is not None:
                 if preds is None:
