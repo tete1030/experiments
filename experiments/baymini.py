@@ -413,12 +413,12 @@ class BasicBlock(nn.Module):
                 fig.suptitle("BasicBlock extra_out")
                 plt.show()
 
-            return x + x * extra_out
+            return extra_out
         else:
-            return x
+            return None
 
     def forward(self, x):
-        x = self.forward_extra_mod(x)
+        extra_out = self.forward_extra_mod(x)
 
         residual = x
 
@@ -435,6 +435,8 @@ class BasicBlock(nn.Module):
         out = out + residual
         out = self.relu(out)
 
+        if extra_out is not None:
+            return out + out * extra_out
         return out
 
 class Bottleneck(nn.Module):
