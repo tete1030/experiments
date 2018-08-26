@@ -99,6 +99,7 @@ class Experiment(BaseExperiment):
         self.valid_collate_fn = datasets.COCOSinglePose.collate_function
         self.worker_init_fn = datasets.mscoco.worker_init
         self.print_iter_start = " | "
+        self.use_post = False
 
         self.last_offset = None
 
@@ -172,23 +173,42 @@ class Experiment(BaseExperiment):
 
     def epoch_start(self, epoch, step):
         self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
-        if not hparams["model"]["detail"]["disable_displace"] and step >= hparams["model"]["detail"]["displace_LO_min_step"]:
-            step_offset = step - hparams["model"]["detail"]["displace_LO_min_step"]
-            cur_lr_offset = hparams["offset_lr"] * (hparams["offset_lr_gamma"] ** (float(step_offset) / hparams["offset_lr_decay_step"]))
-            log_i("Set offset_lr to %.5f" % (cur_lr_offset))
-            for param_group in self.offset_optimizer.param_groups:
-                param_group["lr"] = cur_lr_offset
+        if not hparams["model"]["detail"]["disable_displace"] and step >= hparams["offset_train_min_step"]:
+            if hparams["offset_lr_decay_step"] > 0 and hparams["offset_lr_gamma"] > 0:
+                step_offset = step - hparams["offset_train_min_step"]
+                cur_lr_offset = hparams["offset_lr"] * (hparams["offset_lr_gamma"] ** (float(step_offset) / hparams["offset_lr_decay_step"]))
+                log_i("Set offset_lr to %.5f" % (cur_lr_offset))
+                for param_group in self.offset_optimizer.param_groups:
+                    param_group["lr"] = cur_lr_offset
 
-    def iter_step(self, loss, cur_step):
-        self.optimizer.zero_grad()
-        if not hparams["model"]["detail"]["disable_displace"]:
+            if hparams["offset_inter_epoch"] > 0 and (epoch - 1) % hparams["offset_inter_epoch"] == 0:
+                self.use_post = True
+            else:
+                self.use_post = False
+
+    def iter_step(self, loss: torch.Tensor, progress: dict):
+        is_post = "post" in progress and progress["post"]
+        optimize_offset = False
+        optimize_normal = True
+        if not hparams["model"]["detail"]["disable_displace"] and progress["step"] >= hparams["offset_train_min_step"] and \
+                (hparams["offset_inter_epoch"] == 0 or is_post):
+            optimize_offset = True
+        if is_post:
+            optimize_normal = False
+
+        if optimize_normal:
+            self.optimizer.zero_grad()
+        if optimize_offset:
             self.offset_optimizer.zero_grad()
         loss.backward()
-        self.optimizer.step()
-        if not hparams["model"]["detail"]["disable_displace"] and cur_step >= hparams["model"]["detail"]["displace_LO_min_step"]:
+
+        if optimize_normal:
+            self.optimizer.step()
+        if optimize_offset:
             self.offset_optimizer.step()
-            # FIXME: find a better way
             globalvars.displace_mod.reset_outsider()
+            if progress["iter"] == progress["iter_len"] - 1:
+                torch.save(globalvars.displace_mod.offset.detach().cpu(), os.path.join(config.checkpoint, "offset_{}.pth".format(progress["step"])))
 
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict) -> dict:
         image_ids = batch["img_index"].tolist()
@@ -201,16 +221,18 @@ class Experiment(BaseExperiment):
         is_train = progress["train"]
         batch_size = img.size(0)
 
-        if not hparams["model"]["detail"]["disable_displace"]:
-            if is_train:
-                current_offset = globalvars.displace_mod.offset.detach().cpu()
-                if self.last_offset is not None:
-                    delta_offset = current_offset - self.last_offset
-                    epoch_ctx.add_scalar("move_dis", delta_offset.abs().mean().item(), progress["iter_len"])
-                self.last_offset = current_offset
-            else:
-                if progress["iter"] == 0:
-                    torch.save(globalvars.displace_mod.offset.detach().cpu(), os.path.join(config.checkpoint, "offset_{}.pth".format(progress["step"])))
+        is_post = "post" in progress and progress["post"]
+        optimize_offset = False
+        if not hparams["model"]["detail"]["disable_displace"] and progress["step"] >= hparams["offset_train_min_step"] and \
+                (hparams["offset_inter_epoch"] == 0 or is_post) and is_train:
+            optimize_offset = True
+
+        if optimize_offset:
+            current_offset = globalvars.displace_mod.offset.detach().cpu()
+            if self.last_offset is not None:
+                delta_offset = current_offset - self.last_offset
+                epoch_ctx.add_scalar("move_dis", delta_offset.abs().mean().item(), progress["iter_len"])
+            self.last_offset = current_offset
 
         det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
         # dirty trick for debug
@@ -335,7 +357,13 @@ class BasicBlock(nn.Module):
             assert self.downsample is None, "extra_mod require equal-sized input output"
             width = hparams["model"]["inp_shape"][0] // inshape_factor
             height = hparams["model"]["inp_shape"][1] // inshape_factor
-            displace = DisplaceChannel(height, width, hparams["model"]["detail"]["displace_stride"], fill=hparams["model"]["detail"]["displace_fill"], learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"], disable_displace=hparams["model"]["detail"]["disable_displace"], random_offset=hparams["model"]["detail"]["random_offset"])
+            displace = DisplaceChannel(height, width,
+                                       hparams["model"]["detail"]["displace_stride"],
+                                       fill=hparams["model"]["detail"]["displace_fill"],
+                                       learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
+                                       disable_displace=hparams["model"]["detail"]["disable_displace"],
+                                       random_offset=hparams["model"]["detail"]["random_offset"],
+                                       use_origin=hparams["model"]["detail"]["use_origin"])
             offset_channels = hparams["model"]["detail"]["channels_per_pos"] * displace.num_pos
             print("inp_channels=" + str(inplanes))
             print("offset_channels=" + str(offset_channels))
