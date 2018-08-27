@@ -160,11 +160,6 @@ class DisplaceChannel(nn.Module):
         assert num_channels % self.num_pos == 0, "num of channels cannot be divided by number of positions"
 
         if not self.disable_displace:
-            if device not in self.field:
-                self.field[device] = self.field[torch.device("cpu")].to(device)
-                assert len(self.field.keys()) < 10
-            field = self.field[device]
-
             chan_per_pos = num_channels // self.num_pos
             if self.fill:
                 inpinp = inp.repeat(1, 1, 2, 2)
@@ -175,6 +170,10 @@ class DisplaceChannel(nn.Module):
             # out: nsamp x npos*chan_per_pos x height x width
 
             if self.learnable_offset:
+                if device not in self.field:
+                    self.field[device] = self.field[torch.device("cpu")].to(device)
+                    assert len(self.field.keys()) < 10
+                field = self.field[device]
                 # npos x kh x kw
                 # The offset means which direction and how long we should move the image,
                 # while for each kernel at each individual place, -offset is the center where it should 'look at',
