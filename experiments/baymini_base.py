@@ -302,7 +302,8 @@ class BasicBlock(nn.Module):
                                        learnable_offset=False,
                                        disable_displace=hparams["model"]["detail"]["disable_displace"],
                                        random_offset=hparams["model"]["detail"]["random_offset"],
-                                       use_origin=hparams["model"]["detail"]["use_origin"])
+                                       use_origin=hparams["model"]["detail"]["use_origin"],
+                                       pseudo_stride=hparams["model"]["detail"]["pseudo_stride"])
             offset_channels = hparams["model"]["detail"]["channels_per_pos"][res_index] * displace.num_pos
             print("Displace{}_{} configuration:".format(res_index, block_index))
             print("\tinp_channels=" + str(inplanes))

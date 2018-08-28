@@ -67,7 +67,7 @@ class Displace(Function):
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, init_stride,
                  fill=False, learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5,
-                 disable_displace=False, random_offset=0, use_origin=False):
+                 disable_displace=False, random_offset=0, use_origin=False, pseudo_stride=False):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -77,6 +77,7 @@ class DisplaceChannel(nn.Module):
         self.disable_displace = disable_displace
         self.random_offset = random_offset
         self.use_origin = use_origin
+        self.pseudo_stride = pseudo_stride
         if not fill:
             self.num_y = (height - init_stride) // init_stride * 2 + 1
             self.num_x = (width - init_stride) // init_stride * 2 + 1
@@ -122,8 +123,12 @@ class DisplaceChannel(nn.Module):
                 for iw in range(-(nw // 2), nw // 2 + 1):
                     if not self.use_origin and ih == 0 and iw == 0:
                         continue
-                    self.offset.data[count_off, 0] = iw * self.init_stride
-                    self.offset.data[count_off, 1] = ih * self.init_stride
+                    if not self.pseudo_stride:
+                        self.offset.data[count_off, 0] = iw * self.init_stride
+                        self.offset.data[count_off, 1] = ih * self.init_stride
+                    else:
+                        self.offset.data[count_off, 0] = iw
+                        self.offset.data[count_off, 1] = ih
                     count_off += 1
         else:
             if self.random_offset is not None and self.random_offset > 0:
@@ -134,8 +139,12 @@ class DisplaceChannel(nn.Module):
                 for iw in range(0, nw):
                     if not self.use_origin and ih == 0 and iw == 0:
                         continue
-                    self.offset.data[count_off, 0] = iw * self.init_stride
-                    self.offset.data[count_off, 1] = ih * self.init_stride
+                    if not self.pseudo_stride:
+                        self.offset.data[count_off, 0] = iw * self.init_stride
+                        self.offset.data[count_off, 1] = ih * self.init_stride
+                    else:
+                        self.offset.data[count_off, 0] = iw
+                        self.offset.data[count_off, 1] = ih
                     count_off += 1
 
     def reset_outsider(self):
