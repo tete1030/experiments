@@ -294,7 +294,6 @@ class BasicBlock(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
         if use_extra_mod:
-            assert self.downsample is None, "extra_mod require equal-sized input output"
             width = hparams["model"]["inp_shape"][0] // inshape_factor
             height = hparams["model"]["inp_shape"][1] // inshape_factor
             displace = DisplaceChannel(height, width,
