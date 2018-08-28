@@ -298,15 +298,18 @@ class BasicBlock(nn.Module):
             width = hparams["model"]["inp_shape"][0] // inshape_factor
             height = hparams["model"]["inp_shape"][1] // inshape_factor
             displace = DisplaceChannel(height, width,
-                                       hparams["model"]["detail"]["displace_stride"],
+                                       hparams["model"]["detail"]["displace_stride"][res_index],
                                        fill=hparams["model"]["detail"]["displace_fill"],
                                        learnable_offset=False,
                                        disable_displace=hparams["model"]["detail"]["disable_displace"],
                                        random_offset=hparams["model"]["detail"]["random_offset"],
                                        use_origin=hparams["model"]["detail"]["use_origin"])
-            offset_channels = hparams["model"]["detail"]["channels_per_pos"] * displace.num_pos
-            print("inp_channels=" + str(inplanes))
-            print("offset_channels=" + str(offset_channels))
+            offset_channels = hparams["model"]["detail"]["channels_per_pos"][res_index] * displace.num_pos
+            print("Displace{}_{} configuration:".format(res_index, block_index))
+            print("\tinp_channels=" + str(inplanes))
+            print("\toffset_channels=" + str(offset_channels))
+            print("\toffset_nx=" + str(displace.num_x))
+            print("\toffset_ny=" + str(displace.num_y))
             self.extra_mod = nn.Sequential(nn.Conv2d(inplanes, offset_channels, kernel_size=1, stride=1),
                                            StrictNaNReLU(inplace=True),
                                            displace,
@@ -315,9 +318,6 @@ class BasicBlock(nn.Module):
                                            nn.Conv2d(inplanes, inplanes, kernel_size=3, stride=1, padding=1),
                                            BatchNorm2dImpl(inplanes),
                                            StrictNaNReLU(inplace=True))
-            # FIXME: DEBUG
-            assert globalvars.get("displace_mod") is None
-            globalvars.displace_mod = displace
         else:
             self.extra_mod = None
 
@@ -359,6 +359,9 @@ class BasicBlock(nn.Module):
     def forward(self, x):
         extra_out = self.forward_extra_mod(x)
 
+        if extra_out is not None:
+            x = x + extra_out
+
         residual = x
 
         out = self.conv1(x)
@@ -373,9 +376,6 @@ class BasicBlock(nn.Module):
 
         out = out + residual
         out = self.relu(out)
-
-        if extra_out is not None:
-            out = out + extra_out
 
         return out
 
