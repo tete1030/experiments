@@ -26,8 +26,8 @@ def main(args):
     REPEAT_TIMES = 100
     
     BATCH_SIZE = 16
-    CHAN_PER_OFFSET = 15
-    NUM_OFFSET = 31
+    CHAN_PER_OFFSET = 3
+    NUM_OFFSET = 100
     CHANNEL_SIZE = CHAN_PER_OFFSET * NUM_OFFSET
     WIDTH = 128
     HEIGHT = 257
@@ -71,9 +71,7 @@ def main(args):
 
     for i in range(REPEAT_TIMES):
         img = torch.randn(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
-        img.data = img.data * 10 + 1
         label = torch.randn(BATCH_SIZE, CHANNEL_SIZE, HEIGHT, WIDTH, dtype=DTYPE, device="cuda", requires_grad=True)
-        label.data = label.data * 7 + 1
         offsets_w = torch.randint(low=-WIDTH, high=WIDTH, size=(NUM_OFFSET, 1), dtype=torch.int, device="cuda")
         offsets_h = torch.randint(low=-HEIGHT, high=HEIGHT, size=(NUM_OFFSET, 1), dtype=torch.int, device="cuda")
         offsets = torch.cat([offsets_w, offsets_h], dim=1)
@@ -131,6 +129,8 @@ def main(args):
                     first_output = output
                     first_grad = grad
                 else:
+                    # N.B. empty_like used in Displace Function could cause inaccurate here
+                    # functions could reuse previous result
                     max_error_out = (output - first_output).abs().max()
                     max_error_grad = (grad - first_grad).abs().max()
                     if args.raise_ and max_error_out > threshold:

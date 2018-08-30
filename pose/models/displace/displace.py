@@ -13,6 +13,8 @@ class DisplaceCUDA(Function):
         ctx.chan_per_pos = chan_per_pos
         ctx._backend = type2backend[inp.type()]
         ctx.save_for_backward(offsets)
+        # empty_like could cause test_displace inaccurate
+        # following functions could reuse previous result
         out = torch.empty_like(inp)
         displace_cuda.displace_forward(ctx._backend.library_state,
             inp, offsets, chan_per_pos, out)
@@ -22,6 +24,8 @@ class DisplaceCUDA(Function):
     @staticmethod
     def backward(ctx, grad_out):
         (offsets,) = ctx.saved_tensors
+        # empty_like could cause test_displace inaccurate
+        # following functions could reuse previous result
         grad_inp = torch.empty_like(grad_out)
         displace_cuda.displace_backward(ctx._backend.library_state,
             grad_inp, offsets, ctx.chan_per_pos, grad_out)

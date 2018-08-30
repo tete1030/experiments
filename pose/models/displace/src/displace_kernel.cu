@@ -113,7 +113,7 @@ void displace_backward_cuda(
   int64_t width_out = grad_out.size(3);
   int64_t height_in = grad_in.size(2);
   int64_t width_in = grad_in.size(3);
-  int64_t num_kernel = num_channel * height_in * width_in;
+  int64_t num_kernel = batch_size * num_channel * height_in * width_in;
   
   AT_DISPATCH_FLOATING_TYPES(grad_in.type(), "displace_backward_cuda", ([&] {
     displace_backward_cuda_kernel <<<GET_BLOCKS(num_kernel), CUDA_NUM_THREADS, 0, stream>>> (
