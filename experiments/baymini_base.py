@@ -15,7 +15,7 @@ import pose.models as models
 import pose.datasets as datasets
 from pose.models.bayproj import AutoCorrProj
 from pose.models.common import StrictNaNReLU
-from pose.models.displace import DisplaceChannel
+from pose.models.displacechan import DisplaceChannel
 from pose.utils.transforms import fliplr_pts
 from utils.globals import config, hparams, globalvars
 from utils.log import log_i

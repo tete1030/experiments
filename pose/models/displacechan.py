@@ -4,65 +4,7 @@ from torch.autograd import Function
 from utils.globals import config, globalvars
 import torch.nn.functional as F
 import numpy as np
-
-class Displace(Function):
-    @staticmethod
-    def forward(ctx, inp, offsets, chan_per_pos, fill):
-        ctx.fill = fill
-        ctx.chan_per_pos = chan_per_pos
-
-        if not fill:
-            out = torch.zeros_like(inp)
-            height = inp.size(2)
-            width = inp.size(3)
-            lefttop_out = offsets.clamp(min=0)
-            lefttop_inp = (-offsets).clamp(min=0)
-            rightbot_out = offsets.clamp(max=0) + torch.tensor([[width, height]], dtype=offsets.dtype, device=offsets.device)
-            rightbot_inp = lefttop_inp + (rightbot_out - lefttop_out)
-            ctx.save_for_backward(lefttop_out, lefttop_inp, rightbot_out, rightbot_inp)
-
-            cs = 0
-            for i in range(offsets.size(0)):
-                out[:, cs:cs+chan_per_pos, lefttop_out[i,1]:rightbot_out[i,1], lefttop_out[i,0]:rightbot_out[i,0]] = \
-                    inp[:, cs:cs+chan_per_pos, lefttop_inp[i,1]:rightbot_inp[i,1], lefttop_inp[i,0]:rightbot_inp[i,0]]
-                cs += chan_per_pos
-        else:
-            inphw = inp.size()[2:]
-            height_out = inphw[0] // 2
-            width_out = inphw[1] // 2
-            ctx.save_for_backward(offsets)
-
-            out = torch.zeros(inp.size()[:2] + (height_out, width_out), dtype=inp.dtype, device=inp.device)
-            cs = 0
-            for i in range(offsets.size(0)):
-                out[:, cs:cs+chan_per_pos] = \
-                    inp[:, cs:cs+chan_per_pos, offsets[i,1]:offsets[i,1]+height_out, offsets[i,0]:offsets[i,0]+width_out]
-                cs += chan_per_pos
-
-        return out
-
-    @staticmethod
-    def backward(ctx, grad_out):
-        if not ctx.fill:
-            (lefttop_out, lefttop_inp, rightbot_out, rightbot_inp) = ctx.saved_tensors
-            grad_inp = torch.zeros_like(grad_out)
-            cs = 0
-            for i in range(lefttop_out.size(0)):
-                grad_inp[:, cs:cs+ctx.chan_per_pos, lefttop_inp[i,1]:rightbot_inp[i,1], lefttop_inp[i,0]:rightbot_inp[i,0]] = \
-                    grad_out[:, cs:cs+ctx.chan_per_pos, lefttop_out[i,1]:rightbot_out[i,1], lefttop_out[i,0]:rightbot_out[i,0]]
-                cs += ctx.chan_per_pos
-        else:
-            (offsets,) = ctx.saved_tensors
-            height_out = grad_out.size(2)
-            width_out = grad_out.size(3)
-            grad_inp = torch.zeros(grad_out.size()[:2] + (height_out*2, width_out*2), dtype=grad_out.dtype, device=grad_out.device)
-            cs = 0
-            for i in range(offsets.size(0)):
-                grad_inp[:, cs:cs+ctx.chan_per_pos, offsets[i,1]:offsets[i,1]+height_out, offsets[i,0]:offsets[i,0]+width_out] = \
-                    grad_out[:, cs:cs+ctx.chan_per_pos]
-                cs += ctx.chan_per_pos
-
-        return grad_inp, None, None, None
+from .displace import Displace, DisplaceCUDA
 
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, init_stride,
@@ -174,7 +116,7 @@ class DisplaceChannel(nn.Module):
                 inpinp = inp.repeat(1, 1, 2, 2)
                 out = Displace.apply(inpinp, self.offset.detach().round().int(), chan_per_pos, True)
             else:
-                out = Displace.apply(inp, self.offset.detach().round().int(), chan_per_pos, False)
+                out = DisplaceCUDA.apply(inp, self.offset.detach().round().int(), chan_per_pos)
 
             # out: nsamp x npos*chan_per_pos x height x width
 
