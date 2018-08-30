@@ -313,7 +313,7 @@ class BasicBlock(nn.Module):
             self.extra_mod = nn.Sequential(nn.Conv2d(inplanes, offset_channels, kernel_size=1, stride=1),
                                            StrictNaNReLU(inplace=True),
                                            displace,
-                                           nn.Conv2d(offset_channels, inplanes, kernel_size=3, stride=1, padding=1),
+                                           nn.Conv2d(offset_channels, inplanes, kernel_size=1, stride=1),
                                            StrictNaNReLU(inplace=True),
                                            nn.Conv2d(inplanes, inplanes, kernel_size=3, stride=1, padding=1),
                                            BatchNorm2dImpl(inplanes),
