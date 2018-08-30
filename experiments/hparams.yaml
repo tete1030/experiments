@@ -251,7 +251,7 @@ baymini:
 baymini_base:
     <<: *DEFAULT
     name: baymini
-    id: 21
+    id: 22
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -265,7 +265,7 @@ baymini_base:
         gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
         parse_threshold: 0.1
         detail:
-            block_index: [null, 1, null, null]
+            block_index: [1, 1, 1, 1]
             channels_per_pos: [3, 3, 3, 16]
             displace_stride: [16, 4, 2, 2]
             pseudo_stride: false
