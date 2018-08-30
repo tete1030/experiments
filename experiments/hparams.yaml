@@ -251,7 +251,7 @@ baymini:
 baymini_base:
     <<: *DEFAULT
     name: baymini
-    id: 20
+    id: 2
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -268,7 +268,7 @@ baymini_base:
             block_index: [null, 1, null, null]
             channels_per_pos: [3, 3, 3, 16]
             displace_stride: [16, 4, 2, 2]
-            pseudo_stride: true
+            pseudo_stride: false
             displace_fill: false
             disable_displace: false
             random_offset: 0
