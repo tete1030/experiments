@@ -296,25 +296,51 @@ class BasicBlock(nn.Module):
         if use_extra_mod:
             width = hparams["model"]["inp_shape"][0] // inshape_factor
             height = hparams["model"]["inp_shape"][1] // inshape_factor
-            displace = DisplaceChannel(height, width,
-                                       hparams["model"]["detail"]["displace_stride"][res_index],
-                                       fill=hparams["model"]["detail"]["displace_fill"],
-                                       learnable_offset=False,
-                                       disable_displace=hparams["model"]["detail"]["disable_displace"],
-                                       random_offset=hparams["model"]["detail"]["random_offset"],
-                                       use_origin=hparams["model"]["detail"]["use_origin"],
-                                       actual_stride=hparams["model"]["detail"]["actual_stride"][res_index],
-                                       displace_bounding=hparams["model"]["detail"]["displace_bounding"][res_index])
-            offset_channels = hparams["model"]["detail"]["channels_per_pos"][res_index] * displace.num_pos
+            if not hparams["model"]["detail"]["use_dconv"]:
+                displace = DisplaceChannel(height, width,
+                                           hparams["model"]["detail"]["displace_stride"][res_index],
+                                           fill=hparams["model"]["detail"]["displace_fill"],
+                                           learnable_offset=False,
+                                           disable_displace=hparams["model"]["detail"]["disable_displace"],
+                                           random_offset=hparams["model"]["detail"]["random_offset"],
+                                           use_origin=hparams["model"]["detail"]["use_origin"],
+                                           actual_stride=hparams["model"]["detail"]["actual_stride"][res_index],
+                                           displace_bounding=hparams["model"]["detail"]["displace_bounding"][res_index]),
+                offset_channels = hparams["model"]["detail"]["channels_per_pos"][res_index] * displace.num_pos
+                num_y = displace.num_y
+                num_x = displace.num_x
+                displace = nn.Sequential(
+                    displace,
+                    nn.Conv2d(offset_channels, inplanes, kernel_size=1, stride=1))
+            else:
+                assert not hparams["model"]["detail"]["disable_displace"]
+                assert not hparams["model"]["detail"]["displace_fill"]
+                assert not hparams["model"]["detail"]["random_offset"]
+                assert hparams["model"]["detail"]["use_origin"]
+                num_y, num_x, num_pos = DisplaceChannel.get_num_offset(
+                    height,
+                    width,
+                    hparams["model"]["detail"]["displace_bounding"][res_index],
+                    hparams["model"]["detail"]["displace_stride"][res_index],
+                    hparams["model"]["detail"]["displace_fill"],
+                    hparams["model"]["detail"]["use_origin"])
+                offset_channels = hparams["model"]["detail"]["channels_per_pos"][res_index] * num_pos
+                actual_stride = hparams["model"]["detail"]["actual_stride"][res_index] \
+                                    if hparams["model"]["detail"]["actual_stride"][res_index] is not None else \
+                                    hparams["model"]["detail"]["displace_stride"][res_index]
+                displace = nn.Conv2d(offset_channels, inplanes,
+                                     kernel_size=(num_y, num_x),
+                                     padding=(num_y // 2 * actual_stride, num_x // 2 * actual_stride),
+                                     stride=1,
+                                     dilation=actual_stride)
             print("Displace{}_{} configuration:".format(res_index, block_index))
             print("\tinp_channels=" + str(inplanes))
             print("\toffset_channels=" + str(offset_channels))
-            print("\toffset_nx=" + str(displace.num_x))
-            print("\toffset_ny=" + str(displace.num_y))
+            print("\toffset_nx=" + str(num_x))
+            print("\toffset_ny=" + str(num_y))
             self.extra_mod = nn.Sequential(nn.Conv2d(inplanes, offset_channels, kernel_size=1, stride=1),
                                            StrictNaNReLU(inplace=True),
                                            displace,
-                                           nn.Conv2d(offset_channels, inplanes, kernel_size=1, stride=1),
                                            StrictNaNReLU(inplace=True),
                                            nn.Conv2d(inplanes, inplanes, kernel_size=3, stride=1, padding=1),
                                            BatchNorm2dImpl(inplanes),

@@ -24,18 +24,7 @@ class DisplaceChannel(nn.Module):
         displace_bounding = float(displace_bounding)
         assert displace_bounding > 0 and displace_bounding <= 1
         self.displace_bounding = displace_bounding
-        assert int(height * displace_bounding) - init_stride > init_stride
-        assert int(width * displace_bounding) - init_stride > init_stride
-        if not fill:
-            self.num_y = (int(height * displace_bounding) - init_stride) // init_stride * 2 + 1
-            self.num_x = (int(width * displace_bounding) - init_stride) // init_stride * 2 + 1
-        else:
-            self.num_y = (int(height * displace_bounding) - init_stride) // init_stride + 1
-            self.num_x = (int(width * displace_bounding) - init_stride) // init_stride + 1
-        self.num_pos = self.num_y * self.num_x
-        if not use_origin:
-            self.num_pos -= 1
-
+        self.num_y, self.num_x, self.num_pos = self.get_num_offset(height, width, displace_bounding, init_stride, fill, use_origin)
         if not disable_displace:
             self.offset = nn.parameter.Parameter(torch.Tensor(self.num_pos, 2), requires_grad=False)
             self.init_offset()
@@ -59,6 +48,22 @@ class DisplaceChannel(nn.Module):
             return grad / area.view(-1, 1)
         else:
             return grad / self.width / self.height
+
+    @staticmethod
+    def get_num_offset(height, width, displace_bounding, init_stride, fill, use_origin):
+        displace_bounding = float(displace_bounding)
+        assert int(height * displace_bounding) - init_stride > init_stride
+        assert int(width * displace_bounding) - init_stride > init_stride
+        if not fill:
+            num_y = (int(height * displace_bounding) - init_stride) // init_stride * 2 + 1
+            num_x = (int(width * displace_bounding) - init_stride) // init_stride * 2 + 1
+        else:
+            num_y = (int(height * displace_bounding) - init_stride) // init_stride + 1
+            num_x = (int(width * displace_bounding) - init_stride) // init_stride + 1
+        num_pos = num_y * num_x
+        if not use_origin:
+            num_pos -= 1
+        return num_y, num_x, num_pos
 
     def init_offset(self):
         nh, nw = self.num_y, self.num_x
