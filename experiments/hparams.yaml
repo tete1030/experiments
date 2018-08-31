@@ -251,7 +251,7 @@ baymini:
 baymini_base:
     <<: *DEFAULT
     name: baymini
-    id: 23
+    id: 24
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -265,15 +265,15 @@ baymini_base:
         gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
         parse_threshold: 0.1
         detail:
-            block_index: [1, 1, 1, 1]
-            channels_per_pos: [3, 3, 3, 16]
-            displace_stride: [16, 4, 2, 2]
-            displace_bounding: [1, 1, 1, 1]
-            actual_stride: [1, 1, 1, 1]
+            block_index: [1, 1, 1, null]
+            channels_per_pos: [2, 3, 8, null]
+            displace_stride: [3, 3, 3, null]
+            displace_bounding: [0.3, 0.5, 0.75, null]
+            actual_stride: [null, null, null, null]
             displace_fill: false
             disable_displace: false
             random_offset: 0
-            use_origin: false
+            use_origin: true
     dataset:
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
