@@ -268,7 +268,8 @@ baymini_base:
             block_index: [1, 1, 1, 1]
             channels_per_pos: [3, 3, 3, 16]
             displace_stride: [16, 4, 2, 2]
-            pseudo_stride: true
+            displace_bounding: [1, 1, 1, 1]
+            actual_stride: [1, 1, 1, 1]
             displace_fill: false
             disable_displace: false
             random_offset: 0

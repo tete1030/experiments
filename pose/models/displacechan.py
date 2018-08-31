@@ -9,7 +9,8 @@ from .displace import Displace, DisplaceCUDA
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, init_stride,
                  fill=False, learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5,
-                 disable_displace=False, random_offset=0, use_origin=False, pseudo_stride=False):
+                 disable_displace=False, random_offset=0, use_origin=False, actual_stride=None,
+                 displace_bounding=1):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -19,13 +20,18 @@ class DisplaceChannel(nn.Module):
         self.disable_displace = disable_displace
         self.random_offset = random_offset
         self.use_origin = use_origin
-        self.pseudo_stride = pseudo_stride
+        self.actual_stride = actual_stride
+        displace_bounding = float(displace_bounding)
+        assert displace_bounding > 0 and displace_bounding <= 1
+        self.displace_bounding = displace_bounding
+        assert int(height * displace_bounding) - init_stride > init_stride
+        assert int(width * displace_bounding) - init_stride > init_stride
         if not fill:
-            self.num_y = (height - init_stride) // init_stride * 2 + 1
-            self.num_x = (width - init_stride) // init_stride * 2 + 1
+            self.num_y = (int(height * displace_bounding) - init_stride) // init_stride * 2 + 1
+            self.num_x = (int(width * displace_bounding) - init_stride) // init_stride * 2 + 1
         else:
-            self.num_y = (height - init_stride) // init_stride + 1
-            self.num_x = (width - init_stride) // init_stride + 1
+            self.num_y = (int(height * displace_bounding) - init_stride) // init_stride + 1
+            self.num_x = (int(width * displace_bounding) - init_stride) // init_stride + 1
         self.num_pos = self.num_y * self.num_x
         if not use_origin:
             self.num_pos -= 1
@@ -65,28 +71,30 @@ class DisplaceChannel(nn.Module):
                 for iw in range(-(nw // 2), nw // 2 + 1):
                     if not self.use_origin and ih == 0 and iw == 0:
                         continue
-                    if not self.pseudo_stride:
+                    if not self.actual_stride:
                         self.offset.data[count_off, 0] = iw * self.init_stride
                         self.offset.data[count_off, 1] = ih * self.init_stride
                     else:
-                        self.offset.data[count_off, 0] = iw
-                        self.offset.data[count_off, 1] = ih
+                        self.offset.data[count_off, 0] = iw * self.actual_stride
+                        self.offset.data[count_off, 1] = ih * self.actual_stride
                     count_off += 1
         else:
             if self.random_offset is not None and self.random_offset > 0:
                 self.offset.data.uniform_(0, self.random_offset)
                 return
             count_off = 0
-            for ih in range(0, nh):
-                for iw in range(0, nw):
+            for ih in list(range(0, nh // 2 + 1)) + list(range(-nh // 2, 0)) :
+                for iw in list(range(0, nw // 2 + 1)) + list(range(-nw // 2, 0)):
                     if not self.use_origin and ih == 0 and iw == 0:
                         continue
-                    if not self.pseudo_stride:
-                        self.offset.data[count_off, 0] = iw * self.init_stride
-                        self.offset.data[count_off, 1] = ih * self.init_stride
+                    if not self.actual_stride:
+                        iwa = nw + iw if iw < 0 else iw
+                        iha = nh + ih if ih < 0 else ih
+                        self.offset.data[count_off, 0] = iwa * self.init_stride
+                        self.offset.data[count_off, 1] = iha * self.init_stride
                     else:
-                        self.offset.data[count_off, 0] = iw
-                        self.offset.data[count_off, 1] = ih
+                        self.offset.data[count_off, 0] = iw * self.actual_stride if iw > 0 else self.width + iw * self.actual_stride
+                        self.offset.data[count_off, 1] = ih * self.actual_stride if ih > 0 else self.height + ih * self.actual_stride
                     count_off += 1
 
     def reset_outsider(self):
