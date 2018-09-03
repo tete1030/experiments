@@ -251,7 +251,7 @@ baymini:
 baymini_base:
     <<: *DEFAULT
     name: baymini
-    id: 33
+    id: 34
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -274,7 +274,7 @@ baymini_base:
             actual_stride: [4, 4, 4, null]
             displace_fill: false
             disable_displace: false
-            use_dconv: false
+            use_dconv: true
             random_offset: 0
             use_origin: true
     dataset:
