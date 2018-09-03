@@ -258,11 +258,17 @@ class Experiment(BaseExperiment):
 class BayMini(nn.Module):
     def __init__(self, output_shape, num_points, pretrained=None):
         super(BayMini, self).__init__()
-        self.resnet18 = resnet18(pretrained=pretrained)
-        self.global_net = GlobalNet([512, 256, 128, 64], output_shape, num_points)
+        if hparams["model"]["resnet"] == 18:
+            self.resnet = resnet18(pretrained=pretrained)
+            self.global_net = GlobalNet([512, 256, 128, 64], output_shape, num_points)
+        elif hparams["model"]["resnet"] == 50:
+            self.resnet = resnet50(pretrained=pretrained)
+            self.global_net = GlobalNet([2048, 1024, 512, 256], output_shape, num_points)
+        else:
+            assert False
 
     def forward(self, x):
-        res_out = self.resnet18(x)
+        res_out = self.resnet(x)
         global_re, global_out = self.global_net(res_out)
         return global_out
 
@@ -271,84 +277,77 @@ def conv3x3(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                      padding=1, bias=False)
 
-class BasicBlock(nn.Module):
-    expansion = 1
+class BlockBase(nn.Module):
+    def __init__(self):
+        super(BlockBase, self).__init__()
+    
+    def _init_extra_mod(self):
+        width = hparams["model"]["inp_shape"][0] // self.inshape_factor
+        height = hparams["model"]["inp_shape"][1] // self.inshape_factor
+        if not hparams["model"]["detail"]["use_dconv"]:
+            displace = DisplaceChannel(height, width,
+                                       hparams["model"]["detail"]["displace_stride"][self.res_index],
+                                       fill=hparams["model"]["detail"]["displace_fill"],
+                                       learnable_offset=False,
+                                       disable_displace=hparams["model"]["detail"]["disable_displace"],
+                                       random_offset=hparams["model"]["detail"]["random_offset"],
+                                       use_origin=hparams["model"]["detail"]["use_origin"],
+                                       actual_stride=hparams["model"]["detail"]["actual_stride"][self.res_index],
+                                       displace_bounding=hparams["model"]["detail"]["displace_bounding"][self.res_index],
+                                       displace_size=hparams["model"]["detail"]["displace_size"][self.res_index])
+            num_pos = displace.num_pos
+            num_y = displace.num_y
+            num_x = displace.num_x
+            offset_channels = hparams["model"]["detail"]["channels_per_pos"][self.res_index] * displace.num_pos
+            displace = nn.Sequential(
+                displace,
+                nn.Conv2d(offset_channels, self.inplanes // 4, kernel_size=1, stride=1))
+        else:
+            assert not hparams["model"]["detail"]["disable_displace"]
+            assert not hparams["model"]["detail"]["displace_fill"]
+            assert not hparams["model"]["detail"]["random_offset"]
+            assert hparams["model"]["detail"]["use_origin"]
+            num_y, num_x, num_pos = DisplaceChannel.get_num_offset(
+                height,
+                width,
+                hparams["model"]["detail"]["displace_bounding"][self.res_index],
+                hparams["model"]["detail"]["displace_size"][self.res_index],
+                hparams["model"]["detail"]["displace_stride"][self.res_index],
+                hparams["model"]["detail"]["displace_fill"],
+                hparams["model"]["detail"]["use_origin"])
+            offset_channels = hparams["model"]["detail"]["channels_per_pos"][self.res_index] * num_pos
+            actual_stride = hparams["model"]["detail"]["actual_stride"][self.res_index] \
+                                if hparams["model"]["detail"]["actual_stride"][self.res_index] is not None else \
+                                hparams["model"]["detail"]["displace_stride"][self.res_index]
+            displace = nn.Conv2d(offset_channels, self.inplanes // 4,
+                                 kernel_size=(num_y, num_x),
+                                 padding=(num_y // 2 * actual_stride, num_x // 2 * actual_stride),
+                                 stride=1,
+                                 dilation=actual_stride)
+        print("Displace{}_{} configuration:".format(self.res_index, self.block_index))
+        print("\tinp_channels=" + str(self.inplanes))
+        print("\toffset_channels=" + str(offset_channels))
+        print("\toffset_nx=" + str(num_x))
+        print("\toffset_ny=" + str(num_y))
+        return nn.Sequential(nn.Conv2d(self.inplanes, self.inplanes // 4, kernel_size=1, stride=1),
+                             BatchNorm2dImpl(self.inplanes // 4),
+                             StrictNaNReLU(inplace=True),
+                             nn.Conv2d(self.inplanes // 4, self.inplanes // 4, kernel_size=3, stride=1, padding=1),
+                             BatchNorm2dImpl(self.inplanes // 4),
+                             StrictNaNReLU(inplace=True),
+                             nn.Conv2d(self.inplanes // 4, offset_channels, kernel_size=1, stride=1),
+                             BatchNorm2dImpl(offset_channels, num_groups=num_pos),
+                             StrictNaNReLU(inplace=True),
+                             displace,
+                             StrictNaNReLU(inplace=True),
+                             nn.Conv2d(self.inplanes // 4, self.inplanes // 4, kernel_size=3, stride=1, padding=1),
+                             BatchNorm2dImpl(self.inplanes // 4),
+                             StrictNaNReLU(inplace=True),
+                             nn.Conv2d(self.inplanes // 4, self.inplanes, kernel_size=1, stride=1),
+                             BatchNorm2dImpl(self.inplanes),
+                             StrictNaNReLU(inplace=True))
 
-    def __init__(self, inplanes, planes, inshape_factor, res_index, block_index, stride=1, downsample=None):
-        super(BasicBlock, self).__init__()
-        if block_index == hparams["model"]["detail"]["block_index"][res_index]:
-            use_extra_mod = True
-        else:
-            use_extra_mod = False
-        self.conv1 = conv3x3(inplanes, planes, stride)
-        self.bn1 = BatchNorm2dImpl(planes)
-        if use_extra_mod:
-            self.relu = StrictNaNReLU(inplace=False)
-        else:
-            self.relu = StrictNaNReLU(inplace=True)
-        self.conv2 = conv3x3(planes, planes)
-        self.bn2 = BatchNorm2dImpl(planes)
-        self.downsample = downsample
-        self.stride = stride
-        self.inshape_factor = inshape_factor
-        self.res_index = res_index
-        self.block_index = block_index
-        if use_extra_mod:
-            width = hparams["model"]["inp_shape"][0] // inshape_factor
-            height = hparams["model"]["inp_shape"][1] // inshape_factor
-            if not hparams["model"]["detail"]["use_dconv"]:
-                displace = DisplaceChannel(height, width,
-                                           hparams["model"]["detail"]["displace_stride"][res_index],
-                                           fill=hparams["model"]["detail"]["displace_fill"],
-                                           learnable_offset=False,
-                                           disable_displace=hparams["model"]["detail"]["disable_displace"],
-                                           random_offset=hparams["model"]["detail"]["random_offset"],
-                                           use_origin=hparams["model"]["detail"]["use_origin"],
-                                           actual_stride=hparams["model"]["detail"]["actual_stride"][res_index],
-                                           displace_bounding=hparams["model"]["detail"]["displace_bounding"][res_index]),
-                offset_channels = hparams["model"]["detail"]["channels_per_pos"][res_index] * displace.num_pos
-                num_y = displace.num_y
-                num_x = displace.num_x
-                displace = nn.Sequential(
-                    displace,
-                    nn.Conv2d(offset_channels, inplanes, kernel_size=1, stride=1))
-            else:
-                assert not hparams["model"]["detail"]["disable_displace"]
-                assert not hparams["model"]["detail"]["displace_fill"]
-                assert not hparams["model"]["detail"]["random_offset"]
-                assert hparams["model"]["detail"]["use_origin"]
-                num_y, num_x, num_pos = DisplaceChannel.get_num_offset(
-                    height,
-                    width,
-                    hparams["model"]["detail"]["displace_bounding"][res_index],
-                    hparams["model"]["detail"]["displace_stride"][res_index],
-                    hparams["model"]["detail"]["displace_fill"],
-                    hparams["model"]["detail"]["use_origin"])
-                offset_channels = hparams["model"]["detail"]["channels_per_pos"][res_index] * num_pos
-                actual_stride = hparams["model"]["detail"]["actual_stride"][res_index] \
-                                    if hparams["model"]["detail"]["actual_stride"][res_index] is not None else \
-                                    hparams["model"]["detail"]["displace_stride"][res_index]
-                displace = nn.Conv2d(offset_channels, inplanes,
-                                     kernel_size=(num_y, num_x),
-                                     padding=(num_y // 2 * actual_stride, num_x // 2 * actual_stride),
-                                     stride=1,
-                                     dilation=actual_stride)
-            print("Displace{}_{} configuration:".format(res_index, block_index))
-            print("\tinp_channels=" + str(inplanes))
-            print("\toffset_channels=" + str(offset_channels))
-            print("\toffset_nx=" + str(num_x))
-            print("\toffset_ny=" + str(num_y))
-            self.extra_mod = nn.Sequential(nn.Conv2d(inplanes, offset_channels, kernel_size=1, stride=1),
-                                           StrictNaNReLU(inplace=True),
-                                           displace,
-                                           StrictNaNReLU(inplace=True),
-                                           nn.Conv2d(inplanes, inplanes, kernel_size=3, stride=1, padding=1),
-                                           BatchNorm2dImpl(inplanes),
-                                           StrictNaNReLU(inplace=True))
-        else:
-            self.extra_mod = None
-
-    def forward_extra_mod(self, x):
+    def _forward_extra_mod(self, x):
         if self.extra_mod is not None:
             extra_out = self.extra_mod(x)
 
@@ -383,8 +382,94 @@ class BasicBlock(nn.Module):
         else:
             return None
 
+class Bottleneck(BlockBase):
+    expansion = 4
+
+    def __init__(self, inplanes, planes, inshape_factor, res_index, block_index, stride=1, downsample=None):
+        super(Bottleneck, self).__init__()
+        if block_index == hparams["model"]["detail"]["block_index"][res_index]:
+            self.use_extra_mod = True
+        else:
+            self.use_extra_mod = False
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
+        self.inplanes = inplanes
+        self.bn1 = BatchNorm2dImpl(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
+                               padding=1, bias=False)
+        self.bn2 = BatchNorm2dImpl(planes)
+        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
+        self.bn3 = BatchNorm2dImpl(planes * 4)
+        if self.use_extra_mod:
+            self.relu = StrictNaNReLU(inplace=False)
+        else:
+            self.relu = StrictNaNReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+        self.inshape_factor = inshape_factor
+        self.res_index = res_index
+        self.block_index = block_index
+        if self.use_extra_mod:
+            self.extra_mod = self._init_extra_mod()
+        else:
+            self.extra_mod = None
+
     def forward(self, x):
-        extra_out = self.forward_extra_mod(x)
+        extra_out = self._forward_extra_mod(x)
+
+        if extra_out is not None:
+            x = x + extra_out
+
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out = out + residual
+
+        out = self.relu(out)
+
+        return out
+
+class BasicBlock(BlockBase):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, inshape_factor, res_index, block_index, stride=1, downsample=None):
+        super(BasicBlock, self).__init__()
+        if block_index == hparams["model"]["detail"]["block_index"][res_index]:
+            self.use_extra_mod = True
+        else:
+            self.use_extra_mod = False
+        self.conv1 = conv3x3(inplanes, planes, stride)
+        self.bn1 = BatchNorm2dImpl(planes)
+        if self.use_extra_mod:
+            self.relu = StrictNaNReLU(inplace=False)
+        else:
+            self.relu = StrictNaNReLU(inplace=True)
+        self.conv2 = conv3x3(planes, planes)
+        self.bn2 = BatchNorm2dImpl(planes)
+        self.downsample = downsample
+        self.stride = stride
+        self.inshape_factor = inshape_factor
+        self.res_index = res_index
+        self.block_index = block_index
+        if self.use_extra_mod:
+            self.extra_mod = self._init_extra_mod()
+        else:
+            self.extra_mod = None
+
+    def forward(self, x):
+        extra_out = self._forward_extra_mod(x)
 
         if extra_out is not None:
             x = x + extra_out
@@ -474,6 +559,19 @@ def resnet18(pretrained=None, **kwargs):
     model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained is not None:
         print("Loading pretrained resnet18 ...")
+        model_state_dict = model.state_dict()
+        model_state_dict = load_pretrained_loose(model_state_dict, torch.load(pretrained))
+        model.load_state_dict(model_state_dict)
+    return model
+
+def resnet50(pretrained=None, **kwargs):
+    """Constructs a ResNet-50 model.
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+    """
+    model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
+    if pretrained is not None:
+        print("Loading pretrained resnet50 ...")
         model_state_dict = model.state_dict()
         model_state_dict = load_pretrained_loose(model_state_dict, torch.load(pretrained))
         model.load_state_dict(model_state_dict)

@@ -10,7 +10,7 @@ class DisplaceChannel(nn.Module):
     def __init__(self, height, width, init_stride,
                  fill=False, learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5,
                  disable_displace=False, random_offset=0, use_origin=False, actual_stride=None,
-                 displace_bounding=1):
+                 displace_bounding=1, displace_size=None):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -21,10 +21,11 @@ class DisplaceChannel(nn.Module):
         self.random_offset = random_offset
         self.use_origin = use_origin
         self.actual_stride = actual_stride
-        displace_bounding = float(displace_bounding)
-        assert displace_bounding > 0 and displace_bounding <= 1
-        self.displace_bounding = displace_bounding
-        self.num_y, self.num_x, self.num_pos = self.get_num_offset(height, width, displace_bounding, init_stride, fill, use_origin)
+        assert displace_bounding == -1 or (displace_bounding > 0 and displace_bounding <= 1)
+        self.displace_bounding = float(displace_bounding)
+        self.displace_size = displace_size
+        self.num_y, self.num_x, self.num_pos = self.get_num_offset(height, width, displace_bounding, displace_size, init_stride, fill, use_origin)
+
         if not disable_displace:
             self.offset = nn.parameter.Parameter(torch.Tensor(self.num_pos, 2), requires_grad=False)
             self.init_offset()
@@ -50,16 +51,22 @@ class DisplaceChannel(nn.Module):
             return grad / self.width / self.height
 
     @staticmethod
-    def get_num_offset(height, width, displace_bounding, init_stride, fill, use_origin):
-        displace_bounding = float(displace_bounding)
-        assert int(height * displace_bounding) - init_stride > init_stride
-        assert int(width * displace_bounding) - init_stride > init_stride
-        if not fill:
-            num_y = (int(height * displace_bounding) - init_stride) // init_stride * 2 + 1
-            num_x = (int(width * displace_bounding) - init_stride) // init_stride * 2 + 1
+    def get_num_offset(height, width, displace_bounding, displace_size, init_stride, fill, use_origin):
+        if displace_size:
+            assert displace_bounding == -1
+            num_x = displace_size[0]
+            num_y = displace_size[1]
         else:
-            num_y = (int(height * displace_bounding) - init_stride) // init_stride + 1
-            num_x = (int(width * displace_bounding) - init_stride) // init_stride + 1
+            displace_bounding = float(displace_bounding)
+            assert int(height * displace_bounding) - init_stride > init_stride
+            assert int(width * displace_bounding) - init_stride > init_stride
+            if not fill:
+                num_y = (int(height * displace_bounding) - init_stride) // init_stride * 2 + 1
+                num_x = (int(width * displace_bounding) - init_stride) // init_stride * 2 + 1
+            else:
+                num_y = (int(height * displace_bounding) - init_stride) // init_stride + 1
+                num_x = (int(width * displace_bounding) - init_stride) // init_stride + 1
+
         num_pos = num_y * num_x
         if not use_origin:
             num_pos -= 1
