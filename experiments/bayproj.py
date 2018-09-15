@@ -304,10 +304,10 @@ class Experiment(BaseExperiment):
 
             print("No points")
 
-    def iter_step(self, loss, cur_step):
+    def iter_step(self, epoch_ctx, loss, cur_step):
         # [early_pred]
         if self.mode == "normal":
-            BaseExperiment.iter_step(self, loss, cur_step)
+            BaseExperiment.iter_step(self, epoch_ctx, loss, cur_step)
         else:
             self.optimizer_extra_mod.zero_grad()
             loss.backward()
@@ -370,7 +370,7 @@ class Experiment(BaseExperiment):
             loss = loss + hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / batch_size / count_point.sum()
             # loss = loss + hparams["model"]["loss_close_cof"] * loss_in_total.sum() / batch_size / count_point.sum()
 
-        epoch_ctx.add_scalar("loss", loss.item(), progress["iter_len"])
+        epoch_ctx.add_scalar("loss", loss.item())
 
         # Make sure no reference
         self._interm_out.clear()
@@ -462,7 +462,7 @@ class Experiment(BaseExperiment):
         loss = (early_pred_out - det_map_gt_vars[-1]).pow(2).mean().sqrt()
         loss_out_total, loss_in_total, count_point = self._interm_out.pop_gathered("extra_mod", target_device=self.model.output_device)
         loss = loss + hparams["model"]["loss_outsider_cof"] * loss_out_total.sum() / batch_size / count_point.sum()
-        epoch_ctx.add_scalar("loss_early", loss.item(), progress["iter_len"])
+        epoch_ctx.add_scalar("loss_early", loss.item())
 
         # Make sure no reference
         self._interm_out.clear()

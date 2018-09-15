@@ -95,7 +95,7 @@ def load_pretrained_loose(model_state_dict, pretrained_state_dict, pause_model_m
     if len(model_extra_keys) > 0:
         log_w("Model extra keys: " + str(model_extra_keys))
     if pause_model_mismatch and (len(model_missing_keys) > 0 or len(model_extra_keys) > 0):
-        wait_key(tip=True)
+        wait_key()
 
     for k, v in pretrained_state_dict.items():
         if k in model_missing_keys:

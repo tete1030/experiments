@@ -265,7 +265,7 @@ class Experiment(BaseExperiment):
             else:
                 loss = loss + (outv - gtv).pow(2).mean().sqrt()
 
-        epoch_ctx.add_scalar("loss", loss.item(), progress["iter_len"])
+        epoch_ctx.add_scalar("loss", loss.item())
 
         if (loss.data != loss.data).any():
             import ipdb; ipdb.set_trace()

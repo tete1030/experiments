@@ -1,6 +1,5 @@
-from __future__ import absolute_import
-
 import math
+import queue
 import numpy as np
 import matplotlib.pyplot as plt
 from random import randint
@@ -133,6 +132,33 @@ class AverageMeter(object):
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count
+
+class CycleAverageMeter(object):
+    """Computes and stores the cycled average and current value"""
+    def __init__(self, size):
+        self.size = size
+        self._pool = list()
+        self._pointer = 0
+        self.reset()
+
+    def reset(self):
+        self._pool.clear()
+        self._pointer = 0
+        self.count = 0
+        self.val = 0
+        self.avg = 0
+
+    def update(self, val, n=1):
+        for i in range(n):
+            if self.count >= self.size:
+                self._pool[self._pointer] = val
+                self._pointer = (self._pointer + 1) % self.size
+            else:
+                self._pool.append(val)
+                self.count += 1
+
+        self.val = val
+        self.avg = float(sum(self._pool)) / self.count
 
 def match_locate(pred, gt, threshold_abandon=3):
     """Match locate map result with ground truth keypoints

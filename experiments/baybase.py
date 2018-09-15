@@ -241,7 +241,7 @@ class Experiment(BaseExperiment):
 
             # if loss.item() > 0.1:
             #     import ipdb; ipdb.set_trace()
-        epoch_ctx.add_scalar("loss", loss.item(), progress["iter_len"])
+        epoch_ctx.add_scalar("loss", loss.item())
 
         result = {
             "loss": loss,

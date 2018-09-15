@@ -2,20 +2,19 @@ default: &DEFAULT
     workers: 16
     debug: false
     profile: false
-    skip_val: 1
     fast_pass_train: 0
     fast_pass_valid: 0
     handle_sig: true
     evaluate: false
     checkpoint: 'checkpoint/{exp}/{id}'
     resume: null
-    store_lim: 10
     vis: false
     debug_nan: false
-    em_valid_int: 0
+    valid_interval: 0
     no_strict_model_load: false
     no_criterion_load: false
     no_optimizer_load: false
+    store: false
 
 profile: &PROFILE
     <<: *DEFAULT
@@ -37,7 +36,6 @@ evaluate: &EVALUATE
 fast: &FAST
     <<: *DEFAULT
     workers: 0
-    skip_val: 1
     fast_pass_train: 1
     fast_pass_valid: 1
 

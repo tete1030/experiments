@@ -20,6 +20,7 @@ from pose.utils.transforms import fliplr_pts
 from utils.globals import config, hparams, globalvars
 from utils.log import log_i
 from utils.train import adjust_learning_rate
+from utils.checkpoint import save_pred
 
 from utils.sync_batchnorm import SynchronizedBatchNorm2d, DataParallelWithCallback
 from utils.checkpoint import load_pretrained_loose
@@ -87,8 +88,9 @@ class Experiment(BaseExperiment):
         self.worker_init_fn = datasets.mscoco.worker_init
         self.print_iter_start = " | "
 
-    def evaluate(self, preds, step):
-        def _summarize(eval_result, params, ap, iou_thr=None, area_rng="all", max_dets=100, title=None):
+    @staticmethod
+    def _summarize_tensorboard(eval_result, params, step):
+        def _summarize(ap, iou_thr=None, area_rng="all", max_dets=100, title=None):
             type_str = "AP" if ap==1 else "AR"
             if title is None:
                 iou_str = "{:0.2f}-{:0.2f}".format(params.iouThrs[0], params.iouThrs[-1]) \
@@ -119,8 +121,23 @@ class Experiment(BaseExperiment):
             globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, type_str), {title: mean_s}, step)
             return mean_s
 
-        image_ids = preds["image_index"]
-        ans = preds["annotate"]
+        _summarize(1, title="avg", max_dets=20)
+        _summarize(1, title="i50", max_dets=20, iou_thr=.5)
+        _summarize(1, title="i75", max_dets=20, iou_thr=.75)
+        _summarize(1, title="med", max_dets=20, area_rng="medium")
+        _summarize(1, title="lar", max_dets=20, area_rng="large")
+        _summarize(0, title="avg", max_dets=20)
+        _summarize(0, title="i50", max_dets=20, iou_thr=.5)
+        _summarize(0, title="i75", max_dets=20, iou_thr=.75)
+        _summarize(0, title="med", max_dets=20, area_rng="medium")
+        _summarize(0, title="lar", max_dets=20, area_rng="large")
+
+    def evaluate(self, epoch_ctx:EpochContext, epoch, step):
+        if "annotates" not in epoch_ctx.stored:
+            return
+        annotates = epoch_ctx.stored["annotates"]
+        image_ids = annotates["image_index"]
+        ans = annotates["annotate"]
         if ans is not None and len(ans) > 0:
             coco_dets = self.coco.loadRes(ans)
             coco_eval = COCOeval(self.coco, coco_dets, "keypoints")
@@ -129,36 +146,35 @@ class Experiment(BaseExperiment):
             coco_eval.evaluate()
             coco_eval.accumulate()
 
-            _summarize(coco_eval.eval, coco_eval.params, 1, title="avg", max_dets=20)
-            _summarize(coco_eval.eval, coco_eval.params, 1, title="i50", max_dets=20, iou_thr=.5)
-            _summarize(coco_eval.eval, coco_eval.params, 1, title="i75", max_dets=20, iou_thr=.75)
-            _summarize(coco_eval.eval, coco_eval.params, 1, title="med", max_dets=20, area_rng="medium")
-            _summarize(coco_eval.eval, coco_eval.params, 1, title="lar", max_dets=20, area_rng="large")
-            _summarize(coco_eval.eval, coco_eval.params, 0, title="avg", max_dets=20)
-            _summarize(coco_eval.eval, coco_eval.params, 0, title="i50", max_dets=20, iou_thr=.5)
-            _summarize(coco_eval.eval, coco_eval.params, 0, title="i75", max_dets=20, iou_thr=.75)
-            _summarize(coco_eval.eval, coco_eval.params, 0, title="med", max_dets=20, area_rng="medium")
-            _summarize(coco_eval.eval, coco_eval.params, 0, title="lar", max_dets=20, area_rng="large")
-
+            self._summarize_tensorboard(coco_eval.eval, coco_eval.params, step)
             coco_eval.summarize()
         else:
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"avg": -1.}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"i50": -1.}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"i75": -1.}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"med": -1.}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"lar": -1.}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"avg": -1.}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"i50": -1.}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"i75": -1.}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"med": -1.}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"lar": -1.}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"avg": 0}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"i50": 0}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"i75": 0}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"med": 0}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"lar": 0}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"avg": 0}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"i50": 0}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"i75": 0}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"med": 0}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"lar": 0}, step)
 
             print("No points")
+
+    def process_stored(self, epoch_ctx:EpochContext, epoch, step):
+        if config.store:
+            for store_key in epoch_ctx.stored:
+                if epoch == 0:
+                    pred_file = "{}_evaluate.npy".format(store_key)
+                else:
+                    pred_file = "{}_{}.npy".format(store_key, epoch)
+                save_pred(epoch_ctx.stored[store_key], checkpoint_folder=config.checkpoint, pred_file=pred_file)
 
     def epoch_start(self, epoch, step):
         self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
 
-    def iter_step(self, loss: torch.Tensor, progress: dict):
+    def iter_step(self, epoch_ctx:EpochContext, loss:torch.Tensor, progress:dict):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -174,41 +190,46 @@ class Experiment(BaseExperiment):
         is_train = progress["train"]
         batch_size = img.size(0)
 
-        det_map_gt_vars = [dm.cuda() for dm in det_maps_gt]
+        det_map_gt_cuda = [dm.cuda() for dm in det_maps_gt]
         # dirty trick for debug
         if config.vis:
             globalvars.cur_img = img
-        output_vars = self.model(img)
+        output_maps = self.model(img)
         # dirty trick for debug, release
         if config.vis:
             globalvars.cur_img = None
 
         loss = 0.
-        for ilabel, (outv, gtv) in enumerate(zip(output_vars, det_map_gt_vars)):
-            # if ilabel < len(det_map_gt_vars) - 1:
+        for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
+            # if ilabel < len(det_map_gt_cuda) - 1:
             #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
-            if ilabel < len(det_map_gt_vars) - 1:
+            if ilabel < len(det_map_gt_cuda) - 1:
                 loss = loss + ((outv - gtv).pow(2) * \
                     (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
             else:
                 loss = loss + (outv - gtv).pow(2).mean().sqrt()
 
-        epoch_ctx.add_scalar("loss", loss.item(), progress["iter_len"])
+        epoch_ctx.add_scalar("loss", loss.item())
 
         if (loss.data != loss.data).any():
             import ipdb; ipdb.set_trace()
 
         if not is_train or config.vis:
-            pred, score = parse_map(output_vars[-1], thres=hparams["model"]["parse_threshold"])
-            pred_affined = pred.copy()
+            kp_pred, score = parse_map(output_maps[-1], thres=hparams["model"]["parse_threshold"])
+            kp_pred_affined = kp_pred.copy()
             for samp_i in range(batch_size):
-                pred_affined[samp_i, :, :2] = kpt_affine(pred_affined[samp_i, :, :2] * FACTOR, np.linalg.pinv(transform_mat[samp_i])[:2])
+                kp_pred_affined[samp_i, :, :2] = kpt_affine(kp_pred_affined[samp_i, :, :2] * FACTOR, np.linalg.pinv(transform_mat[samp_i])[:2])
                 if img_flipped[samp_i]:
-                    pred_affined[samp_i] = fliplr_pts(pred_affined[samp_i], datasets.mscoco.FLIP_INDEX, width=img_ori_size[samp_i, 0].item())
-            ans = generate_ans(image_ids, pred_affined, score)
-        else:
-            pred = None
-            ans = None
+                    kp_pred_affined[samp_i] = fliplr_pts(kp_pred_affined[samp_i], datasets.mscoco.FLIP_INDEX, width=img_ori_size[samp_i, 0].item())
+            ans = generate_ans(image_ids, kp_pred_affined, score)
+            epoch_ctx.add_store("annotates", {"image_index": image_ids, "annotate": ans})
+
+            if config.store and hparams["config"]["store_map"] and is_train:
+                if not hasattr(epoch_ctx, "store_counter"):
+                    epoch_ctx.store_counter = 0
+                if epoch_ctx.store_counter < 30:
+                    epoch_ctx.add_store("pred", {"image_index": image_ids, "img": img, "gt": det_maps_gt, "pred": output_maps})
+                epoch_ctx.store_counter += 1
 
         if config.vis and False:
             import matplotlib.pyplot as plt
@@ -223,16 +244,16 @@ class Experiment(BaseExperiment):
                 for i in range(batch_size):
                     draw_img = img_restored[i].copy()
                     for j in range(self.num_parts):
-                        pt = pred[i, j]
+                        pt = kp_pred_affined[i, j]
                         if pt[2] > 0:
                             cv2.circle(draw_img, (int(pt[0] * FACTOR), int(pt[1] * FACTOR)), radius=2, color=(0, 0, 255), thickness=-1)
                     axes.flat[i].imshow(draw_img[..., ::-1])
 
-            if True:
+            if False:
                 for i in range(min(1, batch_size)):
                     nrows = 3; ncols = 6
-                    for i_out in range(len(output_vars)):
-                        pred_resized = batch_resize((output_vars[i_out][i].data.cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8) , img.size()[-2:])
+                    for i_out in range(len(output_maps)):
+                        pred_resized = batch_resize((output_maps[i_out][i].data.cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8) , img.size()[-2:])
                         
                         fig, axes = plt.subplots(nrows, ncols, squeeze=False)
                         fig.suptitle("%d" % (i_out,))
@@ -247,9 +268,7 @@ class Experiment(BaseExperiment):
 
         result = {
             "loss": loss,
-            "index": batch["index"],
-            "save": None,
-            "pred": {"image_index": image_ids, "annotate": ans} if ans is not None else None
+            "index": batch["index"]
         }
 
         return result
@@ -293,7 +312,6 @@ class BlockBase(nn.Module):
                                        random_offset=hparams["model"]["detail"]["random_offset"],
                                        use_origin=hparams["model"]["detail"]["use_origin"],
                                        actual_stride=hparams["model"]["detail"]["actual_stride"][self.res_index],
-                                       displace_bounding=hparams["model"]["detail"]["displace_bounding"][self.res_index],
                                        displace_size=hparams["model"]["detail"]["displace_size"][self.res_index])
             num_pos = displace.num_pos
             num_y = displace.num_y
@@ -310,7 +328,6 @@ class BlockBase(nn.Module):
             num_y, num_x, num_pos = DisplaceChannel.get_num_offset(
                 height,
                 width,
-                hparams["model"]["detail"]["displace_bounding"][self.res_index],
                 hparams["model"]["detail"]["displace_size"][self.res_index],
                 hparams["model"]["detail"]["displace_stride"][self.res_index],
                 hparams["model"]["detail"]["displace_fill"],
@@ -351,7 +368,7 @@ class BlockBase(nn.Module):
         if self.extra_mod is not None:
             extra_out = self.extra_mod(x)
 
-            if config.vis:
+            if config.vis and False:
                 import matplotlib.pyplot as plt
                 import cv2
                 fig, axes = plt.subplots(3, 30, figsize=(100, 12), squeeze=False)

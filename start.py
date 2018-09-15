@@ -39,10 +39,10 @@ from tensorboardX import SummaryWriter
 from pose.utils.evaluation import AverageMeter
 from utils.miscs import mkdir_p
 from utils.globals import config, hparams, globalvars
-from utils.miscs import ask, is_main_process
-from utils.checkpoint import detect_checkpoint, save_pred
+from utils.miscs import ask, is_main_process, wait_key
+from utils.checkpoint import detect_checkpoint
 from utils.log import log_w, log_e, log_q, log_i, log_suc, log_progress
-
+from utils.train import TrainContext, ValidContext
 from experiments.baseexperiment import BaseExperiment, EpochContext
 
 global enable_sigint_handler
@@ -193,34 +193,13 @@ def main(args, unknown_args):
         if not config.evaluate:
             check_future_checkpoint(config.checkpoint, before_epoch + 1)
 
-    log_progress("Initiating dataloader")
-    # Data loading code
-    train_loader = torch.utils.data.DataLoader(
-        exp.train_dataset,
-        collate_fn=exp.train_collate_fn,
-        batch_size=hparams["train_batch"],
-        num_workers=config.workers,
-        shuffle=True,
-        pin_memory=True,
-        drop_last=exp.train_drop_last,
-        worker_init_fn=exp.worker_init_fn)
-
-    val_loader = torch.utils.data.DataLoader(
-        exp.val_dataset,
-        collate_fn=exp.valid_collate_fn,
-        batch_size=hparams["test_batch"],
-        num_workers=config.workers,
-        shuffle=False,
-        pin_memory=True,
-        worker_init_fn=exp.worker_init_fn)
-
     if args.run is not None:
         run_name = args.run
         run_path = os.path.join("runs", run_name)
         if not os.path.isdir(run_path):
             log_e("Run not found")
             sys.exit(1)
-        purge_step = before_epoch * len(train_loader)
+        purge_step = before_epoch * len(exp.train_loader)
         log_w("Will purge run {} step from {}".format(run_name, purge_step))
         if not ask("Confirm?", posstr="yes", negstr="n"):
             log_q("No purging")
@@ -234,54 +213,56 @@ def main(args, unknown_args):
         run_path = "runs/" + run_name
         globalvars.tb_writer = SummaryWriter(log_dir=run_path)
 
+    log_i("Run name: {}".format(run_name))
+    wait_key()
+
     if config.handle_sig:
         enable_sigint_handler()
 
     if config.evaluate:
         print()
         log_i("Evaluation-only mode")
-        result_collection = validate(val_loader, exp, 0, 0)
-        if result_collection is not None:
-            print()
-            save_pred(result_collection, checkpoint_folder=config.checkpoint, pred_file="pred_evaluate.npy")
+        validate(exp, 0, 0, call_store=True)
     else:
-        train_eval_loop(exp, before_epoch + 1, hparams["epochs"] + 1, train_loader, val_loader)
+        train_eval_loop(exp, before_epoch + 1, hparams["epochs"] + 1)
 
     log_suc("Run finished!")
-    if not ask("Save current run?", posstr="y", negstr="delete", ansretry=False, ansdefault=True):
-        log_i("Deleting current run")
+    if args.run is None and \
+            not ask("Save this run?", posstr="y", negstr="delete", ansretry=False, ansdefault=True, timeout_sec=60) and \
+            input("Input this run name {} to delete: ".format(run_name)) == run_name:
+        log_i("Deleting this run")
         shutil.rmtree(run_path)
+    else:
+        log_i("Run saved")
 
-def train_eval_loop(exp, start_epoch, stop_epoch, train_loader, val_loader):
-    cur_step = len(train_loader) * (start_epoch - 1)
+def train_eval_loop(exp, start_epoch, stop_epoch):
+    cur_step = len(exp.train_loader) * (start_epoch - 1)
     for epoch in range(start_epoch, stop_epoch):
-        exp.epoch_start(epoch, cur_step)
-
         print()
         log_progress("Epoch: %d | LR: %.8f" % (epoch, exp.cur_lr))
+        log_progress("Training:")
+
+        exp.epoch_start(epoch, cur_step)
+
+        if globalvars.sigint_triggered:
+            return False
 
         # train for one epoch
-        train(train_loader, exp, epoch, cur_step, em_valid_int=config.em_valid_int, val_loader=val_loader)
-
-        if globalvars.sigint_triggered:
-            return False
-
-        cur_step += len(train_loader)
-
-        if exp.use_post:
-            log_progress("Post train:")
-            post_train(train_loader, exp, epoch, cur_step)
-
-        if globalvars.sigint_triggered:
-            return False
-
-        # evaluate on validation set
-        if config.skip_val > 0 and epoch % config.skip_val == 0:
+        for cur_pause_step, is_final in train(exp, epoch, cur_step, pause_interval=config.valid_interval):
+            print()
             log_progress("Validation:")
-            result_collection = validate(val_loader, exp, epoch, cur_step)
-        else:
-            log_progress("Skip validation")
-            result_collection = None
+            validate(exp, epoch, cur_pause_step, call_store=is_final)
+            if globalvars.sigint_triggered:
+                break
+            if not is_final:
+                print()
+                log_progress("Training:")
+
+        if globalvars.sigint_triggered:
+            return False
+
+        cur_step += len(exp.train_loader)
+        exp.epoch_end(epoch, cur_step)
 
         if globalvars.sigint_triggered:
             return False
@@ -289,36 +270,23 @@ def train_eval_loop(exp, start_epoch, stop_epoch, train_loader, val_loader):
         cp_filename = "checkpoint_{}.pth.tar".format(epoch)
         exp.save_checkpoint(config.checkpoint, cp_filename, epoch)
 
-        if result_collection is not None:
-            preds_filename = "preds_{}.npy".format(epoch)
-            save_pred(result_collection, checkpoint_folder=config.checkpoint, pred_file=preds_filename)
-
-        exp.epoch_end(epoch)
-
         if globalvars.sigint_triggered:
             return False
 
     return True
 
-def train(train_loader, exp, epoch, cur_step, em_valid_int=0, val_loader=None):
+def train(exp:BaseExperiment, epoch:int, cur_step:int, pause_interval:int=0):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     epoch_ctx = EpochContext()
 
-    # switch to train mode
-    exp.model.train()
-
     end = time.time()
     start_time = time.time()
 
-    iter_length = len(train_loader)
+    iter_length = len(exp.train_loader)
 
-    with torch.autograd.enable_grad():
-        for i, batch in enumerate(train_loader):
-            em_valid = False
-            if em_valid_int > 0 and (i+1) % em_valid_int == 0 and iter_length - (i+1) >= max(em_valid_int/2, 1):
-                em_valid = True
-
+    with torch.autograd.enable_grad(), TrainContext(exp.model):
+        for i, batch in enumerate(exp.train_loader):
             # measure data loading time
             data_time.update(time.time() - end)
 
@@ -333,13 +301,14 @@ def train(train_loader, exp, epoch, cur_step, em_valid_int=0, val_loader=None):
             result = exp.iter_process(epoch_ctx, batch, progress=progress)
             loss = result["loss"]
 
-            exp.iter_step(loss, progress=progress)
+            exp.iter_step(epoch_ctx, loss, progress=progress)
 
             loss = loss.item() if loss is not None else None
 
+            exp.summary_scalar(epoch_ctx, epoch, cur_step, "train")
+
             # measure elapsed time
             batch_time.update(time.time() - end)
-            end = time.time()
 
             loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) data: {data:.6f}s | batch: {bt:.3f}s | total: {total:3.1f}s").format(
                 epoch=epoch,
@@ -351,134 +320,37 @@ def train(train_loader, exp, epoch, cur_step, em_valid_int=0, val_loader=None):
                 total=time.time() - start_time,
             )
             print(loginfo, end="")
-            exp.print_iter(epoch_ctx)
-            exp.summary_scalar(epoch_ctx, cur_step, "train")
-            
-            if globalvars.sigint_triggered:
-                break
-
-            if em_valid:
-                print()
-                log_progress("Embeded Validation:")
-                validate(val_loader, exp, epoch, cur_step + 1, store_result=True)
-                print()
-                log_progress("Return to train:")
-                exp.model.train()
-                end = time.time()
+            exp.print_iter(epoch_ctx, epoch, cur_step)
 
             if globalvars.sigint_triggered:
-                break
-
-            if config.fast_pass_train > 0 and (i+1) >= config.fast_pass_train:
-                log_progress("Fast Pass!")
                 break
 
             cur_step += 1
 
-def post_train(train_loader, exp, epoch, cur_step):
-    batch_time = AverageMeter()
-    data_time = AverageMeter()
-    epoch_ctx = EpochContext()
-
-    # switch to train mode
-    exp.model.train()
-
-    end = time.time()
-    start_time = time.time()
-
-    iter_length = len(train_loader)
-
-    with torch.autograd.enable_grad():
-        for i, batch in enumerate(train_loader):
-
-            # measure data loading time
-            data_time.update(time.time() - end)
-
-            progress = {
-                "epoch": epoch,
-                "iter": i,
-                "iter_len": iter_length,
-                "step": cur_step,
-                "train": True,
-                "post": True
-            }
-
-            result = exp.iter_process(epoch_ctx, batch, progress=progress)
-            loss = result["loss"]
-
-            exp.iter_step(loss, progress=progress)
-
-            loss = loss.item() if loss is not None else None
-
-            # measure elapsed time
-            batch_time.update(time.time() - end)
-            end = time.time()
-
-            loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) data: {data:.6f}s | batch: {bt:.3f}s | total: {total:3.1f}s").format(
-                epoch=epoch,
-                batch=i + 1,
-                size_width=len(str(iter_length)),
-                size=iter_length,
-                data=data_time.val,
-                bt=batch_time.val,
-                total=time.time() - start_time,
-            )
-            print(loginfo, end="")
-            exp.print_iter(epoch_ctx)
-            exp.summary_scalar(epoch_ctx, cur_step+i, "post_train")
-
-            if globalvars.sigint_triggered:
-                break
-
-            if globalvars.sigint_triggered:
-                break
-
             if config.fast_pass_train > 0 and (i+1) >= config.fast_pass_train:
                 log_progress("Fast Pass!")
+                yield cur_step, True
                 break
 
-def combine_result(prev, cur):
-    assert type(prev) == type(cur)
-    if isinstance(prev, dict):
-        assert set(prev.keys()) == set(cur.keys())
-        for key in prev:
-            prev[key] = combine_result(prev[key], cur[key])
-        return prev
-    elif isinstance(prev, list):
-        return prev + cur
-    elif isinstance(prev, torch.Tensor):
-        assert prev.size()[1:] == cur.size()[1:]
-        return torch.cat([prev, cur])
-    elif isinstance(prev, np.ndarray):
-        assert prev.shape[1:] == cur.shape[1:]
-        return torch.concatenate([prev, cur])
-    raise TypeError("Not supported type")        
+            is_final = (i == iter_length - 1)
+            if is_final or (pause_interval > 0 and (i+1) % pause_interval == 0 and iter_length - i - 1 > pause_interval / 2):
+                yield cur_step, is_final
 
-def validate(val_loader, exp, epoch, cur_step, store_result=True):
+            end = time.time()
+
+def validate(exp:BaseExperiment, epoch:int, cur_step:int, call_store:bool) -> None:
     batch_time = AverageMeter()
     data_time = AverageMeter()
     epoch_ctx = EpochContext()
-
-    result_collection = None
-    store_lim = config.store_lim
-    if store_lim is None:
-        store_lim = len(val_loader.dataset)
-
-    preds = None
-
-    # switch to evaluate mode
-    exp.model.eval()
+    iter_length = len(exp.val_loader)
 
     end = time.time()
     start_time = time.time()
-    iter_length = len(val_loader)
-    data_counter = 0
-    with torch.autograd.no_grad():
-        for i, batch in enumerate(val_loader):
+
+    with torch.autograd.no_grad(), ValidContext(exp.model):
+        for i, batch in enumerate(exp.val_loader):
             # measure data loading time
             data_time.update(time.time() - end)
-
-            batch_size = len(batch["index"])
 
             progress = {
                 "epoch": epoch,
@@ -490,41 +362,8 @@ def validate(val_loader, exp, epoch, cur_step, store_result=True):
 
             result = exp.iter_process(epoch_ctx, batch, progress=progress)
 
-            if result["pred"] is not None:
-                if preds is None:
-                    preds = result["pred"]
-                else:
-                    preds = combine_result(preds, result["pred"])
-
-            loss = result["loss"]
-            
-            index = result["index"] if "index" in result else None
-
-            if index is None:
-                index = list(range(data_counter, data_counter+batch_size))
-
-            result_save = result["save"]
-            if result_save is not None and store_result:
-                if result_collection is None:
-                    if isinstance(result_save, torch.Tensor):
-                        result_collection = torch.zeros((store_lim,) + result_save.size()[1:])
-                    elif isinstance(result_save, np.ndarray):
-                        result_collection = np.zeros((store_lim,) + result_save.shape[1:])
-                    elif isinstance(result_save, collections.Sequence):
-                        result_collection = dict()
-                    else:
-                        raise TypeError("Not valid result_save type")
-
-                for n in range(len(result_save)):
-                    if index[n] >= store_lim:
-                        continue
-                    result_collection[index[n]] = result_save[n]
-
             # measure elapsed time
             batch_time.update(time.time() - end)
-            end = time.time()
-
-            data_counter += len(index)
 
             loginfo = ("{epoch:3}: ({batch:0{size_width}}/{size}) data: {data:.6f}s | batch: {bt:.3f}s | total: {total:3.1f}s").format(
                 epoch=epoch,
@@ -536,7 +375,7 @@ def validate(val_loader, exp, epoch, cur_step, store_result=True):
                 total=time.time() - start_time
             )
             print(loginfo, end="")
-            exp.print_iter(epoch_ctx)
+            exp.print_iter(epoch_ctx, epoch, cur_step)
 
             if globalvars.sigint_triggered:
                 break
@@ -545,13 +384,12 @@ def validate(val_loader, exp, epoch, cur_step, store_result=True):
                 log_progress("Fast Pass!")
                 break
 
-    exp.summary_scalar_avg(epoch_ctx, cur_step, phase="valid")
-    if preds is not None:
-        exp.evaluate(preds, cur_step)
-    else:
-        log_i("pred is None, skip evaluation")
+            end = time.time()
 
-    return result_collection
+    exp.summary_scalar_avg(epoch_ctx, epoch, cur_step, phase="valid")
+    exp.evaluate(epoch_ctx, epoch, cur_step)
+    if call_store:
+        exp.process_stored(epoch_ctx, epoch, cur_step)
 
 def get_args():
     argp = argparse.ArgumentParser()

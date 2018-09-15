@@ -13,3 +13,23 @@ def adjust_learning_rate(optimizer, epoch, init_lr, schedule, gamma):
                 param_group["lr"] = lr
 
     return lr
+
+class TrainContext(object):
+    def __init__(self, model):
+        self.model = model
+
+    def __enter__(self):
+        self.model.train()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+class ValidContext(object):
+    def __init__(self, model):
+        self.model = model
+
+    def __enter__(self):
+        self.model.eval()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass

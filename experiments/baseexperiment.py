@@ -1,23 +1,52 @@
 import os
-from pose.utils.evaluation import AverageMeter
-from utils.globals import globalvars
+import numpy as np
 import torch
 from torch.utils.data.dataloader import default_collate
+
+from pose.utils.evaluation import AverageMeter, CycleAverageMeter
+from utils.globals import globalvars, hparams, config
 from utils.checkpoint import load_pretrained_loose, save_checkpoint, RejectLoadError
+
+def combine_result(prev, cur):
+    assert type(prev) == type(cur)
+    if isinstance(prev, dict):
+        assert set(prev.keys()) == set(cur.keys())
+        for key in prev:
+            prev[key] = combine_result(prev[key], cur[key])
+        return prev
+    elif isinstance(prev, list):
+        return prev + cur
+    elif isinstance(prev, tuple):
+        assert len(prev) == len(cur)
+        return (combine_result(prev[i], cur[i]) for i in range(len(prev)))
+    elif isinstance(prev, torch.Tensor):
+        assert prev.size()[1:] == cur.size()[1:]
+        return torch.cat([prev, cur])
+    elif isinstance(prev, np.ndarray):
+        assert prev.shape[1:] == cur.shape[1:]
+        return np.concatenate([prev, cur])
+    raise TypeError("Not supported type")
 
 class EpochContext(object):
     def __init__(self):
         self.scalar = dict()
         self.format = dict()
         self.stat_avg = dict()
+        self.stored = dict()
 
-    def add_scalar(self, sname, sval, n, val_format=None, stat_avg=True):
+    def add_scalar(self, sname, sval, val_format=None, stat_avg=True, cycle_avg=0):
         if sname not in self.scalar:
-            self.scalar[sname] = AverageMeter()
+            self.scalar[sname] = AverageMeter() if cycle_avg == 0 else CycleAverageMeter(cycle_avg)
         if val_format is not None:
             self.format[sname] = val_format
-        self.scalar[sname].update(sval, n)
+        self.scalar[sname].update(sval)
         self.stat_avg[sname] = stat_avg
+
+    def add_store(self, sname, sval):
+        if sname not in self.stored:
+            self.stored[sname] = sval
+        else:
+            self.stored[sname] = combine_result(self.stored[sname], sval)
 
 class BaseExperiment(object):
     def __init__(self):
@@ -33,27 +62,52 @@ class BaseExperiment(object):
         self.print_iter_start = "\n\t"
         self.print_iter_sep = " | "
         self.cur_lr = None
-        self.use_post = False
         self.init()
+        self.init_dataloader()
 
     def init(self):
         pass
 
-    def evaluate(self, preds, step):
+    def init_dataloader(self):
+        assert self.train_dataset is not None and self.val_dataset is not None
+        # Data loading code
+        self.train_loader = torch.utils.data.DataLoader(
+            self.train_dataset,
+            collate_fn=self.train_collate_fn,
+            batch_size=hparams["train_batch"],
+            num_workers=config.workers,
+            shuffle=True,
+            pin_memory=True,
+            drop_last=self.train_drop_last,
+            worker_init_fn=self.worker_init_fn)
+
+        self.val_loader = torch.utils.data.DataLoader(
+            self.val_dataset,
+            collate_fn=self.valid_collate_fn,
+            batch_size=hparams["test_batch"],
+            num_workers=config.workers,
+            shuffle=False,
+            pin_memory=True,
+            worker_init_fn=self.worker_init_fn)
+
+    def evaluate(self, epoch_ctx:EpochContext, epoch:int, step:int):
         pass
 
-    def epoch_start(self, epoch, step):
+    def epoch_start(self, epoch:int, step:int):
         pass
 
-    def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict) -> dict:
+    def iter_process(self, epoch_ctx:EpochContext, batch:dict, progress:dict) -> dict:
         pass
 
-    def iter_step(self, loss: torch.Tensor, progress: dict):
+    def iter_step(self, epoch_ctx:EpochContext, loss:torch.Tensor, progress:dict):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-    def epoch_end(self, epoch):
+    def epoch_end(self, epoch:int, step:int):
+        pass
+
+    def process_stored(self, epoch_ctx:EpochContext, epoch:int, step:int):
         pass
 
     def load_checkpoint(self, checkpoint_folder, checkpoint_file,
@@ -88,7 +142,7 @@ class BaseExperiment(object):
         }
         save_checkpoint(checkpoint_dict, checkpoint_folder=checkpoint_folder, checkpoint_file=checkpoint_file, force_replace=True)
 
-    def summary_scalar_avg(self, epoch_ctx, step, phase=None):
+    def summary_scalar_avg(self, epoch_ctx:EpochContext, epoch:int, step:int, phase=None):
         for scalar_name, scalar_value in epoch_ctx.scalar.items():
             if not epoch_ctx.stat_avg[scalar_name]:
                 continue
@@ -97,14 +151,14 @@ class BaseExperiment(object):
             else:
                 globalvars.tb_writer.add_scalar("{}/{}".format(globalvars.exp_name, scalar_name), scalar_value.avg, step)
 
-    def summary_scalar(self, epoch_ctx, step, phase=None):
+    def summary_scalar(self, epoch_ctx:EpochContext, epoch:int, step:int, phase=None):
         for scalar_name, scalar_value in epoch_ctx.scalar.items():
             if phase is not None:
                 globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, scalar_name), {phase: scalar_value.val}, step)
             else:
                 globalvars.tb_writer.add_scalar("{}/{}".format(globalvars.exp_name, scalar_name), scalar_value.val, step)
             
-    def print_iter(self, epoch_ctx):
+    def print_iter(self, epoch_ctx:EpochContext, epoch:int, step:int):
         val_list = list()
         avg_list = list()
         for scalar_name, scalar_value in epoch_ctx.scalar.items():

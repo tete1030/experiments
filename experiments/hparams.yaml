@@ -211,31 +211,46 @@ bayproj:
         rotate_factor: 30
         translation_factor: 0.05
 
-baymini:
+offset:
     <<: *DEFAULT
-    name: baymini
-    id: 15
+    name: offset
+    id: 1
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
     schedule: []
     train_batch: 16
     test_batch: 16
-    offset_train_min_step: 0
-    offset_lr: 1.e-2
-    offset_lr_gamma: 0.5
-    offset_lr_decay_step: 100000
-    offset_inter_epoch: 1
+    learnable_offset:
+        train_mode: intermittent
+        train_min_step: 6543
+        lr: 1.e-3
+        lr_gamma: 0.8
+        lr_decay_step: 50000
+        kernel_size: [25, 19, 13, 7]
+        sigma: [4, 3, 2, 1]
+        balance_grad: false
+        move_average_cycle: 100
+        decay_sigma_move_ratio: 0.5
+        decay_sigma_rate: 0.5
+        follower_training_iters: [6000, 1000]
+        offset_training_iters: [6000, 1000]
+    config:
+        store_map: false
     model:
-        resnet_pretrained: null
+        resnet_pretrained: pretrained/resnet50_gn.pth
         inp_shape: [192, 256] # W, H
         out_shape: [48, 64] # W, H
         gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
         parse_threshold: 0.1
+        resnet: 50
         detail:
-            block_index: [null, 1, null, null]
-            channels_per_pos: 3
-            displace_stride: 4
+            middle_break_index: res2_1
+            block_index: [1, 1, 1, null]
+            channels_per_pos: [16, 32, 64, null]
+            displace_stride: [4, 4, 4, null]
+            displace_size: [[5, 5], [5, 5], [3, 3], null]
+            actual_stride: [4, 4, 4, null]
             displace_fill: false
             displace_learnable_offset: true
             disable_displace: false
@@ -258,6 +273,8 @@ baymini_base:
     schedule: []
     train_batch: 16
     test_batch: 16
+    config:
+        store_map: false
     model:
         resnet_pretrained: null
         inp_shape: [192, 256] # W, H
@@ -270,7 +287,6 @@ baymini_base:
             channels_per_pos: [16, 32, 64, null]
             displace_stride: [4, 4, 4, null]
             displace_size: [[5, 5], [5, 5], [3, 3], null]
-            displace_bounding: [-1, -1, -1, null]
             actual_stride: [4, 4, 4, null]
             displace_fill: false
             disable_displace: false
