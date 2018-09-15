@@ -276,13 +276,14 @@ class Experiment(BaseExperiment):
     def epoch_start(self, epoch, step):
         self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
         if self.offset_optimizer and step >= hparams["learnable_offset"]["train_min_step"]:
+            train_counter = 0
             while True:
                 self.set_follower_training_mode(epoch, step, reset_offset_para=False)
-                self.train_follower(epoch, step, hparams["learnable_offset"]["follower_training_iters"][1 if step - hparams["learnable_offset"]["train_min_step"] > len(self.train_loader) else 0])
+                self.train_follower(epoch, step, train_counter, hparams["learnable_offset"]["follower_training_iters"][1 if train_counter == 0 and step - hparams["learnable_offset"]["train_min_step"] >= len(self.train_loader) else 0])
                 if globalvars.sigint_triggered:
                     return
                 self.set_offset_training_mode(epoch, step, reset_offset_para=False)
-                self.train_offset(epoch, step, hparams["learnable_offset"]["offset_training_iters"][1 if step - hparams["learnable_offset"]["train_min_step"] > len(self.train_loader) else 0])
+                self.train_offset(epoch, step, train_counter, hparams["learnable_offset"]["offset_training_iters"][1 if train_counter == 0 and step - hparams["learnable_offset"]["train_min_step"] >= len(self.train_loader) else 0])
                 if globalvars.sigint_triggered:
                     return
                 converged = True
@@ -294,6 +295,7 @@ class Experiment(BaseExperiment):
                         converged = False
                 if converged:
                     break
+                train_counter += 1
             self.set_normal_training_mode(epoch, step, reset_offset_para=True)
         else:
             self.set_normal_training_mode(epoch, step)
@@ -370,7 +372,7 @@ class Experiment(BaseExperiment):
         self.set_para_require_grad(self.offset_parameters, False)
         self.set_para_require_grad(self.early_predictor_parameters, True)
 
-    def train_follower(self, epoch, cur_step, train_iters):
+    def train_follower(self, epoch, cur_step, phase, train_iters):
         def loop_generator(generator, limit=None):
             counter = 0
             while True:
@@ -445,7 +447,7 @@ class Experiment(BaseExperiment):
                 end = time.time()
 
 
-    def train_offset(self, epoch, cur_step, train_iters):
+    def train_offset(self, epoch, cur_step, phase, train_iters):
         def loop_generator(generator, limit=None):
             counter = 0
             while True:
@@ -559,8 +561,8 @@ class Experiment(BaseExperiment):
         if globalvars.sigint_triggered:
             return
 
-        torch.save([dm.offset.detach().cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(cur_step)))
-        torch.save(move_dis_log, os.path.join(config.checkpoint, "move_dis_log_{}.pth".format(cur_step)))
+        torch.save([dm.offset.detach().cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}_{}.pth".format(phase, cur_step)))
+        torch.save(move_dis_log, os.path.join(config.checkpoint, "move_dis_log_{}_{}.pth".format(phase, cur_step)))
 
     def epoch_end(self, epoch, step):
         if self.mode == "mixed":
