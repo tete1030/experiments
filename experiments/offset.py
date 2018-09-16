@@ -45,9 +45,10 @@ class Experiment(BaseExperiment):
         Experiment.exp = self
         self.extra_mods = list()
         self.displace_mods = list()
-        self.early_predictors = list()
+        if hparams["model"]["detail"]["early_predictor"]:
+            self.early_predictors = list()
+            self.pre_predictor_outputs = dict()
         self.extra_mod_outputs = dict()
-        self.pre_predictor_outputs = dict()
 
         self.num_parts = NUM_PARTS
         pretrained = hparams["model"]["resnet_pretrained"]
@@ -55,15 +56,14 @@ class Experiment(BaseExperiment):
             pretrained = None
 
         self.model = nn.DataParallel(Controller(MainModel(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda()))
-        # RE_OFFSET = re.compile(r".+\.extra_mod.*\.offset")
-        # normal_parameters = list(zip(*filter(lambda kv: not RE_OFFSET.match(kv[0]) and kv[1].requires_grad, self.model.named_parameters())))[1]
-        # offset_parameters = list(zip(*filter(lambda kv: RE_OFFSET.match(kv[0]) and kv[1].requires_grad, self.model.named_parameters())))[1]
 
         self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods]))
-        self.early_predictor_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([ep.parameters() for ep in self.early_predictors])))
-        self.offset_learning_post_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([em.offset_learning_post.parameters() for em in self.extra_mods])))
-        
-        special_parameter_ids = list(map(lambda x: id(x), self.offset_parameters + self.early_predictor_parameters + self.offset_learning_post_parameters))
+        if hparams["model"]["detail"]["early_predictor"]:
+            self.early_predictor_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([ep.parameters() for ep in self.early_predictors])))
+        else:
+            self.early_predictor_parameters = []
+
+        special_parameter_ids = list(map(lambda x: id(x), self.offset_parameters + self.early_predictor_parameters))
         self.normal_parameters = list(filter(lambda x: x.requires_grad and id(x) not in special_parameter_ids, self.model.parameters()))
 
         self.optimizer = torch.optim.Adam(
@@ -74,17 +74,15 @@ class Experiment(BaseExperiment):
         self.offset_optimizer = torch.optim.SGD(
             [{"params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]}],
             lr=hparams["learnable_offset"]["lr"],
-            weight_decay=hparams['weight_decay'])
+            momentum=hparams["learnable_offset"]["momentum"])
 
-        self.early_predictor_optimizer = torch.optim.Adam(
-            self.early_predictor_parameters,
-            lr=hparams["learning_rate"],
-            weight_decay=hparams['weight_decay'])
-
-        self.offset_learning_post_optimizer = torch.optim.Adam(
-            self.offset_learning_post_parameters,
-            lr=hparams["learning_rate"],
-            weight_decay=hparams['weight_decay'])
+        if hparams["model"]["detail"]["early_predictor"]:
+            self.early_predictor_optimizer = torch.optim.Adam(
+                self.early_predictor_parameters,
+                lr=hparams["learning_rate"],
+                weight_decay=hparams['weight_decay'])
+        else:
+            self.early_predictor_optimizer = None
 
         self.criterion = nn.MSELoss()
         
@@ -123,9 +121,10 @@ class Experiment(BaseExperiment):
         self.valid_collate_fn = datasets.COCOSinglePose.collate_function
         self.worker_init_fn = datasets.mscoco.worker_init
         self.print_iter_start = " | "
-        self.mode = hparams["learnable_offset"]["train_mode"]
-        if self.mode == "intermittent":
-            self.switch_state("normal")
+
+        self.move_dis_avgmeter = []
+        for dm in self.displace_mods:
+            self.move_dis_avgmeter.append(Experiment.OffsetCycleAverageMeter(hparams["learnable_offset"]["move_average_cycle"], dm.offset.data.cpu()))
 
     def load_checkpoint(self, checkpoint_folder, checkpoint_file,
                         no_strict_model_load=False,
@@ -149,8 +148,9 @@ class Experiment(BaseExperiment):
         if not no_optimizer_load:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
             self.offset_optimizer.load_state_dict(checkpoint["offset_optimizer"])
-            self.early_predictor_optimizer.load_state_dict(checkpoint["early_predictor_optimizer"])
-            self.offset_learning_post_optimizer.load_state_dict(checkpoint["offset_learning_post_optimizer"])
+            if self.early_predictor_optimizer:
+                self.early_predictor_optimizer.load_state_dict(checkpoint["early_predictor_optimizer"])
+        self.move_dis_avgmeter = checkpoint["move_dis_avgmeter"]
         return checkpoint["epoch"]
 
     def save_checkpoint(self, checkpoint_folder, checkpoint_file, epoch):
@@ -160,24 +160,10 @@ class Experiment(BaseExperiment):
             "optimizer": self.optimizer.state_dict(),
             "criterion": self.criterion.state_dict(),
             "offset_optimizer": self.offset_optimizer.state_dict(),
-            "early_predictor_optimizer": self.early_predictor_optimizer.state_dict(),
-            "offset_learning_post_optimizer": self.offset_learning_post_optimizer.state_dict()
+            "early_predictor_optimizer": self.early_predictor_optimizer.state_dict() if self.early_predictor_optimizer else None,
+            "move_dis_avgmeter": self.move_dis_avgmeter
         }
         save_checkpoint(checkpoint_dict, checkpoint_folder=checkpoint_folder, checkpoint_file=checkpoint_file, force_replace=True)
-
-    def switch_state(self, state):
-        assert self.mode == "intermittent"
-        assert state in ["normal", "offset", "follower"]
-        self.state = state
-
-    def is_state(self, state):
-        assert self.mode == "intermittent"
-        if isinstance(state, str):
-            assert state in ["normal", "offset", "follower"]
-            return self.state == state
-        else:
-            assert all(map(lambda x: x in ["normal", "offset", "follower"], state))
-            return self.state in state
 
     @staticmethod
     def _summarize_tensorboard(eval_result, params, step):
@@ -273,32 +259,23 @@ class Experiment(BaseExperiment):
         for param_group in self.offset_optimizer.param_groups:
             param_group["lr"] = cur_lr_offset
 
+    def set_offset_learning_para(self, epoch, step):
+        for dm in self.displace_mods:
+            if dm.learnable_offset and dm.LO_active:
+                if step >= hparams["learnable_offset"]["train_min_step"] and hparams["learnable_offset"]["sigma_decay_step"] > 0 and hparams["learnable_offset"]["sigma_decay_rate"] > 0:
+                    step_offset = max(0, step - hparams["learnable_offset"]["train_min_step"])
+                    LO_sigma_new = float(dm.LO_sigma_init) * (hparams["learnable_offset"]["sigma_decay_rate"] ** (float(step_offset) / hparams["learnable_offset"]["sigma_decay_step"]))
+                    LO_kernel_size_new = int(LO_sigma_new * 3) * 2 + 1
+                    dm.set_learnable_offset_para(LO_kernel_size_new, LO_sigma_new)
+
+                if dm.LO_kernel_size == 1:
+                    dm.switch_LO_state(False)
+
     def epoch_start(self, epoch, step):
         self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
-        if self.offset_optimizer and step >= hparams["learnable_offset"]["train_min_step"]:
-            train_counter = 0
-            while True:
-                self.set_follower_training_mode(epoch, step, reset_offset_para=False)
-                self.train_follower(epoch, step, train_counter, hparams["learnable_offset"]["follower_training_iters"][1 if train_counter == 0 and step - hparams["learnable_offset"]["train_min_step"] >= len(self.train_loader) else 0])
-                if globalvars.sigint_triggered:
-                    return
-                self.set_offset_training_mode(epoch, step, reset_offset_para=False)
-                self.train_offset(epoch, step, train_counter, hparams["learnable_offset"]["offset_training_iters"][1 if train_counter == 0 and step - hparams["learnable_offset"]["train_min_step"] >= len(self.train_loader) else 0])
-                if globalvars.sigint_triggered:
-                    return
-                converged = True
-                for dm in self.displace_mods:
-                    if dm.LO_sigma > 0.5:
-                        LO_sigma_new = float(dm.LO_sigma) * hparams["learnable_offset"]["decay_sigma_rate"]
-                        LO_kernel_size_new = int(LO_sigma_new * 3) * 2 + 1
-                        dm.set_learnable_offset_para(LO_kernel_size_new, LO_sigma_new)
-                        converged = False
-                if converged:
-                    break
-                train_counter += 1
-            self.set_normal_training_mode(epoch, step, reset_offset_para=True)
-        else:
-            self.set_normal_training_mode(epoch, step)
+
+        self.set_offset_learning_rate(epoch, step)
+        self.set_offset_learning_para(epoch, step)
 
     class OffsetCycleAverageMeter(object):
         """Computes and stores the cycled average of offset"""
@@ -336,242 +313,36 @@ class Experiment(BaseExperiment):
         for para in paras:
             para.requires_grad = requires_grad
 
-    def set_normal_training_mode(self, epoch, step, reset_offset_para=True):
-        log_progress("Switch to normal training mode")
-        self.switch_state("normal")
-        if reset_offset_para:
-            for dm in self.displace_mods:
-                # Set LO_kernel_size and LO_sigma back
-                dm.reset_learnable_offset_para()
-        self.set_para_require_grad(self.normal_parameters, True)
-        self.set_para_require_grad(self.offset_learning_post_parameters, False)
-        self.set_para_require_grad(self.offset_parameters, False)
-        self.set_para_require_grad(self.early_predictor_parameters, False)
-
-    def set_offset_training_mode(self, epoch, step, reset_offset_para=True):
-        log_progress("Switch to offset training mode")
-        self.switch_state("offset")
-        if reset_offset_para:
-            for dm in self.displace_mods:
-                # Set LO_kernel_size and LO_sigma back
-                dm.reset_learnable_offset_para()
-        self.set_para_require_grad(self.normal_parameters, False)
-        self.set_para_require_grad(self.offset_learning_post_parameters, False)
-        self.set_para_require_grad(self.offset_parameters, True)
-        self.set_para_require_grad(self.early_predictor_parameters, True)
-
-    def set_follower_training_mode(self, epoch, step, reset_offset_para=True):
-        log_progress("Switch to follower training mode")
-        self.switch_state("follower")
-        if reset_offset_para:
-            for dm in self.displace_mods:
-                # Set LO_kernel_size and LO_sigma back
-                dm.reset_learnable_offset_para()
-        self.set_para_require_grad(self.normal_parameters, False)
-        self.set_para_require_grad(self.offset_learning_post_parameters, True)
-        self.set_para_require_grad(self.offset_parameters, False)
-        self.set_para_require_grad(self.early_predictor_parameters, True)
-
-    def train_follower(self, epoch, cur_step, phase, train_iters):
-        def loop_generator(generator, limit=None):
-            counter = 0
-            while True:
-                for data in generator:
-                    yield data
-                    counter += 1
-                    if limit and counter >= limit:
-                        return
-
-        batch_time = AverageMeter()
-        data_time = AverageMeter()
-        loss_logger = AverageMeter()
-        epoch_ctx = EpochContext()
-
-        with torch.autograd.enable_grad(), TrainContext(self.model):
-            end = time.time()
-            start_time = time.time()
-
-            for i, batch in enumerate(loop_generator(self.train_loader, train_iters)):
-                # measure data loading time
-                data_time.update(time.time() - end)
-
-                img = batch["img"]
-                det_map_gt_cuda = [dm.cuda() for dm in batch["keypoint_map"]]
-
-                # dirty trick for debug
-                if config.vis:
-                    globalvars.cur_img = img
-                extra_mod_outputs, predictor_outputs = self.model(img)
-                # dirty trick for debug, release
-                if config.vis:
-                    globalvars.cur_img = None
-
-                loss = 0.
-                for outa, outb in extra_mod_outputs:
-                    loss = loss + self.criterion(outa, outb)
-
-                import ipdb; ipdb.set_trace()
-
-                for ilabel in range(len(predictor_outputs)):
-                    # TODO: consider other det_map sigmas
-                    loss = loss + self.criterion(predictor_outputs[ilabel], det_map_gt_cuda[[2,1,0][ilabel]])
-
-                self.offset_learning_post_optimizer.zero_grad()
-                self.early_predictor_optimizer.zero_grad()
-                loss.backward()
-                self.offset_learning_post_optimizer.step()
-                self.early_predictor_optimizer.step()
-
-                loss_logger.update(loss.item())
-
-                # measure elapsed time
-                batch_time.update(time.time() - end)
-
-                loginfo = ("{epoch:3}f: ({batch:05}) data: {data:.6f}s | batch: {bt:.3f}s | total: {total:3.1f}s | loss: {loss.val:7.4f} | los_: {loss.avg:7.4f}").format(
-                    epoch=epoch,
-                    batch=i + 1,
-                    data=data_time.val,
-                    bt=batch_time.val,
-                    total=time.time() - start_time,
-                    loss=loss_logger
-                )
-                print(loginfo)
-
-                if globalvars.sigint_triggered:
-                    break
-
-                if config.fast_pass_train > 0 and (i+1) >= config.fast_pass_train:
-                    log_progress("Fast Pass!")
-                    break
-
-                end = time.time()
-
-
-    def train_offset(self, epoch, cur_step, phase, train_iters):
-        def loop_generator(generator, limit=None):
-            counter = 0
-            while True:
-                for data in generator:
-                    yield data
-                    counter += 1
-                    if limit and counter >= limit:
-                        return
-
-        batch_time = AverageMeter()
-        data_time = AverageMeter()
-        loss_logger = AverageMeter()
-        epoch_ctx = EpochContext()
-
-        move_dis_avgmeter = []
-        for dm in self.displace_mods:
-            move_dis_avgmeter.append(Experiment.OffsetCycleAverageMeter(hparams["learnable_offset"]["move_average_cycle"], dm.offset.data.cpu()))
-
-        move_dis_log = list()
-        base_move_avg = None
-        converge_indicator = False
-
-        with torch.autograd.enable_grad(), TrainContext(self.model):
-            end = time.time()
-            start_time = time.time()
-
-            for i, batch in enumerate(loop_generator(self.train_loader, train_iters)):
-                # measure data loading time
-                data_time.update(time.time() - end)
-
-                img = batch["img"]
-                det_map_gt_cuda = [dm.cuda() for dm in batch["keypoint_map"]]
-
-                # dirty trick for debug
-                if config.vis:
-                    globalvars.cur_img = img
-                predictor_outputs = self.model(img)
-                # dirty trick for debug, release
-                if config.vis:
-                    globalvars.cur_img = None
-
-                loss = 0.
-                for ilabel in range(len(predictor_outputs)):
-                    # TODO: consider other det_map sigmas
-                    loss = loss + self.criterion(predictor_outputs[ilabel], det_map_gt_cuda[[2,1,0][ilabel]])
-
-                self.early_predictor_optimizer.zero_grad()
-                self.offset_optimizer.zero_grad()
-                loss.backward()
-                self.early_predictor_optimizer.step()
-                self.offset_optimizer.step()
-                # TODO: configurable bound for determining outsider
-                for dm in self.displace_mods:
-                    dm.reset_outsider()
-
-                loss_logger.update(loss.item())
-
-                move_dis_vals = list()
-                for idm in range(len(self.displace_mods)):
-                    move_dis_avgmeter[idm].update(self.displace_mods[idm].offset.data.cpu())
-                    move_dis_vals.append(move_dis_avgmeter[idm].avg)
-                move_dis_log.append(move_dis_vals)
-
-                if i+1 >= hparams["learnable_offset"]["move_average_cycle"]:
-                    if base_move_avg is None:
-                        base_move_avg = [mdis.avg for mdis in move_dis_avgmeter]
-                    # else:
-                    #     for idm in range(len(self.displace_mods)):
-                    #         dm = self.displace_mods[idm]
-                    #         if base_move_avg[idm] > 0 and move_dis_avgmeter[idm].avg / base_move_avg[idm] < hparams["learnable_offset"]["decay_sigma_move_ratio"]: 
-                    #             if dm.LO_sigma > 0.5:
-                    #                 LO_sigma_new = float(dm.LO_sigma) * hparams["learnable_offset"]["decay_sigma_rate"]
-                    #                 LO_kernel_size_new = int(LO_sigma_new * 3) * 2 + 1
-                    #                 dm.set_learnable_offset_para(LO_kernel_size_new, LO_sigma_new)
-                    #                 base_move_avg[idm] = move_dis_avgmeter[idm].avg
-                    #             else:
-                    #                 # TODO: more proper method
-                    #                 self.offset_optimizer.param_groups[idm]["lr"] = 0
-                    #                 base_move_avg[idm] = 0
-                    #                 log_progress("Offset {}/{} training off".format(idm+1, len(self.displace_mods)))
-                    #     if all(map(lambda x: x == 0, base_move_avg)):
-                    #         converge_indicator = True
-
-                # measure elapsed time
-                batch_time.update(time.time() - end)
-
-                loginfo = ("{epoch:3}o: ({batch:05}) data: {data:.6f}s | batch: {bt:.3f}s | total: {total:3.1f}s | loss: {loss.val:7.4f} | los_: {loss.avg:7.4f}").format(
-                    epoch=epoch,
-                    batch=i + 1,
-                    data=data_time.val,
-                    bt=batch_time.val,
-                    total=time.time() - start_time,
-                    loss=loss_logger
-                )
-                loginfo += "\n\tmove: " + ", ".join(["{mdis.avg:7.4e}/{bma:7.4e}".format(mdis=move_dis_avgmeter[ioffset], bma=base_move_avg[ioffset] if base_move_avg is not None else -1) for ioffset in range(len(move_dis_avgmeter))])
-                print(loginfo)
-
-                # if converge_indicator:
-                #     log_progress("Converged. Switch to normal training mode")
-                #     break
-
-                if globalvars.sigint_triggered:
-                    break
-
-                if config.fast_pass_train > 0 and (i+1) >= config.fast_pass_train:
-                    log_progress("Fast Pass!")
-                    break
-
-                end = time.time()
-
-        if globalvars.sigint_triggered:
-            return
-
-        torch.save([dm.offset.detach().cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}_{}.pth".format(phase, cur_step)))
-        torch.save(move_dis_log, os.path.join(config.checkpoint, "move_dis_log_{}_{}.pth".format(phase, cur_step)))
+    def save_offsets(self, step):
+        torch.save([dm.offset.detach().cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(step)))
 
     def epoch_end(self, epoch, step):
-        if self.mode == "mixed":
-            torch.save([dm.offset.detach().cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(step)))
+        self.save_offsets(step)
 
     def iter_step(self, epoch_ctx:EpochContext, loss:torch.Tensor, progress:dict):
+        optimize_offset = False
+        if progress["step"] >= hparams["learnable_offset"]["train_min_step"]:
+            optimize_offset = True
+
         self.optimizer.zero_grad()
+        if optimize_offset:
+            self.offset_optimizer.zero_grad()
+        if self.early_predictor_optimizer:
+            self.early_predictor_optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+        if optimize_offset:
+            self.offset_optimizer.step()
+        if self.early_predictor_optimizer:
+            self.early_predictor_optimizer.step()
+
+        if optimize_offset:
+            for idm in range(len(self.displace_mods)):
+                self.move_dis_avgmeter[idm].update(self.displace_mods[idm].offset.data.cpu())
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "move_dis"), {"mod{}".format(idm): self.move_dis_avgmeter[idm].avg}, progress["step"] + 1)
+
+        if (progress["step"] + 1) % hparams["learnable_offset"]["offset_save_interval"] == 0:
+            self.save_offsets(progress["step"] + 1)
 
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict) -> dict:
         image_ids = batch["img_index"].tolist()
@@ -584,11 +355,14 @@ class Experiment(BaseExperiment):
         is_train = progress["train"]
         batch_size = img.size(0)
 
+        if progress["step"] == hparams["learnable_offset"]["train_min_step"] and progress["train"]:
+            self.save_offsets(progress["step"])
+
         det_map_gt_cuda = [dm.cuda() for dm in det_maps_gt]
         # dirty trick for debug
         if config.vis:
             globalvars.cur_img = img
-        output_maps = self.model(img)
+        output_maps, early_predictor_outputs = self.model(img)
         # dirty trick for debug, release
         if config.vis:
             globalvars.cur_img = None
@@ -597,11 +371,20 @@ class Experiment(BaseExperiment):
         for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
             # if ilabel < len(det_map_gt_cuda) - 1:
             #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
-            if ilabel < len(det_map_gt_cuda) - 1:
+            if ilabel < len(det_map_gt_cuda) - 1 and not hparams["model"]["detail"]["loss_invisible"]:
                 loss = loss + ((outv - gtv).pow(2) * \
                     (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
             else:
                 loss = loss + (outv - gtv).pow(2).mean().sqrt()
+
+        if hparams["model"]["detail"]["early_predictor"]:
+            assert len(early_predictor_outputs) == hparams["model"]["detail"]["early_predictor_label_index"]
+            for ilabel, outv in enumerate(early_predictor_outputs):
+                if not hparams["model"]["detail"]["loss_invisible"]:
+                    loss = loss + ((outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2) * \
+                        (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
+                else:
+                    loss = loss + (outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2).mean().sqrt()
 
         epoch_ctx.add_scalar("loss", loss.item())
 
@@ -676,40 +459,29 @@ class Controller(nn.Module):
     def __init__(self, main_model):
         super(Controller, self).__init__()
         self.main_model = main_model
-        middle_predictor = list()
-        assert len(Experiment.exp.extra_mods) > 0
-        for em in Experiment.exp.extra_mods:
-            middle_predictor.append(Predictor(em.inplanes, hparams["model"]["out_shape"][::-1], NUM_PARTS))
-        self.middle_predictor = nn.ModuleList(middle_predictor)
+        if hparams["model"]["detail"]["early_predictor"]:
+            early_predictor = list()
+            assert len(Experiment.exp.extra_mods) > 0
+            for em in Experiment.exp.extra_mods:
+                early_predictor.append(Predictor(em.inplanes, hparams["model"]["out_shape"][::-1], NUM_PARTS))
+            self.early_predictor = nn.ModuleList(early_predictor)
+        else:
+            self.early_predictor = None
 
     def forward(self, x):
-        if Experiment.exp.is_state("offset"):
+        if self.early_predictor:
             Experiment.exp.pre_predictor_outputs[x.device] = list()
-
-        if Experiment.exp.is_state("follower"):
-            Experiment.exp.pre_predictor_outputs[x.device] = list()
-            Experiment.exp.extra_mod_outputs[x.device] = list()
 
         out = self.main_model(x)
 
-        if Experiment.exp.is_state("normal"):
-            return out
-        elif Experiment.exp.is_state("offset"):
+        if self.early_predictor:
             pre_predictor_outputs = Experiment.exp.pre_predictor_outputs[x.device]
             Experiment.exp.pre_predictor_outputs[x.device] = list()
-            assert len(pre_predictor_outputs) == len(self.middle_predictor)
-            return [self.middle_predictor[i](pre_predictor_outputs[i]) for i in range(len(pre_predictor_outputs))]
-        elif Experiment.exp.is_state("follower"):
-            extra_mod_outputs = Experiment.exp.extra_mod_outputs[x.device]
-            Experiment.exp.extra_mod_outputs[x.device] = list()
-
-            pre_predictor_outputs = Experiment.exp.pre_predictor_outputs[x.device]
-            Experiment.exp.pre_predictor_outputs[x.device] = list()
-            assert len(pre_predictor_outputs) == len(self.middle_predictor)
-            return extra_mod_outputs, [self.middle_predictor[i](pre_predictor_outputs[i]) for i in range(len(pre_predictor_outputs))]
+            assert len(pre_predictor_outputs) == len(self.early_predictor)
+            return out, [self.early_predictor[i](pre_predictor_outputs[i]) for i in range(len(pre_predictor_outputs))]
         else:
-            assert False
-
+            return out, None
+        
 class MainModel(nn.Module):
     def __init__(self, output_shape, num_points, pretrained=None):
         super(MainModel, self).__init__()
@@ -724,9 +496,8 @@ class MainModel(nn.Module):
 
     def forward(self, x):
         res_out = self.resnet(x)
-        if Experiment.exp.is_state("normal"):
-            global_re, global_out = self.global_net(res_out)
-            return global_out
+        global_re, global_out = self.global_net(res_out)
+        return global_out
 
 class Predictor(nn.Module):
     def __init__(self, inplanes, output_shape, num_class):
@@ -767,6 +538,8 @@ class ExtraMod(nn.Module):
         self.inplanes = inplanes
         self.res_index = res_index
         self.block_index = block_index
+        LO_sigma = hparams["learnable_offset"]["sigma"][res_index]
+        LO_kernel_size = int(LO_sigma * 3) * 2 + 1
         self.displace = DisplaceChannel(
             height, width,
             hparams["model"]["detail"]["displace_stride"][res_index],
@@ -777,8 +550,8 @@ class ExtraMod(nn.Module):
             use_origin=hparams["model"]["detail"]["use_origin"],
             actual_stride=hparams["model"]["detail"]["actual_stride"][res_index],
             displace_size=hparams["model"]["detail"]["displace_size"][res_index],
-            LO_kernel_size=hparams["learnable_offset"]["kernel_size"][res_index],
-            LO_sigma=hparams["learnable_offset"]["sigma"][res_index],
+            LO_kernel_size=LO_kernel_size,
+            LO_sigma=LO_sigma,
             LO_balance_grad=hparams["learnable_offset"]["balance_grad"])
         
         # TODO: better method
@@ -815,22 +588,8 @@ class ExtraMod(nn.Module):
             BatchNorm2dImpl(inplanes),
             StrictNaNReLU(inplace=True))
 
-        self.offset_learning_post = nn.Sequential(
-            nn.Conv2d(offset_channels, inplanes // 4, kernel_size=1, stride=1),
-            StrictNaNReLU(inplace=True),
-            nn.Conv2d(inplanes // 4, inplanes // 4, kernel_size=3, stride=1, padding=1),
-            BatchNorm2dImpl(inplanes // 4),
-            StrictNaNReLU(inplace=True),
-            nn.Conv2d(inplanes // 4, inplanes // 4, kernel_size=3, stride=1, padding=1),
-            BatchNorm2dImpl(inplanes // 4),
-            StrictNaNReLU(inplace=True),
-            nn.Conv2d(inplanes // 4, inplanes, kernel_size=1, stride=1),
-            BatchNorm2dImpl(inplanes),
-            StrictNaNReLU(inplace=True))
-
         self.reset_pre_parameters()
         self.reset_normal_post_parameters()
-        self.reset_offset_learning_post_parameters()
 
     def reset_pre_parameters(self):
         for m in self.pre:
@@ -850,28 +609,13 @@ class ExtraMod(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-    def reset_offset_learning_post_parameters(self):
-        for m in self.offset_learning_post:
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n))
-            elif isinstance(m, BatchNorm2dImpl):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-
     def forward(self, x):
         mid = self.pre(x)
-        mid, mid_LO = self.displace(mid, Experiment.exp.is_state(["offset", "follower"]))
-        # TODO:
-        if Experiment.exp.is_state("normal"):
-            out = self.normal_post(mid)
-        elif Experiment.exp.is_state("offset"):
-            out = self.offset_learning_post(mid_LO)
-        elif Experiment.exp.is_state("follower"):
-            out, out2 = self.normal_post(mid), self.offset_learning_post(mid_LO)
-            Experiment.exp.extra_mod_outputs[x.device].append((out, out2))
+        mid, mid_LO = self.displace(mid)
+        if mid_LO is not None:
+            out = self.normal_post(mid_LO)
         else:
-            raise ValueError()
+            out = self.normal_post(mid)
 
         if config.vis and False:
             import matplotlib.pyplot as plt
@@ -941,14 +685,9 @@ class Bottleneck(nn.Module):
         if self.extra_mod is not None:
             extra_out = self.extra_mod(x)
             x = x + extra_out
-            # TODO:
-            if Experiment.exp.is_state(["offset", "follower"]):
+            if hparams["model"]["detail"]["early_predictor"]:
+                # TODO:
                 Experiment.exp.pre_predictor_outputs[x.device].append(x)
-
-        # TODO: middle break, and also note if the number is right, maybe some checks or automated detection
-        if Experiment.exp.is_state(["offset", "follower"]) and \
-                hparams["model"]["detail"]["middle_break_index"] == "res{}_{}".format(self.res_index, self.block_index):
-            return None
 
         residual = x
 
@@ -1012,14 +751,9 @@ class BasicBlock(nn.Module):
         if self.extra_mod is not None:
             extra_out = self.extra_mod(x)
             x = x + extra_out
-            # TODO:
-            if Experiment.exp.is_state(["offset", "follower"]):
+            if hparams["model"]["detail"]["early_predictor"]:
+                # TODO:
                 Experiment.exp.pre_predictor_outputs[x.device].append(x)
-
-        # TODO: middle break, and also note if the number is right, maybe some checks or automated detection
-        if Experiment.exp.is_state(["offset", "follower"]) and \
-                hparams["model"]["detail"]["middle_break_index"] == "res{}_{}".format(self.res_index, self.block_index):
-            return None
 
         residual = x
 

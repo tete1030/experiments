@@ -36,6 +36,7 @@ class DisplaceChannel(nn.Module):
                 self.LO_sigma_init = LO_sigma
                 self.set_learnable_offset_para(LO_kernel_size, LO_sigma)
                 self.LO_balance_grad = LO_balance_grad
+                self.switch_LO_state(True)
                 self.offset.requires_grad = True
                 if LO_balance_grad:
                     self.offset.register_hook(self.balance_offset_grad)
@@ -53,6 +54,13 @@ class DisplaceChannel(nn.Module):
 
     def reset_learnable_offset_para(self):
         self.set_learnable_offset_para(self.LO_kernel_size_init, self.LO_sigma_init)
+
+    def switch_LO_state(self, active):
+        if active:
+            log_i("Learnable offset is enabled")
+        else:
+            log_i("Learnable offset is disabled")
+        self.LO_active = active
 
     def balance_offset_grad(self, grad):
         if not self.fill:
@@ -130,7 +138,7 @@ class DisplaceChannel(nn.Module):
             self.offset.data[:, 0] -= (off_x_rounded / float(self.width)).floor() * float(self.width)
             self.offset.data[:, 1] -= (off_y_rounded / float(self.height)).floor() * float(self.height)
 
-    def forward(self, inp, LO_enable):
+    def forward(self, inp, LO_active=None):
         batch_size = inp.size(0)
         num_channels = inp.size(1)
         height = inp.size(2)
@@ -151,7 +159,7 @@ class DisplaceChannel(nn.Module):
 
             # out: nsamp x npos*chan_per_pos x height x width
 
-            if self.learnable_offset and LO_enable:
+            if self.learnable_offset and (LO_active is True or (LO_active is None and self.LO_active is True)):
                 if device not in self.field:
                     self.field[device] = self.field[torch.device("cpu")].to(device)
                 field = self.field[device]

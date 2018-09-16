@@ -11,6 +11,7 @@ runs_archived
 .vscode
 sftp-config.json
 pose/models/ae_loss/lib
+rsync.sh
 
 # Pretrained models
 pretrained/*.pth

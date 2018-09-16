@@ -214,7 +214,7 @@ bayproj:
 offset:
     <<: *DEFAULT
     name: offset
-    id: 1
+    id: 2
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -222,19 +222,17 @@ offset:
     train_batch: 16
     test_batch: 16
     learnable_offset:
-        train_mode: intermittent
         train_min_step: 6543
         lr: 1.e-3
         lr_gamma: 0.8
         lr_decay_step: 50000
-        kernel_size: [25, 19, 13, 7]
-        sigma: [4, 3, 2, 1]
+        momentum: 0.9
+        sigma: [1, 1, 1, null]
         balance_grad: false
-        move_average_cycle: 100
-        decay_sigma_move_ratio: 0.5
-        decay_sigma_rate: 0.5
-        follower_training_iters: [6000, 1000]
-        offset_training_iters: [6000, 1000]
+        move_average_cycle: 500
+        sigma_decay_step: 50000
+        sigma_decay_rate: 0.8
+        offset_save_interval: 1000
     config:
         store_map: false
     model:
@@ -245,8 +243,8 @@ offset:
         parse_threshold: 0.1
         resnet: 50
         detail:
-            middle_break_index: res2_1
             block_index: [1, 1, 1, null]
+            early_predictor_label_index: [2, 1, 0]
             channels_per_pos: [16, 32, 64, null]
             displace_stride: [4, 4, 4, null]
             displace_size: [[5, 5], [5, 5], [3, 3], null]
@@ -256,6 +254,8 @@ offset:
             disable_displace: false
             random_offset: 0
             use_origin: true
+            early_predictor: false
+            loss_invisible: false
     dataset:
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
