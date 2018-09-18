@@ -71,10 +71,9 @@ class Experiment(BaseExperiment):
             lr=hparams["learning_rate"],
             weight_decay=hparams['weight_decay'])
 
-        self.offset_optimizer = torch.optim.SGD(
+        self.offset_optimizer = torch.optim.Adam(
             [{"params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]}],
-            lr=hparams["learnable_offset"]["lr"],
-            momentum=hparams["learnable_offset"]["momentum"])
+            lr=hparams["learnable_offset"]["lr"])
 
         if hparams["model"]["detail"]["early_predictor"]:
             self.early_predictor_optimizer = torch.optim.Adam(
