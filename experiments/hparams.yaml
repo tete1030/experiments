@@ -214,7 +214,7 @@ bayproj:
 offset:
     <<: *DEFAULT
     name: offset
-    id: 5
+    id: 6
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -226,7 +226,7 @@ offset:
         lr: 1.e-2
         lr_gamma: 0.8
         lr_decay_step: 50000
-        momentum: 0.95
+        momentum: 0.0
         sigma: [0.5, 0.5, 0.5, null]
         balance_grad: false
         move_average_cycle: 500
