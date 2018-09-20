@@ -11,7 +11,8 @@ class DisplaceChannel(nn.Module):
     def __init__(self, height, width, init_stride,
                  fill=False, learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5,
                  disable_displace=False, random_offset=0, use_origin=False, actual_stride=None,
-                 displace_size=None, LO_balance_grad=True, dense_offset=False, num_chan_per_pos=None):
+                 displace_size=None, LO_balance_grad=True, dense_offset=False, num_chan_per_pos=None,
+                 dconv_for_LO_stride=1):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -25,6 +26,7 @@ class DisplaceChannel(nn.Module):
         self.displace_size = displace_size
         self.dense_offset = dense_offset
         self.num_chan_per_pos = num_chan_per_pos
+        self.dconv_for_LO_stride = dconv_for_LO_stride
         self.num_y, self.num_x, self.num_pos = self.get_num_offset(height, width, displace_size, init_stride, fill, use_origin)
 
         if not disable_displace:
@@ -195,7 +197,7 @@ class DisplaceChannel(nn.Module):
                     # npos*chan_per_pos x kh x kw
                     kernel = kernel.view(self.num_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_per_pos, 1, 1).view(self.num_pos*chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size)
                 # nsamp x npos*chan_per_pos x height x width
-                out_LO = F.conv2d(out, kernel, None, (1, 1), (self.LO_kernel_size // 2, self.LO_kernel_size // 2), (1, 1), self.num_pos*chan_per_pos)
+                out_LO = F.conv2d(out, kernel, None, (1, 1), (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride), (self.dconv_for_LO_stride, self.dconv_for_LO_stride), self.num_pos*chan_per_pos)
         else:
             out = inp
 
