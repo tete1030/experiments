@@ -551,7 +551,9 @@ class ExtraMod(nn.Module):
             displace_size=hparams["model"]["detail"]["displace_size"][res_index],
             LO_kernel_size=LO_kernel_size,
             LO_sigma=LO_sigma,
-            LO_balance_grad=hparams["learnable_offset"]["balance_grad"])
+            LO_balance_grad=hparams["learnable_offset"]["balance_grad"],
+            dense_offset=hparams["learnable_offset"]["dense_offset"],
+            num_chan_per_pos=hparams["model"]["detail"]["channels_per_pos"][res_index])
         
         # TODO: better method
         Experiment.exp.displace_mods.append(self.displace)
