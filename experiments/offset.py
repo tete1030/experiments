@@ -313,6 +313,11 @@ class Experiment(BaseExperiment):
             para.requires_grad = requires_grad
 
     def save_offsets(self, step):
+        offset_disabled = True
+        for dm in self.displace_mods:
+            if dm.LO_active:
+                offset_disabled = False
+        if not offset_disabled:
         torch.save([dm.offset.detach().cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(step)))
 
     def epoch_end(self, epoch, step):
