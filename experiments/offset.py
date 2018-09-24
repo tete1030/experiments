@@ -318,7 +318,7 @@ class Experiment(BaseExperiment):
             if dm.LO_active:
                 offset_disabled = False
         if not offset_disabled:
-        torch.save([dm.offset.detach().cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(step)))
+            torch.save([dm.offset.detach().cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(step)))
 
     def epoch_end(self, epoch, step):
         self.save_offsets(step)
@@ -557,8 +557,7 @@ class ExtraMod(nn.Module):
             LO_kernel_size=LO_kernel_size,
             LO_sigma=LO_sigma,
             LO_balance_grad=hparams["learnable_offset"]["balance_grad"],
-            dense_offset=hparams["learnable_offset"]["dense_offset"],
-            num_chan_per_pos=hparams["model"]["detail"]["channels_per_pos"][res_index],
+            free_chan_per_pos=hparams["learnable_offset"]["free_chan_per_pos"][res_index],
             dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"][res_index])
         
         # TODO: better method

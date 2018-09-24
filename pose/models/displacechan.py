@@ -11,7 +11,7 @@ class DisplaceChannel(nn.Module):
     def __init__(self, height, width, init_stride,
                  fill=False, learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5,
                  disable_displace=False, random_offset=0, use_origin=False, actual_stride=None,
-                 displace_size=None, LO_balance_grad=True, dense_offset=False, num_chan_per_pos=None,
+                 displace_size=None, LO_balance_grad=True, free_chan_per_pos=1,
                  dconv_for_LO_stride=1):
         super(DisplaceChannel, self).__init__()
         self.height = height
@@ -24,16 +24,12 @@ class DisplaceChannel(nn.Module):
         self.use_origin = use_origin
         self.actual_stride = actual_stride
         self.displace_size = displace_size
-        self.dense_offset = dense_offset
-        self.num_chan_per_pos = num_chan_per_pos
+        self.free_chan_per_pos = free_chan_per_pos
         self.dconv_for_LO_stride = dconv_for_LO_stride
         self.num_y, self.num_x, self.num_pos = self.get_num_offset(height, width, displace_size, init_stride, fill, use_origin)
 
         if not disable_displace:
-            if dense_offset:
-                self.offset = nn.parameter.Parameter(torch.Tensor(self.num_pos * num_chan_per_pos, 2), requires_grad=False)
-            else:
-                self.offset = nn.parameter.Parameter(torch.Tensor(self.num_pos, 2), requires_grad=False)
+            self.offset = nn.parameter.Parameter(torch.Tensor(self.num_pos * self.free_chan_per_pos, 2), requires_grad=False)
             self.init_offset()
             if learnable_offset:
                 assert isinstance(LO_kernel_size, int)
@@ -57,10 +53,7 @@ class DisplaceChannel(nn.Module):
         x = torch.arange(kernel_size, dtype=torch.float).view(1, -1, 1).expand(kernel_size, -1, -1) - float(kernel_size // 2)
         y = torch.arange(kernel_size, dtype=torch.float).view(-1, 1, 1).expand(-1, kernel_size, -1) - float(kernel_size // 2)
         self.field = dict()
-        if self.dense_offset:
-            self.field[torch.device("cpu")] = torch.cat([x, y], dim=2).expand(1, -1, -1, -1).repeat(self.num_pos * self.num_chan_per_pos, 1, 1, 1)
-        else:
-            self.field[torch.device("cpu")] = torch.cat([x, y], dim=2).expand(1, -1, -1, -1).repeat(self.num_pos, 1, 1, 1)
+        self.field[torch.device("cpu")] = torch.cat([x, y], dim=2).expand(1, -1, -1, -1).repeat(self.num_pos * self.free_chan_per_pos, 1, 1, 1)
 
     def reset_learnable_offset_para(self):
         self.set_learnable_offset_para(self.LO_kernel_size_init, self.LO_sigma_init)
@@ -112,19 +105,11 @@ class DisplaceChannel(nn.Module):
                     if not self.use_origin and ih == 0 and iw == 0:
                         continue
                     if not self.actual_stride:
-                        if self.dense_offset:
-                            self.offset.data[count_off*self.num_chan_per_pos:(count_off+1)*self.num_chan_per_pos, 0] = iw * self.init_stride
-                            self.offset.data[count_off*self.num_chan_per_pos:(count_off+1)*self.num_chan_per_pos, 1] = ih * self.init_stride
-                        else:
-                            self.offset.data[count_off, 0] = iw * self.init_stride
-                            self.offset.data[count_off, 1] = ih * self.init_stride
+                        self.offset.data[count_off*self.free_chan_per_pos:(count_off+1)*self.free_chan_per_pos, 0] = iw * self.init_stride
+                        self.offset.data[count_off*self.free_chan_per_pos:(count_off+1)*self.free_chan_per_pos, 1] = ih * self.init_stride
                     else:
-                        if self.dense_offset:
-                            self.offset.data[count_off*self.num_chan_per_pos:(count_off+1)*self.num_chan_per_pos, 0] = iw * self.actual_stride
-                            self.offset.data[count_off*self.num_chan_per_pos:(count_off+1)*self.num_chan_per_pos, 1] = ih * self.actual_stride
-                        else:
-                            self.offset.data[count_off, 0] = iw * self.actual_stride
-                            self.offset.data[count_off, 1] = ih * self.actual_stride
+                        self.offset.data[count_off*self.free_chan_per_pos:(count_off+1)*self.free_chan_per_pos, 0] = iw * self.actual_stride
+                        self.offset.data[count_off*self.free_chan_per_pos:(count_off+1)*self.free_chan_per_pos, 1] = ih * self.actual_stride
                     count_off += 1
         else:
             if self.random_offset is not None and self.random_offset > 0:
@@ -138,11 +123,11 @@ class DisplaceChannel(nn.Module):
                     if not self.actual_stride:
                         iwa = nw + iw if iw < 0 else iw
                         iha = nh + ih if ih < 0 else ih
-                        self.offset.data[count_off, 0] = iwa * self.init_stride
-                        self.offset.data[count_off, 1] = iha * self.init_stride
+                        self.offset.data[count_off*self.free_chan_per_pos:(count_off+1)*self.free_chan_per_pos, 0] = iwa * self.init_stride
+                        self.offset.data[count_off*self.free_chan_per_pos:(count_off+1)*self.free_chan_per_pos, 1] = iha * self.init_stride
                     else:
-                        self.offset.data[count_off, 0] = iw * self.actual_stride if iw > 0 else self.width + iw * self.actual_stride
-                        self.offset.data[count_off, 1] = ih * self.actual_stride if ih > 0 else self.height + ih * self.actual_stride
+                        self.offset.data[count_off*self.free_chan_per_pos:(count_off+1)*self.free_chan_per_pos, 0] = iw * self.actual_stride if iw > 0 else self.width + iw * self.actual_stride
+                        self.offset.data[count_off*self.free_chan_per_pos:(count_off+1)*self.free_chan_per_pos, 1] = ih * self.actual_stride if ih > 0 else self.height + ih * self.actual_stride
                     count_off += 1
 
     def reset_outsider(self):
@@ -164,14 +149,12 @@ class DisplaceChannel(nn.Module):
         width = inp.size(3)
         device = inp.device
         assert self.height == height and self.width == width
-        assert num_channels % self.num_pos == 0, "num of channels cannot be divided by number of positions"
-        if self.dense_offset:
-            assert num_channels == self.num_pos * self.num_chan_per_pos
+        assert num_channels % (self.num_pos * self.free_chan_per_pos) == 0, "num of channels cannot be divided by number of positions"
 
         out_LO = None
 
         if not self.disable_displace:
-            chan_per_pos = num_channels // self.num_pos
+            chan_per_pos = num_channels // (self.num_pos * self.free_chan_per_pos)
             if self.fill:
                 inpinp = inp.repeat(1, 1, 2, 2)
                 out = Displace.apply(inpinp, self.offset.detach().round().int(), chan_per_pos, True)
@@ -191,13 +174,10 @@ class DisplaceChannel(nn.Module):
                 kernel = torch.exp(- (field + (self.offset - self.offset.detach().round())[:, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
                 kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
                 assert self.LO_kernel_size % 2 == 1
-                if self.dense_offset:
-                    kernel = kernel.view(self.num_pos*self.num_chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size)
-                else:
-                    # npos*chan_per_pos x kh x kw
-                    kernel = kernel.view(self.num_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_per_pos, 1, 1).view(self.num_pos*chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size)
+                # npos*chan_per_pos x kh x kw
+                kernel = kernel.view(self.num_pos*self.free_chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_per_pos, 1, 1).view(num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
                 # nsamp x npos*chan_per_pos x height x width
-                out_LO = F.conv2d(out, kernel, None, (1, 1), (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride), (self.dconv_for_LO_stride, self.dconv_for_LO_stride), self.num_pos*chan_per_pos)
+                out_LO = F.conv2d(out, kernel, None, (1, 1), (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride), (self.dconv_for_LO_stride, self.dconv_for_LO_stride), num_channels)
         else:
             out = inp
 
