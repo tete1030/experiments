@@ -251,7 +251,6 @@ offset:
             displace_stride: [3, 3, 3, null]
             displace_size: [[9, 9], [7, 7], [5, 5], null]
             actual_stride: [3, 3, 3, null]
-            displace_fill: false
             displace_learnable_offset: true
             disable_displace: false
             random_offset: 0

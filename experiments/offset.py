@@ -547,7 +547,6 @@ class ExtraMod(nn.Module):
         self.displace = DisplaceChannel(
             height, width,
             hparams["model"]["detail"]["displace_stride"][res_index],
-            fill=hparams["model"]["detail"]["displace_fill"],
             learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
             disable_displace=hparams["model"]["detail"]["disable_displace"],
             random_offset=hparams["model"]["detail"]["random_offset"],
