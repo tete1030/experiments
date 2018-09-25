@@ -382,7 +382,7 @@ class Experiment(BaseExperiment):
                 loss = loss + (outv - gtv).pow(2).mean().sqrt()
 
         if hparams["model"]["detail"]["early_predictor"]:
-            assert len(early_predictor_outputs) == hparams["model"]["detail"]["early_predictor_label_index"]
+            assert len(early_predictor_outputs) == len(hparams["model"]["detail"]["early_predictor_label_index"])
             for ilabel, outv in enumerate(early_predictor_outputs):
                 if not hparams["model"]["detail"]["loss_invisible"]:
                     loss = loss + ((outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2) * \
