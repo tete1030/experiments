@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 from torch.autograd import Function
@@ -6,9 +7,10 @@ from utils.log import log_i
 import torch.nn.functional as F
 import numpy as np
 from .displace import Displace, DisplaceCUDA
+from pose.models.common import StrictNaNReLU
 
 class DisplaceChannel(nn.Module):
-    def __init__(self, height, width, init_stride,
+    def __init__(self, height, width, init_stride, chan_per_pos,
                  learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5,
                  disable_displace=False, random_offset_init=None, use_origin=False, actual_stride=None,
                  displace_size=None, LO_balance_grad=True, free_chan_per_pos=1,
@@ -17,6 +19,7 @@ class DisplaceChannel(nn.Module):
         self.height = height
         self.width = width
         self.init_stride = init_stride
+        self.chan_per_pos = chan_per_pos
         self.learnable_offset = learnable_offset
         self.disable_displace = disable_displace
         self.random_offset_init = random_offset_init
@@ -26,6 +29,7 @@ class DisplaceChannel(nn.Module):
         self.free_chan_per_pos = free_chan_per_pos
         self.dconv_for_LO_stride = dconv_for_LO_stride
         self.num_y, self.num_x, self.num_pos = self.get_num_offset(height, width, displace_size, init_stride, use_origin)
+        self.inplanes = self.num_pos * self.chan_per_pos
 
         if not disable_displace:
             self.offset = nn.parameter.Parameter(torch.Tensor(self.num_pos * self.free_chan_per_pos, 2), requires_grad=False)
@@ -43,9 +47,26 @@ class DisplaceChannel(nn.Module):
                 if LO_balance_grad:
                     self.offset.register_hook(self.balance_offset_grad)
 
+                self.offset_regressor = nn.Sequential(
+                    nn.Conv2d(self.inplanes, self.inplanes // 4, kernel_size=1, stride=1),
+                    StrictNaNReLU(inplace=True),
+                    nn.Conv2d(self.inplanes // 4, self.inplanes // 4, kernel_size=3, stride=1, padding=1),
+                    StrictNaNReLU(inplace=True),
+                    nn.Conv2d(self.inplanes // 4, self.num_pos * self.free_chan_per_pos * 2, kernel_size=1, stride=1, bias=False))
+                
+                for m in self.offset_regressor:
+                    if isinstance(m, nn.Conv2d):
+                        n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                        m.weight.data.normal_(0, math.sqrt(2. / n / 100))
+                    elif isinstance(m, nn.GroupNorm):
+                        m.weight.data.fill_(1)
+                        m.bias.data.zero_()
+                self.offset_regressor[-1].weight.data.zero_()
+
     def set_learnable_offset_para(self, kernel_size, sigma):
         # TODO: Log
         log_i("learnable offset para set to kernel_size={}, sigma={}".format(kernel_size, sigma))
+        assert kernel_size % 2 == 1
         self.LO_kernel_size = kernel_size
         self.LO_sigma = sigma
 
@@ -108,20 +129,51 @@ class DisplaceChannel(nn.Module):
         self.offset.data[:, 1].clamp_(min=-self.height + 0.6,
                                       max=self.height - 0.6)
 
+    def gaussian_translate(self, x, offset):
+        batch_size = x.size(0)
+        num_channels = x.size(1)
+        height = x.size(2)
+        width = x.size(3)
+        chan_group_size = num_channels // (self.num_pos * self.free_chan_per_pos)
+        field = self.field[x.device]
+        if offset.dim() == 3:
+            kernel = torch.exp(- (field[None] + (offset - offset.detach().round())[:, :, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
+            kernel = kernel / kernel.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
+            # nsamp*npos*chan_group_size x kh x kw
+            kernel = kernel.view(batch_size*self.num_pos*self.free_chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_group_size, 1, 1).view(batch_size*num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
+            # 1 x nsamp*npos*chan_group_size x height x width
+            out = F.conv2d(x.view(1, batch_size*num_channels, height, width), kernel, None, (1, 1), (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride), (self.dconv_for_LO_stride, self.dconv_for_LO_stride), batch_size*num_channels)
+            out = out.view(batch_size, num_channels, height, width)
+            return out
+        elif offset.ndim() == 2:
+            # The offset means which direction and how long we should move the image,
+            # while for each kernel at each individual place, -offset is the center where it should 'look at',
+            # so the field becomes to force - (-offset.float) -> force + offset.float
+            kernel = torch.exp(- (field + (self.offset - self.offset.detach().round())[:, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
+            kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
+            # npos*chan_group_size x kh x kw
+            kernel = kernel.view(self.num_pos*self.free_chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_group_size, 1, 1).view(num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
+            # nsamp x npos*chan_group_size x height x width
+            out = F.conv2d(x, kernel, None, (1, 1), (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride), (self.dconv_for_LO_stride, self.dconv_for_LO_stride), num_channels)
+            return out
+        else:
+            raise ValueError()
+
     def forward(self, inp, LO_active=None, offset_plus=None):
         batch_size = inp.size(0)
         num_channels = inp.size(1)
         height = inp.size(2)
         width = inp.size(3)
         device = inp.device
+        free_channels = self.num_pos * self.free_chan_per_pos
         assert self.height == height and self.width == width
-        assert num_channels % (self.num_pos * self.free_chan_per_pos) == 0, "num of channels cannot be divided by number of offsets"
+        assert num_channels % free_channels == 0, "num of channels cannot be divided by number of offsets"
         assert offset_plus is None or offset_plus.size(1) == self.offset.size(0)
 
         out_LO = None
 
         if not self.disable_displace:
-            chan_per_pos = num_channels // (self.num_pos * self.free_chan_per_pos)
+            chan_per_pos = num_channels // free_channels
             out = DisplaceCUDA.apply(inp, self.offset.detach().round().int(), chan_per_pos)
 
             # out: nsamp x npos*chan_per_pos x height x width
@@ -129,28 +181,16 @@ class DisplaceChannel(nn.Module):
             if self.learnable_offset and (LO_active is True or (LO_active is None and self.LO_active is True)):
                 if device not in self.field:
                     self.field[device] = self.field[torch.device("cpu")].to(device)
-
-                field = self.field[device]
-                assert self.LO_kernel_size % 2 == 1
+                
                 if offset_plus is not None:
                     offset = self.offset[None] + offset_plus
-                    kernel = torch.exp(- (field[None] + (offset - offset.detach().round())[:, :, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
-                    kernel = kernel / kernel.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
-                    # nsamp*npos*chan_per_pos x kh x kw
-                    kernel = kernel.view(batch_size*self.num_pos*self.free_chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_per_pos, 1, 1).view(batch_size*num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
-                    # 1 x nsamp*npos*chan_per_pos x height x width
-                    out_LO = F.conv2d(out.view(1, batch_size*num_channels, height, width), kernel, None, (1, 1), (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride), (self.dconv_for_LO_stride, self.dconv_for_LO_stride), batch_size*num_channels)
-                    out_LO = out_LO.view(batch_size, num_channels, height, width)
                 else:
-                    # The offset means which direction and how long we should move the image,
-                    # while for each kernel at each individual place, -offset is the center where it should 'look at',
-                    # so the field becomes to force - (-offset.float) -> force + offset.float
-                    kernel = torch.exp(- (field + (self.offset - self.offset.detach().round())[:, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
-                    kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
-                    # npos*chan_per_pos x kh x kw
-                    kernel = kernel.view(self.num_pos*self.free_chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_per_pos, 1, 1).view(num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
-                    # nsamp x npos*chan_per_pos x height x width
-                    out_LO = F.conv2d(out, kernel, None, (1, 1), (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride), (self.dconv_for_LO_stride, self.dconv_for_LO_stride), num_channels)
+                    offset = self.offset
+
+                assert offset_plus is None
+                offset = self.offset[None] + self.offset_regressor(out).mean(dim=-1).mean(dim=-1).view(batch_size, free_channels, 2)
+
+                out_LO = self.gaussian_translate(out, offset)
         else:
             out = inp
 
