@@ -43,6 +43,8 @@ class DisplaceChannel(nn.Module):
                 self.offset.requires_grad = True
                 if LO_balance_grad:
                     self.offset.register_hook(self.balance_offset_grad)
+            else:
+                self.switch_LO_state(False)
 
     def set_learnable_offset_para(self, kernel_size, sigma):
         # TODO: Log
