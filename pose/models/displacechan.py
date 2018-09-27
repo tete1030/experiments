@@ -49,11 +49,13 @@ class DisplaceChannel(nn.Module):
 
                 self.offset_regressor = nn.Sequential(
                     nn.Conv2d(self.inplanes, self.inplanes // 4, kernel_size=1, stride=1),
+                    nn.BatchNorm2d(self.inplanes // 4),
                     StrictNaNReLU(inplace=True),
                     nn.Conv2d(self.inplanes // 4, self.inplanes // 4, kernel_size=3, stride=1, padding=1),
+                    nn.BatchNorm2d(self.inplanes // 4),
                     StrictNaNReLU(inplace=True),
                     nn.Conv2d(self.inplanes // 4, self.num_pos * self.free_chan_per_pos * 2, kernel_size=1, stride=1, bias=False))
-                
+
                 for m in self.offset_regressor:
                     if isinstance(m, nn.Conv2d):
                         n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
@@ -145,7 +147,7 @@ class DisplaceChannel(nn.Module):
             out = F.conv2d(x.view(1, batch_size*num_channels, height, width), kernel, None, (1, 1), (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride), (self.dconv_for_LO_stride, self.dconv_for_LO_stride), batch_size*num_channels)
             out = out.view(batch_size, num_channels, height, width)
             return out
-        elif offset.ndim() == 2:
+        elif offset.dim() == 2:
             # The offset means which direction and how long we should move the image,
             # while for each kernel at each individual place, -offset is the center where it should 'look at',
             # so the field becomes to force - (-offset.float) -> force + offset.float
@@ -174,21 +176,26 @@ class DisplaceChannel(nn.Module):
 
         if not self.disable_displace:
             chan_per_pos = num_channels // free_channels
-            out = DisplaceCUDA.apply(inp, self.offset.detach().round().int(), chan_per_pos)
 
-            # out: nsamp x npos*chan_per_pos x height x width
+            if offset_plus is not None:
+                offset = self.offset[None] + offset_plus
+            else:
+                offset = self.offset
+
+            # FIXME: Temporary assertion for current exp
+            assert offset_plus is None
+            offset = self.offset[None] + self.offset_regressor(inp).mean(dim=-1).mean(dim=-1).view(batch_size, free_channels, 2)
+
+            if offset.dim() == 3:
+                out = DisplaceCUDA.apply(inp.view(1, -1, height, width), offset.detach().round().int().view(-1, 2), chan_per_pos).view(batch_size, -1, height, width)
+            elif offset.dim() == 2:
+                out = DisplaceCUDA.apply(inp, offset.detach().round().int(), chan_per_pos)
+            else:
+                raise ValueError()
 
             if self.learnable_offset and (LO_active is True or (LO_active is None and self.LO_active is True)):
                 if device not in self.field:
                     self.field[device] = self.field[torch.device("cpu")].to(device)
-                
-                if offset_plus is not None:
-                    offset = self.offset[None] + offset_plus
-                else:
-                    offset = self.offset
-
-                assert offset_plus is None
-                offset = self.offset[None] + self.offset_regressor(out).mean(dim=-1).mean(dim=-1).view(batch_size, free_channels, 2)
 
                 out_LO = self.gaussian_translate(out, offset)
         else:
