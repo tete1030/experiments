@@ -550,7 +550,7 @@ class ExtraMod(nn.Module):
             hparams["model"]["detail"]["displace_stride"][res_index],
             learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
             disable_displace=hparams["model"]["detail"]["disable_displace"],
-            random_offset=hparams["model"]["detail"]["random_offset"],
+            random_offset_init=hparams["model"]["detail"]["random_offset_init"],
             use_origin=hparams["model"]["detail"]["use_origin"],
             actual_stride=hparams["model"]["detail"]["actual_stride"][res_index],
             displace_size=hparams["model"]["detail"]["displace_size"][res_index],
@@ -625,10 +625,11 @@ class ExtraMod(nn.Module):
             for m in self.offset_regressor:
                 if isinstance(m, nn.Conv2d):
                     n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                    m.weight.data.normal_(0, math.sqrt(2. / n))
+                    m.weight.data.normal_(0, math.sqrt(2. / n / 100))
                 elif isinstance(m, BatchNorm2dImpl):
                     m.weight.data.fill_(1)
                     m.bias.data.zero_()
+            self.offset_regressor[-1].weight.data.zero_()
 
     def reset_normal_post_parameters(self):
         for m in self.normal_post:

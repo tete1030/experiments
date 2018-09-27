@@ -10,7 +10,7 @@ from .displace import Displace, DisplaceCUDA
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, init_stride,
                  learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5,
-                 disable_displace=False, random_offset=0, use_origin=False, actual_stride=None,
+                 disable_displace=False, random_offset_init=None, use_origin=False, actual_stride=None,
                  displace_size=None, LO_balance_grad=True, free_chan_per_pos=1,
                  dconv_for_LO_stride=1):
         super(DisplaceChannel, self).__init__()
@@ -19,7 +19,7 @@ class DisplaceChannel(nn.Module):
         self.init_stride = init_stride
         self.learnable_offset = learnable_offset
         self.disable_displace = disable_displace
-        self.random_offset = random_offset
+        self.random_offset_init = random_offset_init
         self.use_origin = use_origin
         self.actual_stride = actual_stride
         self.displace_size = displace_size
@@ -86,8 +86,8 @@ class DisplaceChannel(nn.Module):
 
     def init_offset(self):
         nh, nw = self.num_y, self.num_x
-        if self.random_offset > 0:
-            self.offset.data.uniform_(-self.random_offset, self.random_offset)
+        if self.random_offset_init is not None:
+            self.offset.data.uniform_(-self.random_offset_init, self.random_offset_init)
             return
         count_off = 0
         for ih in range(-(nh // 2), nh // 2 + 1):

@@ -214,7 +214,7 @@ bayproj:
 offset:
     <<: *DEFAULT
     name: offset
-    id: 14
+    id: 15
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -254,7 +254,7 @@ offset:
             actual_stride: [3, 3, 3, null]
             displace_learnable_offset: true
             disable_displace: false
-            random_offset: 0
+            random_offset_init: 0
             use_origin: true
             early_predictor: true
             loss_invisible: false
