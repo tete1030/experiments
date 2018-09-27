@@ -544,6 +544,7 @@ class ExtraMod(nn.Module):
         self.block_index = block_index
         LO_sigma = hparams["learnable_offset"]["sigma"][res_index]
         LO_kernel_size = int(LO_sigma * 3) * 2 + 1
+        free_chan_per_pos = hparams["learnable_offset"]["free_chan_per_pos"][res_index]
         self.displace = DisplaceChannel(
             height, width,
             hparams["model"]["detail"]["displace_stride"][res_index],
@@ -556,7 +557,7 @@ class ExtraMod(nn.Module):
             LO_kernel_size=LO_kernel_size,
             LO_sigma=LO_sigma,
             LO_balance_grad=hparams["learnable_offset"]["balance_grad"],
-            free_chan_per_pos=hparams["learnable_offset"]["free_chan_per_pos"][res_index],
+            free_chan_per_pos=free_chan_per_pos,
             dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"][res_index])
         
         # TODO: better method
@@ -565,6 +566,7 @@ class ExtraMod(nn.Module):
         num_y = self.displace.num_y
         num_x = self.displace.num_x
         offset_channels = hparams["model"]["detail"]["channels_per_pos"][res_index] * num_pos
+        free_offset_channels = free_chan_per_pos * num_pos
 
         print("Displace{}_{} configuration:".format(res_index, block_index))
         print("\tinp_channels=" + str(inplanes))
@@ -582,6 +584,18 @@ class ExtraMod(nn.Module):
             nn.Conv2d(inplanes // 4, offset_channels, kernel_size=1, stride=1),
             BatchNorm2dImpl(offset_channels, num_groups=num_pos),
             StrictNaNReLU(inplace=True))
+        
+        if hparams["learnable_offset"]["use_regress"]:
+            self.offset_regressor = nn.Sequential(
+                nn.Conv2d(inplanes, inplanes // 4, kernel_size=1, stride=1),
+                BatchNorm2dImpl(inplanes // 4),
+                StrictNaNReLU(inplace=True),
+                nn.Conv2d(inplanes // 4, inplanes // 4, kernel_size=3, stride=1, padding=1),
+                BatchNorm2dImpl(inplanes // 4),
+                StrictNaNReLU(inplace=True),
+                nn.Conv2d(inplanes // 4, free_offset_channels*2, kernel_size=1, stride=1, bias=False))
+        else:
+            self.offset_regressor = None
 
         self.normal_post = nn.Sequential(
             nn.Conv2d(offset_channels, inplanes // 4, kernel_size=1, stride=1),
@@ -594,6 +608,7 @@ class ExtraMod(nn.Module):
             StrictNaNReLU(inplace=True))
 
         self.reset_pre_parameters()
+        self.reset_offset_regressor_parameters()
         self.reset_normal_post_parameters()
 
     def reset_pre_parameters(self):
@@ -604,6 +619,16 @@ class ExtraMod(nn.Module):
             elif isinstance(m, BatchNorm2dImpl):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
+
+    def reset_offset_regressor_parameters(self):
+        if self.offset_regressor is not None:
+            for m in self.offset_regressor:
+                if isinstance(m, nn.Conv2d):
+                    n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                    m.weight.data.normal_(0, math.sqrt(2. / n))
+                elif isinstance(m, BatchNorm2dImpl):
+                    m.weight.data.fill_(1)
+                    m.bias.data.zero_()
 
     def reset_normal_post_parameters(self):
         for m in self.normal_post:
@@ -616,7 +641,11 @@ class ExtraMod(nn.Module):
 
     def forward(self, x):
         mid = self.pre(x)
-        mid, mid_LO = self.displace(mid)
+        mid, mid_LO = self.displace(mid,
+            offset_plus=self.offset_regressor(x)\
+                    .mean(dim=-1).mean(dim=-1)\
+                    .view(x.size(0), self.displace.num_pos*self.displace.free_chan_per_pos, 2) \
+                if self.offset_regressor is not None else None)
         if mid_LO is not None:
             out = self.normal_post(mid_LO)
         else:
