@@ -376,19 +376,28 @@ class Experiment(BaseExperiment):
             # if ilabel < len(det_map_gt_cuda) - 1:
             #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
             if ilabel < len(det_map_gt_cuda) - 1 and not hparams["model"]["detail"]["loss_invisible"]:
-                loss = loss + ((outv - gtv).pow(2) * \
+                cur_loss = ((outv - gtv).pow(2) * \
                     (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
             else:
-                loss = loss + (outv - gtv).pow(2).mean().sqrt()
+                cur_loss = (outv - gtv).pow(2).mean().sqrt()
+            loss_weight = 1.
+            if progress["step"] > 6543 * 80 and progress["step"] <= 6543 * 95 and ilabel < len(det_map_gt_cuda) - 1:
+                loss_weight = max(0., 1. - float(progress["step"] - 6543 * 80) / (6543 * 15))
+
+            loss = loss + cur_loss * loss_weight
 
         if hparams["model"]["detail"]["early_predictor"]:
             assert len(early_predictor_outputs) == len(hparams["model"]["detail"]["early_predictor_label_index"])
             for ilabel, outv in enumerate(early_predictor_outputs):
                 if not hparams["model"]["detail"]["loss_invisible"]:
-                    loss = loss + ((outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2) * \
+                    cur_loss = ((outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2) * \
                         (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
                 else:
-                    loss = loss + (outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2).mean().sqrt()
+                    cur_loss = (outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2).mean().sqrt()
+                loss_weight = 1.
+                if progress["step"] > 6543 * 80 and progress["step"] <= 6543 * 95:
+                    loss_weight = max(0., 1. - float(progress["step"] - 6543 * 80) / (6543 * 15))
+                loss = loss + cur_loss * loss_weight
 
         epoch_ctx.add_scalar("loss", loss.item())
 
