@@ -381,8 +381,11 @@ class Experiment(BaseExperiment):
             else:
                 cur_loss = (outv - gtv).pow(2).mean().sqrt()
             loss_weight = 1.
-            if progress["step"] > 6543 * 80 and progress["step"] <= 6543 * 95 and ilabel < len(det_map_gt_cuda) - 1:
-                loss_weight = max(0., 1. - float(progress["step"] - 6543 * 80) / (6543 * 15))
+            if ilabel < len(det_map_gt_cuda) - 1:
+                if progress["step"] > 6543 * 75 and progress["step"] <= 6543 * 95:
+                    loss_weight = max(0., 1. - float(progress["step"] - 6543 * 75) / (6543 * 20))
+                elif progress["step"] > 6543 * 95:
+                    loss_weight = 0.
 
             loss = loss + cur_loss * loss_weight
 
@@ -395,8 +398,10 @@ class Experiment(BaseExperiment):
                 else:
                     cur_loss = (outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2).mean().sqrt()
                 loss_weight = 1.
-                if progress["step"] > 6543 * 80 and progress["step"] <= 6543 * 95:
-                    loss_weight = max(0., 1. - float(progress["step"] - 6543 * 80) / (6543 * 15))
+                if progress["step"] > 6543 * 75 and progress["step"] <= 6543 * 95:
+                    loss_weight = max(0., 1. - float(progress["step"] - 6543 * 75) / (6543 * 20))
+                elif progress["step"] > 6543 * 95:
+                    loss_weight = 0.
                 loss = loss + cur_loss * loss_weight
 
         epoch_ctx.add_scalar("loss", loss.item())
