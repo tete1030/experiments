@@ -14,7 +14,7 @@ class DisplaceChannel(nn.Module):
                  learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5,
                  disable_displace=False, random_offset_init=None, use_origin=False, actual_stride=None,
                  displace_size=None, LO_balance_grad=True, free_chan_per_pos=1,
-                 dconv_for_LO_stride=1):
+                 dconv_for_LO_stride=1, regress_offset=False):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -30,6 +30,7 @@ class DisplaceChannel(nn.Module):
         self.dconv_for_LO_stride = dconv_for_LO_stride
         self.num_y, self.num_x, self.num_pos = self.get_num_offset(height, width, displace_size, init_stride, use_origin)
         self.inplanes = self.num_pos * self.chan_per_pos
+        self.regress_offset = regress_offset
 
         if not disable_displace:
             self.offset = nn.parameter.Parameter(torch.Tensor(self.num_pos * self.free_chan_per_pos, 2), requires_grad=False)
@@ -47,23 +48,26 @@ class DisplaceChannel(nn.Module):
                 if LO_balance_grad:
                     self.offset.register_hook(self.balance_offset_grad)
 
-                self.offset_regressor = nn.Sequential(
-                    nn.Conv2d(self.inplanes, self.inplanes // 4, kernel_size=1, stride=1),
-                    nn.BatchNorm2d(self.inplanes // 4),
-                    StrictNaNReLU(inplace=True),
-                    nn.Conv2d(self.inplanes // 4, self.inplanes // 4, kernel_size=3, stride=1, padding=1),
-                    nn.BatchNorm2d(self.inplanes // 4),
-                    StrictNaNReLU(inplace=True),
-                    nn.Conv2d(self.inplanes // 4, self.num_pos * self.free_chan_per_pos * 2, kernel_size=1, stride=1, bias=False))
+                if regress_offset:
+                    self.offset_regressor = nn.Sequential(
+                        nn.Conv2d(self.inplanes, self.inplanes // 4, kernel_size=1, stride=1),
+                        nn.BatchNorm2d(self.inplanes // 4),
+                        StrictNaNReLU(inplace=True),
+                        nn.Conv2d(self.inplanes // 4, self.inplanes // 4, kernel_size=3, stride=1, padding=1),
+                        nn.BatchNorm2d(self.inplanes // 4),
+                        StrictNaNReLU(inplace=True),
+                        nn.Conv2d(self.inplanes // 4, self.num_pos * self.free_chan_per_pos * 2, kernel_size=1, stride=1, bias=False))
 
-                for m in self.offset_regressor:
-                    if isinstance(m, nn.Conv2d):
-                        n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                        m.weight.data.normal_(0, math.sqrt(2. / n / 100))
-                    elif isinstance(m, nn.GroupNorm):
-                        m.weight.data.fill_(1)
-                        m.bias.data.zero_()
-                self.offset_regressor[-1].weight.data.zero_()
+                    for m in self.offset_regressor:
+                        if isinstance(m, nn.Conv2d):
+                            n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                            m.weight.data.normal_(0, math.sqrt(2. / n / 100))
+                        elif isinstance(m, nn.GroupNorm):
+                            m.weight.data.fill_(1)
+                            m.bias.data.zero_()
+                    self.offset_regressor[-1].weight.data.zero_()
+            else:
+                self.switch_LO_state(False)
 
     def set_learnable_offset_para(self, kernel_size, sigma):
         # TODO: Log
@@ -182,9 +186,10 @@ class DisplaceChannel(nn.Module):
             else:
                 offset = self.offset
 
-            # FIXME: Temporary assertion for current exp
-            assert offset_plus is None
-            offset = self.offset[None] + self.offset_regressor(inp).mean(dim=-1).mean(dim=-1).view(batch_size, free_channels, 2)
+            if self.regress_offset:
+                assert offset_plus is None
+                assert self.offset.dim() == 2
+                offset = self.offset[None] + self.offset_regressor(inp).mean(dim=-1).mean(dim=-1).view(batch_size, free_channels, 2)
 
             if offset.dim() == 3:
                 out = DisplaceCUDA.apply(inp.view(1, -1, height, width), offset.detach().round().int().view(-1, 2), chan_per_pos).view(batch_size, -1, height, width)

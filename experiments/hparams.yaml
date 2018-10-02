@@ -214,7 +214,7 @@ bayproj:
 offset:
     <<: *DEFAULT
     name: offset
-    id: 19
+    id: 23
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -235,6 +235,7 @@ offset:
         offset_save_interval: 1000
         free_chan_per_pos: [4, 8, 16, null]
         dconv_for_LO_stride: [1, 1, 1, null]
+        regress_offset: false
     config:
         store_map: false
     model:
@@ -251,12 +252,12 @@ offset:
             displace_stride: [3, 3, 3, null]
             displace_size: [[9, 9], [7, 7], [5, 5], null]
             actual_stride: [3, 3, 3, null]
-            displace_learnable_offset: true
+            displace_learnable_offset: false
             disable_displace: false
             random_offset_init: 0
             use_origin: true
             early_predictor: true
-            loss_invisible: false
+            loss_invisible: true
     dataset:
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
