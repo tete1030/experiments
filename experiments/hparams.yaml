@@ -331,3 +331,49 @@ baycrf:
         scale_factor: 0.25
         rotate_factor: 30
         translation_factor: 0.05
+
+fulloffset:
+    <<: *DEFAULT
+    name: offset
+    id: 25
+    learning_rate: 5.e-4
+    lr_gamma: 0.5
+    epochs: 100
+    schedule: []
+    train_batch: 16
+    test_batch: 16
+    learnable_offset:
+        train_min_step: 6543
+        lr: 1.e-2
+        lr_gamma: 0.8
+        lr_decay_step: 50000
+        momentum: 0.0
+        sigma: 0.5
+        move_average_cycle: 500
+        sigma_decay_step: 100000
+        sigma_decay_rate: 0.8
+        offset_save_interval: 1000
+        bind_chan: 4
+        dconv_for_LO_stride: 1
+        regress_offset: false
+    config:
+        store_map: false
+    model:
+        resnet_pretrained: pretrained/resnet50_gn.pth
+        inp_shape: [192, 256] # W, H
+        out_shape: [48, 64] # W, H
+        gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
+        parse_threshold: 0.1
+        resnet: 50
+        detail:
+            early_predictor_label_index: [2, 1, 0]
+            displace_learnable_offset: true
+            random_offset_init: 0
+            early_predictor: true
+            loss_invisible: true
+    dataset:
+        mean_std_file: mean_std.pth
+        ext_border: [0.1, 0.15]
+        scale_factor: 0.25
+        rotate_factor: 30
+        translation_factor: 0.05
