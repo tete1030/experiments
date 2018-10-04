@@ -653,7 +653,8 @@ class BasicBlock(nn.Module):
             LO_balance_grad=False,
             free_chan_per_pos=self.inplanes // hparams["learnable_offset"]["bind_chan"],
             dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"],
-            regress_offset=hparams["learnable_offset"]["regress_offset"])
+            regress_offset=hparams["learnable_offset"]["regress_offset"],
+            LO_grad_inside_only=hparams["learnable_offset"]["grad_inside_only"])
         Experiment.exp.displace_mods.append(self.displace)
 
     def forward(self, x):

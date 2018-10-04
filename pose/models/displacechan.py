@@ -6,7 +6,7 @@ from utils.globals import config, globalvars
 from utils.log import log_i
 import torch.nn.functional as F
 import numpy as np
-from .displace import Displace, DisplaceCUDA
+from .displace import Displace, DisplaceCUDA, CustomizedGradDepthwiseConv2d
 from pose.models.common import StrictNaNReLU
 
 class DisplaceChannel(nn.Module):
@@ -14,7 +14,8 @@ class DisplaceChannel(nn.Module):
                  learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5,
                  disable_displace=False, random_offset_init=None, use_origin=False, actual_stride=None,
                  displace_size=None, LO_balance_grad=True, free_chan_per_pos=1,
-                 dconv_for_LO_stride=1, regress_offset=False):
+                 dconv_for_LO_stride=1, regress_offset=False,
+                 LO_grad_inside_only=False):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -28,6 +29,7 @@ class DisplaceChannel(nn.Module):
         self.displace_size = displace_size
         self.free_chan_per_pos = free_chan_per_pos
         self.dconv_for_LO_stride = dconv_for_LO_stride
+        self.LO_grad_inside_only = LO_grad_inside_only
         self.num_y, self.num_x, self.num_pos = self.get_num_offset(height, width, displace_size, init_stride, use_origin)
         self.inplanes = self.num_pos * self.chan_per_pos
         self.regress_offset = regress_offset
@@ -143,24 +145,43 @@ class DisplaceChannel(nn.Module):
         chan_group_size = num_channels // (self.num_pos * self.free_chan_per_pos)
         field = self.field[x.device]
         if offset.dim() == 3:
+            # Dynamic offset
             kernel = torch.exp(- (field[None] + (offset - offset.detach().round())[:, :, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
             kernel = kernel / kernel.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
             # nsamp*npos*chan_group_size x kh x kw
             kernel = kernel.view(batch_size*self.num_pos*self.free_chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_group_size, 1, 1).view(batch_size*num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
             # 1 x nsamp*npos*chan_group_size x height x width
-            out = F.conv2d(x.view(1, batch_size*num_channels, height, width), kernel, None, (1, 1), (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride), (self.dconv_for_LO_stride, self.dconv_for_LO_stride), batch_size*num_channels)
+            out = CustomizedGradDepthwiseConv2d.apply(
+                x.view(1, batch_size*num_channels, height, width), kernel, None,
+                (1, 1),
+                (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride),
+                (self.dconv_for_LO_stride, self.dconv_for_LO_stride),
+                batch_size*num_channels,
+                offset.detach().round().int().view(-1, 2) if self.LO_grad_inside_only else None,
+                chan_group_size,
+                (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride))
             out = out.view(batch_size, num_channels, height, width)
             return out
         elif offset.dim() == 2:
+            # Static offset
+
             # The offset means which direction and how long we should move the image,
             # while for each kernel at each individual place, -offset is the center where it should 'look at',
             # so the field becomes to force - (-offset.float) -> force + offset.float
-            kernel = torch.exp(- (field + (self.offset - self.offset.detach().round())[:, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
+            kernel = torch.exp(- (field + (offset - offset.detach().round())[:, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
             kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
             # npos*chan_group_size x kh x kw
             kernel = kernel.view(self.num_pos*self.free_chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_group_size, 1, 1).view(num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
             # nsamp x npos*chan_group_size x height x width
-            out = F.conv2d(x, kernel, None, (1, 1), (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride), (self.dconv_for_LO_stride, self.dconv_for_LO_stride), num_channels)
+            out = CustomizedGradDepthwiseConv2d.apply(
+                x, kernel, None,
+                (1, 1),
+                (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride),
+                (self.dconv_for_LO_stride, self.dconv_for_LO_stride),
+                num_channels,
+                offset.detach().round().int() if self.LO_grad_inside_only else None,
+                chan_group_size,
+                (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride))
             return out
         else:
             raise ValueError()

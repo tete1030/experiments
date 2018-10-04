@@ -560,7 +560,8 @@ class ExtraMod(nn.Module):
             LO_balance_grad=hparams["learnable_offset"]["balance_grad"],
             free_chan_per_pos=free_chan_per_pos,
             dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"][res_index],
-            regress_offset=hparams["learnable_offset"]["regress_offset"])
+            regress_offset=hparams["learnable_offset"]["regress_offset"],
+            LO_grad_inside_only=hparams["learnable_offset"]["grad_inside_only"])
         
         # TODO: better method
         Experiment.exp.displace_mods.append(self.displace)

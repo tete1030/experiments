@@ -236,6 +236,7 @@ offset:
         free_chan_per_pos: [4, 8, 16, null]
         dconv_for_LO_stride: [1, 1, 1, null]
         regress_offset: false
+        grad_inside_only: false
     config:
         store_map: false
     model:
@@ -335,7 +336,7 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 25
+    id: 26
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -356,6 +357,7 @@ fulloffset:
         bind_chan: 4
         dconv_for_LO_stride: 1
         regress_offset: false
+        grad_inside_only: true
     config:
         store_map: false
     model:

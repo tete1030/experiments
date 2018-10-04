@@ -72,7 +72,6 @@ void displace_forward_cuda(
   gpuErrchk(cudaGetLastError());
 }
 
-
 template <typename Dtype>
 __launch_bounds__(CUDA_NUM_THREADS)
 __global__ void displace_backward_cuda_kernel(
@@ -121,6 +120,53 @@ void displace_backward_cuda(
       grad_in.data<scalar_t>(), height_in, width_in,
       offsets.data<int>(), channel_per_offset,
       grad_out.data<scalar_t>(), height_out, width_out);
+  }));
+  gpuErrchk(cudaGetLastError());
+}
+
+template <typename Dtype>
+__launch_bounds__(CUDA_NUM_THREADS)
+__global__ void offset_mask_cuda_kernel(
+    const int64_t n, const int64_t num_channel,
+    const Dtype* __restrict__ input, const int64_t height, const int64_t width,
+    const int* __restrict__ offsets, const int64_t channel_per_offset,
+    Dtype* __restrict__ output, const int64_t side_thickness_h, const int64_t side_thickness_w) {
+  CUDA_KERNEL_LOOP(index, n) {
+    input += index;
+    output += index;
+    int64_t w = index % width;
+    index /= width;
+    int64_t h = index % height;
+    index /= height;
+    int64_t i_channel = index % num_channel;
+    int64_t i_offset = i_channel / channel_per_offset;
+    if (w >= offsets[i_offset * 2] + side_thickness_w && h >= offsets[i_offset * 2 + 1] + side_thickness_h && w < width + offsets[i_offset * 2] - side_thickness_w && h < height + offsets[i_offset * 2 + 1] - side_thickness_h) {
+        *output = *input;
+    } else {
+        *output = 0;
+    }
+  }
+}
+
+void offset_mask_cuda(
+    cudaStream_t stream,
+    const at::Tensor input,
+    const at::Tensor offsets,
+    const int64_t channel_per_offset,
+    at::Tensor output,
+    const at::IntList side_thickness) {
+  int64_t batch_size = input.size(0);
+  int64_t num_channel = input.size(1);
+  int64_t height = input.size(2);
+  int64_t width = input.size(3);
+  int64_t num_kernel = batch_size * num_channel * height * width;
+  
+  AT_DISPATCH_FLOATING_TYPES(input.type(), "offset_mask_cuda", ([&] {
+    offset_mask_cuda_kernel <<<GET_BLOCKS(num_kernel), CUDA_NUM_THREADS, 0, stream>>> (
+      num_kernel, num_channel,
+      input.data<scalar_t>(), height, width,
+      offsets.data<int>(), channel_per_offset,
+      output.data<scalar_t>(), side_thickness[0], side_thickness[1]);
   }));
   gpuErrchk(cudaGetLastError());
 }
