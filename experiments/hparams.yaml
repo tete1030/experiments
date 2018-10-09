@@ -336,7 +336,7 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 28
+    id: 29
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -345,7 +345,7 @@ fulloffset:
     test_batch: 16
     learnable_offset:
         train_min_step: 6543
-        lr: 1.e-2
+        lr: 1.e-3
         lr_gamma: 0.8
         lr_decay_step: 50000
         momentum: 0.0
@@ -369,7 +369,7 @@ fulloffset:
         resnet: 50
         detail:
             early_predictor_label_index: [2, 1, 0]
-            displace_learnable_offset: false
+            displace_learnable_offset: true
             random_offset_init: 0
             early_predictor: true
             loss_invisible: true
