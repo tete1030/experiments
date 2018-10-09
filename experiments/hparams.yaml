@@ -336,7 +336,7 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 29
+    id: 30
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -345,7 +345,8 @@ fulloffset:
     test_batch: 16
     learnable_offset:
         train_min_step: 6543
-        lr: 1.e-3
+        lr: 1.e-2
+        regressor_lr: 5.e-3
         lr_gamma: 0.8
         lr_decay_step: 50000
         momentum: 0.0
@@ -356,7 +357,7 @@ fulloffset:
         offset_save_interval: 1000
         bind_chan: 4
         dconv_for_LO_stride: 1
-        regress_offset: false
+        regress_offset: true
         grad_inside_only: true
     config:
         store_map: false

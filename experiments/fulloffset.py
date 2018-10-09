@@ -57,12 +57,16 @@ class Experiment(BaseExperiment):
         self.model = nn.DataParallel(Controller(MainModel(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda()))
 
         self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods]))
+        if hparams["learnable_offset"]["regress_offset"]:
+            self.offset_regressor_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in self.displace_mods])))
+        else:
+            self.offset_regressor_parameters = []
         if hparams["model"]["detail"]["early_predictor"]:
             self.early_predictor_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([ep.parameters() for ep in self.early_predictors])))
         else:
             self.early_predictor_parameters = []
 
-        special_parameter_ids = list(map(lambda x: id(x), self.offset_parameters + self.early_predictor_parameters))
+        special_parameter_ids = list(map(lambda x: id(x), self.offset_parameters + self.early_predictor_parameters + self.offset_regressor_parameters))
         self.normal_parameters = list(filter(lambda x: x.requires_grad and id(x) not in special_parameter_ids, self.model.parameters()))
 
         self.optimizer = torch.optim.Adam(
@@ -70,9 +74,11 @@ class Experiment(BaseExperiment):
             lr=hparams["learning_rate"],
             weight_decay=hparams['weight_decay'])
 
-        self.offset_optimizer = torch.optim.Adam(
-            [{"params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]}],
-            lr=hparams["learnable_offset"]["lr"])
+        offset_optimizer_args = [
+            {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]}]
+        if len(self.offset_regressor_parameters) > 0:
+            offset_optimizer_args.append({"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams["learnable_offset"]["regressor_lr"], "init_lr": hparams["learnable_offset"]["regressor_lr"]})
+        self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
 
         if hparams["model"]["detail"]["early_predictor"]:
             self.early_predictor_optimizer = torch.optim.Adam(
@@ -249,12 +255,15 @@ class Experiment(BaseExperiment):
     def set_offset_learning_rate(self, epoch, step):
         if step >= hparams["learnable_offset"]["train_min_step"] and hparams["learnable_offset"]["lr_decay_step"] > 0 and hparams["learnable_offset"]["lr_gamma"] > 0:
             step_offset = max(0, step - hparams["learnable_offset"]["train_min_step"])
-            cur_lr_offset = hparams["learnable_offset"]["lr"] * (hparams["learnable_offset"]["lr_gamma"] ** (float(step_offset) / hparams["learnable_offset"]["lr_decay_step"]))
-            log_i("Set offset_lr to %.5f" % (cur_lr_offset))
         else:
-            cur_lr_offset = hparams["learnable_offset"]["lr"]
+            step_offset = 0
 
         for param_group in self.offset_optimizer.param_groups:
+            if step_offset > 0:
+                cur_lr_offset = param_group["init_lr"] * (hparams["learnable_offset"]["lr_gamma"] ** (float(step_offset) / hparams["learnable_offset"]["lr_decay_step"]))
+                log_i("Set {} to {:.5f}".format(param_group["para_name"], cur_lr_offset))
+            else:
+                cur_lr_offset = param_group["init_lr"]
             param_group["lr"] = cur_lr_offset
 
     def set_offset_learning_para(self, epoch, step):

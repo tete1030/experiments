@@ -58,7 +58,8 @@ class DisplaceChannel(nn.Module):
                         nn.Conv2d(self.inplanes // 4, self.inplanes // 4, kernel_size=3, stride=1, padding=1),
                         nn.BatchNorm2d(self.inplanes // 4),
                         StrictNaNReLU(inplace=True),
-                        nn.Conv2d(self.inplanes // 4, self.num_pos * self.free_chan_per_pos * 2, kernel_size=1, stride=1, bias=False))
+                        nn.Conv2d(self.inplanes // 4, self.num_pos * self.free_chan_per_pos * 2, kernel_size=1, stride=1, bias=False),
+                        nn.BatchNorm2d(self.num_pos * self.free_chan_per_pos * 2))
 
                     for m in self.offset_regressor:
                         if isinstance(m, nn.Conv2d):
@@ -210,7 +211,8 @@ class DisplaceChannel(nn.Module):
             if self.regress_offset:
                 assert offset_plus is None
                 assert self.offset.dim() == 2
-                offset = self.offset[None] + self.offset_regressor(inp).mean(dim=-1).mean(dim=-1).view(batch_size, free_channels, 2)
+                offset_regressed = self.offset_regressor(inp).mean(dim=-1).mean(dim=-1).view(batch_size, free_channels, 2)
+                offset = self.offset[None] + offset_regressed
 
             if offset.dim() == 3:
                 out = DisplaceCUDA.apply(inp.view(1, -1, height, width), offset.detach().round().int().view(-1, 2), chan_per_pos).view(batch_size, -1, height, width)
