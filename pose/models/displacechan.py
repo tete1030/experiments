@@ -15,7 +15,7 @@ class DisplaceChannel(nn.Module):
                  disable_displace=False, random_offset_init=None, use_origin=False, actual_stride=None,
                  displace_size=None, LO_balance_grad=True, free_chan_per_pos=1,
                  dconv_for_LO_stride=1, regress_offset=False,
-                 LO_grad_inside_only=False):
+                 LO_grad_inside_only=False, LO_half_reversed_offset=False):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -30,6 +30,7 @@ class DisplaceChannel(nn.Module):
         self.free_chan_per_pos = free_chan_per_pos
         self.dconv_for_LO_stride = dconv_for_LO_stride
         self.LO_grad_inside_only = LO_grad_inside_only
+        self.LO_half_reversed_offset = LO_half_reversed_offset
         self.num_y, self.num_x, self.num_pos = self.get_num_offset(height, width, displace_size, init_stride, use_origin)
         self.inplanes = self.num_pos * self.chan_per_pos
         self.regress_offset = regress_offset
@@ -81,8 +82,12 @@ class DisplaceChannel(nn.Module):
 
         x = torch.arange(kernel_size, dtype=torch.float).view(1, -1, 1).expand(kernel_size, -1, -1) - float(kernel_size // 2)
         y = torch.arange(kernel_size, dtype=torch.float).view(-1, 1, 1).expand(-1, kernel_size, -1) - float(kernel_size // 2)
+        field = torch.cat([x, y], dim=2).expand(1, -1, -1, -1)\
+            .repeat(self.num_pos * self.free_chan_per_pos, 1, 1, 1)
+        if self.LO_half_reversed_offset:
+            field = field.repeat(2, 1, 1, 1)
         self.field = dict()
-        self.field[torch.device("cpu")] = torch.cat([x, y], dim=2).expand(1, -1, -1, -1).repeat(self.num_pos * self.free_chan_per_pos, 1, 1, 1)
+        self.field[torch.device("cpu")] = field
 
     def reset_learnable_offset_para(self):
         self.set_learnable_offset_para(self.LO_kernel_size_init, self.LO_sigma_init)
@@ -143,15 +148,16 @@ class DisplaceChannel(nn.Module):
         num_channels = x.size(1)
         height = x.size(2)
         width = x.size(3)
-        chan_group_size = num_channels // (self.num_pos * self.free_chan_per_pos)
+        offset_channels = offset.size(-2)
+        bind_chan = num_channels // offset_channels
         field = self.field[x.device]
         if offset.dim() == 3:
             # Dynamic offset
             kernel = torch.exp(- (field[None] + (offset - offset.detach().round())[:, :, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
             kernel = kernel / kernel.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
-            # nsamp*npos*chan_group_size x kh x kw
-            kernel = kernel.view(batch_size*self.num_pos*self.free_chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_group_size, 1, 1).view(batch_size*num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
-            # 1 x nsamp*npos*chan_group_size x height x width
+            # nsamp*npos*bind_chan x kh x kw
+            kernel = kernel.view(batch_size*offset_channels, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, bind_chan, 1, 1).view(batch_size*num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
+            # 1 x nsamp*npos*bind_chan x height x width
             out = CustomizedGradDepthwiseConv2d.apply(
                 x.view(1, batch_size*num_channels, height, width), kernel, None,
                 (1, 1),
@@ -159,7 +165,7 @@ class DisplaceChannel(nn.Module):
                 (self.dconv_for_LO_stride, self.dconv_for_LO_stride),
                 batch_size*num_channels,
                 offset.detach().round().int().view(-1, 2) if self.LO_grad_inside_only else None,
-                chan_group_size,
+                bind_chan,
                 (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride))
             out = out.view(batch_size, num_channels, height, width)
             return out
@@ -171,9 +177,9 @@ class DisplaceChannel(nn.Module):
             # so the field becomes to force - (-offset.float) -> force + offset.float
             kernel = torch.exp(- (field + (offset - offset.detach().round())[:, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
             kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
-            # npos*chan_group_size x kh x kw
-            kernel = kernel.view(self.num_pos*self.free_chan_per_pos, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, chan_group_size, 1, 1).view(num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
-            # nsamp x npos*chan_group_size x height x width
+            # npos*bind_chan x kh x kw
+            kernel = kernel.view(offset_channels, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, bind_chan, 1, 1).view(num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
+            # nsamp x npos*bind_chan x height x width
             out = CustomizedGradDepthwiseConv2d.apply(
                 x, kernel, None,
                 (1, 1),
@@ -181,7 +187,7 @@ class DisplaceChannel(nn.Module):
                 (self.dconv_for_LO_stride, self.dconv_for_LO_stride),
                 num_channels,
                 offset.detach().round().int() if self.LO_grad_inside_only else None,
-                chan_group_size,
+                bind_chan,
                 (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride))
             return out
         else:
@@ -201,8 +207,6 @@ class DisplaceChannel(nn.Module):
         out_LO = None
 
         if not self.disable_displace:
-            chan_per_pos = num_channels // free_channels
-
             if offset_plus is not None:
                 offset = self.offset[None] + offset_plus
             else:
@@ -214,10 +218,16 @@ class DisplaceChannel(nn.Module):
                 offset_regressed = self.offset_regressor(inp).mean(dim=-1).mean(dim=-1).view(batch_size, free_channels, 2)
                 offset = self.offset[None] + offset_regressed
 
+            bind_chan = num_channels // free_channels
+            if self.LO_half_reversed_offset:
+                assert bind_chan % 2 == 0
+                bind_chan = bind_chan // 2
+                offset = torch.cat([offset, -offset], dim=-2)
+
             if offset.dim() == 3:
-                out = DisplaceCUDA.apply(inp.view(1, -1, height, width), offset.detach().round().int().view(-1, 2), chan_per_pos).view(batch_size, -1, height, width)
+                out = DisplaceCUDA.apply(inp.view(1, -1, height, width), offset.detach().round().int().view(-1, 2), bind_chan).view(batch_size, -1, height, width)
             elif offset.dim() == 2:
-                out = DisplaceCUDA.apply(inp, offset.detach().round().int(), chan_per_pos)
+                out = DisplaceCUDA.apply(inp, offset.detach().round().int(), bind_chan)
             else:
                 raise ValueError()
 

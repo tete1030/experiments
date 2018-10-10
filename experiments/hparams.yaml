@@ -336,7 +336,7 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 30
+    id: 31
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -356,6 +356,7 @@ fulloffset:
         sigma_decay_rate: 0.8
         offset_save_interval: 1000
         bind_chan: 4
+        half_reversed_offset: true
         dconv_for_LO_stride: 1
         regress_offset: true
         grad_inside_only: true
