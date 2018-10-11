@@ -56,17 +56,14 @@ class Experiment(BaseExperiment):
 
         self.model = nn.DataParallel(Controller(MainModel(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda()))
 
-        self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods]))
-        if hparams["learnable_offset"]["regress_offset"]:
-            self.offset_regressor_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in self.displace_mods])))
-        else:
-            self.offset_regressor_parameters = []
+        self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods] + list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in self.displace_mods]))))
+
         if hparams["model"]["detail"]["early_predictor"]:
             self.early_predictor_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([ep.parameters() for ep in self.early_predictors])))
         else:
             self.early_predictor_parameters = []
 
-        special_parameter_ids = list(map(lambda x: id(x), self.offset_parameters + self.early_predictor_parameters + self.offset_regressor_parameters))
+        special_parameter_ids = list(map(lambda x: id(x), self.offset_parameters + self.early_predictor_parameters))
         self.normal_parameters = list(filter(lambda x: x.requires_grad and id(x) not in special_parameter_ids, self.model.parameters()))
 
         self.optimizer = torch.optim.Adam(
@@ -76,8 +73,7 @@ class Experiment(BaseExperiment):
 
         offset_optimizer_args = [
             {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]}]
-        if len(self.offset_regressor_parameters) > 0:
-            offset_optimizer_args.append({"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams["learnable_offset"]["regressor_lr"], "init_lr": hparams["learnable_offset"]["regressor_lr"]})
+
         self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
 
         if hparams["model"]["detail"]["early_predictor"]:
@@ -268,10 +264,10 @@ class Experiment(BaseExperiment):
 
     def set_offset_learning_para(self, epoch, step):
         for dm in self.displace_mods:
-            if dm.learnable_offset and dm.LO_active:
-                if step >= hparams["learnable_offset"]["train_min_step"] and hparams["learnable_offset"]["sigma_decay_step"] > 0 and hparams["learnable_offset"]["sigma_decay_rate"] > 0:
+            if dm.LO_interpolate_kernel_type == "gaussian" and dm.learnable_offset and dm.LO_active:
+                if step >= hparams["learnable_offset"]["train_min_step"] and hparams["learnable_offset"]["interpolate_gaussian_sigma_decay_step"] > 0 and hparams["learnable_offset"]["interpolate_gaussian_sigma_decay_rate"] > 0:
                     step_offset = max(0, step - hparams["learnable_offset"]["train_min_step"])
-                    LO_sigma_new = float(dm.LO_sigma_init) * (hparams["learnable_offset"]["sigma_decay_rate"] ** (float(step_offset) / hparams["learnable_offset"]["sigma_decay_step"]))
+                    LO_sigma_new = float(dm.LO_sigma_init) * (hparams["learnable_offset"]["interpolate_gaussian_sigma_decay_rate"] ** (float(step_offset) / hparams["learnable_offset"]["interpolate_gaussian_sigma_decay_step"]))
                     LO_kernel_size_new = int(LO_sigma_new * 3) * 2 + 1
                     dm.set_learnable_offset_para(LO_kernel_size_new, LO_sigma_new)
 
@@ -564,27 +560,36 @@ class Bottleneck(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        LO_sigma = hparams["learnable_offset"]["sigma"]
-        LO_kernel_size = int(LO_sigma * 3) * 2 + 1
+        if stride == 1:
+            LO_interpolate_kernel_type = hparams["learnable_offset"]["interpolate_kernel_type"]
+            if LO_interpolate_kernel_type == "gaussian":
+                LO_sigma = hparams["learnable_offset"]["interpolate_gaussian_sigma"]
+                LO_kernel_size = int(LO_sigma * 3) * 2 + 1
+            else:
+                LO_sigma = 0.
+                LO_kernel_size = 3
 
-        self.displace = DisplaceChannel(
-            hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor,
-            1,
-            self.inplanes,
-            learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
-            disable_displace=False,
-            random_offset_init=hparams["model"]["detail"]["random_offset_init"],
-            use_origin=True,
-            actual_stride=1,
-            displace_size=(1, 1),
-            LO_kernel_size=LO_kernel_size,
-            LO_sigma=LO_sigma,
-            LO_balance_grad=False,
-            free_chan_per_pos=self.inplanes // hparams["learnable_offset"]["bind_chan"],
-            dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"],
-            regress_offset=hparams["learnable_offset"]["regress_offset"],
-            LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"])
-        Experiment.exp.displace_mods.append(self.displace)
+            self.displace = DisplaceChannel(
+                hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor,
+                1,
+                self.inplanes,
+                learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
+                disable_displace=False,
+                random_offset_init=hparams["model"]["detail"]["random_offset_init"],
+                use_origin=True,
+                actual_stride=1,
+                displace_size=(1, 1),
+                LO_interpolate_kernel_type=LO_interpolate_kernel_type,
+                LO_kernel_size=LO_kernel_size,
+                LO_sigma=LO_sigma,
+                LO_balance_grad=False,
+                free_chan_per_pos=self.inplanes // hparams["learnable_offset"]["bind_chan"],
+                dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"],
+                regress_offset=hparams["learnable_offset"]["regress_offset"],
+                LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"])
+            Experiment.exp.displace_mods.append(self.displace)
+        else:
+            self.displace = None
 
         if self.res_index in [0,1,2] and self.block_index == 1:
             self.early_prediction = True
@@ -595,9 +600,10 @@ class Bottleneck(nn.Module):
             Experiment.exp.early_predictor_size.append(self.inplanes)
 
     def forward(self, x):
-        x, x_LO = self.displace(x)
-        if x_LO is not None:
-            x = x_LO
+        if self.displace is not None:
+            x, x_LO = self.displace(x)
+            if x_LO is not None:
+                x = x_LO
 
         residual = x
 
@@ -645,32 +651,50 @@ class BasicBlock(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        LO_sigma = hparams["learnable_offset"]["sigma"]
-        LO_kernel_size = int(LO_sigma * 3) * 2 + 1
+        if stride == 1:
+            LO_interpolate_kernel_type = hparams["learnable_offset"]["interpolate_kernel_type"]
+            if LO_interpolate_kernel_type == "gaussian":
+                LO_sigma = hparams["learnable_offset"]["sigma"]
+                LO_kernel_size = int(LO_sigma * 3) * 2 + 1
+            else:
+                LO_sigma = 0.
+                LO_kernel_size = 3
 
-        self.displace = DisplaceChannel(
-            hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor,
-            1,
-            self.inplanes,
-            learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
-            disable_displace=False,
-            random_offset_init=hparams["model"]["detail"]["random_offset_init"],
-            use_origin=True,
-            actual_stride=1,
-            displace_size=(1, 1),
-            LO_kernel_size=LO_kernel_size,
-            LO_sigma=LO_sigma,
-            LO_balance_grad=False,
-            free_chan_per_pos=self.inplanes // hparams["learnable_offset"]["bind_chan"],
-            dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"],
-            regress_offset=hparams["learnable_offset"]["regress_offset"],
-            LO_grad_inside_only=hparams["learnable_offset"]["grad_inside_only"])
-        Experiment.exp.displace_mods.append(self.displace)
+            self.displace = DisplaceChannel(
+                hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor,
+                1,
+                self.inplanes,
+                learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
+                disable_displace=False,
+                random_offset_init=hparams["model"]["detail"]["random_offset_init"],
+                use_origin=True,
+                actual_stride=1,
+                displace_size=(1, 1),
+                LO_interpolate_kernel_type=LO_interpolate_kernel_type,
+                LO_kernel_size=LO_kernel_size,
+                LO_sigma=LO_sigma,
+                LO_balance_grad=False,
+                free_chan_per_pos=self.inplanes // hparams["learnable_offset"]["bind_chan"],
+                dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"],
+                regress_offset=hparams["learnable_offset"]["regress_offset"],
+                LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"])
+            Experiment.exp.displace_mods.append(self.displace)
+        else:
+            self.displace = None
+
+        if self.res_index in [0,1,2] and self.block_index == 1:
+            self.early_prediction = True
+        else:
+            self.early_prediction = False
+
+        if self.early_prediction:
+            Experiment.exp.early_predictor_size.append(self.inplanes)
 
     def forward(self, x):
-        x, x_LO = self.displace(x)
-        if x_LO is not None:
-            x = x_LO
+        if self.displace is not None:
+            x, x_LO = self.displace(x)
+            if x_LO is not None:
+                x = x_LO
 
         residual = x
 
@@ -720,7 +744,7 @@ class ResNet(nn.Module):
 
         for mod_name, m in self.named_modules():
             # TODO:
-            if re.match(r"^(.+\.)?extra_mod(\..+)?$", mod_name):
+            if re.match(r"^(.+\.)?displace(\..+)?$", mod_name):
                 continue
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels

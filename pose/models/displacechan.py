@@ -8,6 +8,22 @@ import torch.nn.functional as F
 import numpy as np
 from .displace import Displace, DisplaceCUDA, CustomizedGradDepthwiseConv2d
 from pose.models.common import StrictNaNReLU
+from utils.lambdalayer import Lambda
+
+class Weighted(nn.Module):
+    def __init__(self, num_channels, init=0.):
+        super(Weighted, self).__init__()
+        self.weight = nn.Parameter(torch.empty(num_channels, dtype=torch.float))
+        if isinstance(init, (float, int)):
+            self.weight.data.fill_(float(init))
+        elif isinstance(init, torch.FloatTensor):
+            self.weight.data.copy_(init)
+        else:
+            raise ValueError("Wrong initialization")
+
+    def forward(self, x):
+        assert x.dim() == 2
+        return x * self.weight[None]
 
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, init_stride, chan_per_pos,
@@ -15,7 +31,8 @@ class DisplaceChannel(nn.Module):
                  disable_displace=False, random_offset_init=None, use_origin=False, actual_stride=None,
                  displace_size=None, LO_balance_grad=True, free_chan_per_pos=1,
                  dconv_for_LO_stride=1, regress_offset=False,
-                 LO_grad_inside_only=False, LO_half_reversed_offset=False):
+                 LO_grad_inside_only=False, LO_half_reversed_offset=False,
+                 LO_interpolate_kernel_type="gaussian"):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -42,6 +59,7 @@ class DisplaceChannel(nn.Module):
                 assert isinstance(LO_kernel_size, int)
                 assert LO_kernel_size % 2 == 1
 
+                self.LO_interpolate_kernel_type = LO_interpolate_kernel_type
                 self.LO_kernel_size_init = LO_kernel_size
                 self.LO_sigma_init = LO_sigma
                 self.set_learnable_offset_para(LO_kernel_size, LO_sigma)
@@ -52,6 +70,7 @@ class DisplaceChannel(nn.Module):
                     self.offset.register_hook(self.balance_offset_grad)
 
                 if regress_offset:
+                    regressor_channels = self.num_pos * self.free_chan_per_pos * 2
                     self.offset_regressor = nn.Sequential(
                         nn.Conv2d(self.inplanes, self.inplanes // 4, kernel_size=1, stride=1),
                         nn.BatchNorm2d(self.inplanes // 4),
@@ -59,21 +78,21 @@ class DisplaceChannel(nn.Module):
                         nn.Conv2d(self.inplanes // 4, self.inplanes // 4, kernel_size=3, stride=1, padding=1),
                         nn.BatchNorm2d(self.inplanes // 4),
                         StrictNaNReLU(inplace=True),
-                        nn.Conv2d(self.inplanes // 4, self.num_pos * self.free_chan_per_pos * 2, kernel_size=1, stride=1, bias=False),
-                        nn.BatchNorm2d(self.num_pos * self.free_chan_per_pos * 2))
-
-                    for m in self.offset_regressor:
-                        if isinstance(m, nn.Conv2d):
-                            n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                            m.weight.data.normal_(0, math.sqrt(2. / n / 100))
-                        elif isinstance(m, nn.GroupNorm):
-                            m.weight.data.fill_(1)
-                            m.bias.data.zero_()
-                    self.offset_regressor[-1].weight.data.zero_()
+                        nn.AdaptiveAvgPool2d((1, 1)),
+                        Lambda(lambda x: x.squeeze(-1).squeeze(-1)),
+                        nn.Linear(self.inplanes // 4, regressor_channels, bias=False),
+                        nn.BatchNorm1d(regressor_channels, affine=False),
+                        Weighted(regressor_channels, init=0.),
+                        Lambda(lambda x: x.view(x.size(0), -1, 2)))
+                    # for m in self.offset_regressor:
+                    #     if isinstance(m, nn.Conv2d):
+                    #         n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                    #         m.weight.data.normal_(0, math.sqrt(2. / n / 100))
             else:
                 self.switch_LO_state(False)
 
     def set_learnable_offset_para(self, kernel_size, sigma):
+        assert not hasattr(self, "LO_kernel_size") or self.LO_interpolate_kernel_type == "gaussian"
         # TODO: Log
         log_i("learnable offset para set to kernel_size={}, sigma={}".format(kernel_size, sigma))
         assert kernel_size % 2 == 1
@@ -143,7 +162,7 @@ class DisplaceChannel(nn.Module):
         self.offset.data[:, 1].clamp_(min=-self.height + 0.6,
                                       max=self.height - 0.6)
 
-    def gaussian_translate(self, x, offset):
+    def interpolate(self, x, offset):
         batch_size = x.size(0)
         num_channels = x.size(1)
         height = x.size(2)
@@ -151,10 +170,14 @@ class DisplaceChannel(nn.Module):
         offset_channels = offset.size(-2)
         bind_chan = num_channels // offset_channels
         field = self.field[x.device]
+        suboffset = offset - offset.detach().round()
         if offset.dim() == 3:
-            # Dynamic offset
-            kernel = torch.exp(- (field[None] + (offset - offset.detach().round())[:, :, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
-            kernel = kernel / kernel.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
+            if self.LO_interpolate_kernel_type == "gaussian":
+                # Dynamic offset
+                kernel = torch.exp(- (field[None] + suboffset[:, :, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
+                kernel = kernel / kernel.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
+            elif self.LO_interpolate_kernel_type == "bilinear":
+                kernel = (1 - (field[None] - suboffset[:, :, None, None, :]).abs()).clamp(min=0).prod(dim=-1)
             # nsamp*npos*bind_chan x kh x kw
             kernel = kernel.view(batch_size*offset_channels, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, bind_chan, 1, 1).view(batch_size*num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
             # 1 x nsamp*npos*bind_chan x height x width
@@ -171,12 +194,14 @@ class DisplaceChannel(nn.Module):
             return out
         elif offset.dim() == 2:
             # Static offset
-
-            # The offset means which direction and how long we should move the image,
-            # while for each kernel at each individual place, -offset is the center where it should 'look at',
-            # so the field becomes to force - (-offset.float) -> force + offset.float
-            kernel = torch.exp(- (field + (offset - offset.detach().round())[:, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
-            kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
+            if self.LO_interpolate_kernel_type == "gaussian":
+                # The offset means which direction and how long we should move the image,
+                # while for each kernel at each individual place, -offset is the center where it should 'look at',
+                # so the field becomes to force - (-offset.float) -> force + offset.float
+                kernel = torch.exp(- (field + suboffset[:, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
+                kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
+            elif self.LO_interpolate_kernel_type == "bilinear":
+                kernel = (1 - (field - suboffset[:, None, None, :]).abs()).clamp(min=0).prod(dim=-1)
             # npos*bind_chan x kh x kw
             kernel = kernel.view(offset_channels, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, bind_chan, 1, 1).view(num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
             # nsamp x npos*bind_chan x height x width
@@ -213,10 +238,10 @@ class DisplaceChannel(nn.Module):
                 offset = self.offset
 
             if self.regress_offset:
-                assert offset_plus is None
-                assert self.offset.dim() == 2
-                offset_regressed = self.offset_regressor(inp).mean(dim=-1).mean(dim=-1).view(batch_size, free_channels, 2)
-                offset = self.offset[None] + offset_regressed
+                if self.offset.dim() == 2:
+                    offset = offset[None]
+                offset_regressed = self.offset_regressor(inp)
+                offset = offset + offset_regressed
 
             bind_chan = num_channels // free_channels
             if self.LO_half_reversed_offset:
@@ -235,7 +260,7 @@ class DisplaceChannel(nn.Module):
                 if device not in self.field:
                     self.field[device] = self.field[torch.device("cpu")].to(device)
 
-                out_LO = self.gaussian_translate(out, offset)
+                out_LO = self.interpolate(out, offset)
         else:
             out = inp
 
