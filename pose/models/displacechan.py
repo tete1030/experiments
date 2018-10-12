@@ -187,7 +187,7 @@ class DisplaceChannel(nn.Module):
                 kernel = torch.exp(- (field[None] + suboffset[:, :, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
                 kernel = kernel / kernel.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
             elif self.LO_interpolate_kernel_type == "bilinear":
-                kernel = (1 - (field[None] - suboffset[:, :, None, None, :]).abs()).clamp(min=0).prod(dim=-1)
+                kernel = (1 - (field[None] + suboffset[:, :, None, None, :]).abs()).clamp(min=0).prod(dim=-1)
             # nsamp*npos*bind_chan x kh x kw
             kernel = kernel.view(batch_size*offset_channels, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, bind_chan, 1, 1).view(batch_size*num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
             # 1 x nsamp*npos*bind_chan x height x width
@@ -211,7 +211,7 @@ class DisplaceChannel(nn.Module):
                 kernel = torch.exp(- (field + suboffset[:, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
                 kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
             elif self.LO_interpolate_kernel_type == "bilinear":
-                kernel = (1 - (field - suboffset[:, None, None, :]).abs()).clamp(min=0).prod(dim=-1)
+                kernel = (1 - (field + suboffset[:, None, None, :]).abs()).clamp(min=0).prod(dim=-1)
             # npos*bind_chan x kh x kw
             kernel = kernel.view(offset_channels, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, bind_chan, 1, 1).view(num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
             # nsamp x npos*bind_chan x height x width
