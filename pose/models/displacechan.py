@@ -229,7 +229,7 @@ class DisplaceChannel(nn.Module):
         else:
             raise ValueError()
 
-    def forward(self, inp, LO_active=None, offset_plus_rel=None):
+    def forward(self, inp, LO_active=None, offset_plus_rel=None, offset_regressor_atten=None):
         batch_size = inp.size(0)
         num_channels = inp.size(1)
         height = inp.size(2)
@@ -251,7 +251,11 @@ class DisplaceChannel(nn.Module):
             if self.regress_offset:
                 if offset_rel.dim() == 2:
                     offset_rel = offset_rel[None]
-                offset_regressed = self.offset_regressor(inp)
+                if offset_regressor_atten is not None:
+                    inp_atten = offset_regressor_atten * inp
+                    offset_regressed = self.offset_regressor(inp_atten)
+                else:
+                    offset_regressed = self.offset_regressor(inp)
                 offset_rel = offset_rel + offset_regressed
 
             bind_chan = num_channels // free_channels

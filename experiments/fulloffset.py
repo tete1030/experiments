@@ -581,7 +581,12 @@ class OffsetBlock(nn.Module):
         Experiment.exp.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(inplanes, inplanes, 1)
         self.post_offset = nn.Conv2d(inplanes, inplanes, 1)
-        self.atten = nn.Sequential(
+        self.atten_displace = nn.Sequential(
+            nn.Conv2d(inplanes, inplanes, 1),
+            nn.BatchNorm2d(inplanes),
+            nn.Softplus(),
+            SpaceNormalization())
+        self.atten_regressor = nn.Sequential(
             nn.Conv2d(inplanes, inplanes, 1),
             nn.BatchNorm2d(inplanes),
             nn.Softplus(),
@@ -591,10 +596,11 @@ class OffsetBlock(nn.Module):
 
     def forward(self, x):
         out_pre = self.pre_offset(x)
-        out_dis, out_dis_LO = self.displace(out_pre)
+        out_atten = self.atten_displace(x)
+        regressor_atten = self.atten_regressor(x)
+        out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=regressor_atten)
         if out_dis_LO is not None:
             out_dis = out_dis_LO
-        out_atten = self.atten(x)
         out_post = self.post_offset(out_atten * out_dis)
         out_skip = x + out_post
 
