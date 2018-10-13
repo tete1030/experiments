@@ -540,6 +540,64 @@ class Predictor(nn.Module):
     def forward(self, x):
         return self.predict(x)
 
+class SpaceSoftmax(nn.Module):
+    def __init__(self):
+        super(SpaceSoftmax, self).__init__()
+
+    def forward(self, x):
+        x_exp = x.exp()
+        return x_exp / x_exp.sum(-1, keepdim=True).sum(-2, keepdim=True)
+
+class OffsetBlock(nn.Module):
+    def __init__(self, height, width, inplanes):
+        super(OffsetBlock, self).__init__()
+        LO_interpolate_kernel_type = hparams["learnable_offset"]["interpolate_kernel_type"]
+        if LO_interpolate_kernel_type == "gaussian":
+            LO_sigma = hparams["learnable_offset"]["interpolate_gaussian_sigma"]
+            LO_kernel_size = int(LO_sigma * 3) * 2 + 1
+        else:
+            LO_sigma = 0.
+            LO_kernel_size = 3
+        self.inplanes = inplanes
+        self.displace = DisplaceChannel(
+            height, width,
+            1,
+            inplanes,
+            learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
+            disable_displace=False,
+            random_offset_init=hparams["model"]["detail"]["random_offset_init"],
+            use_origin=True,
+            actual_stride=1,
+            displace_size=(1, 1),
+            LO_interpolate_kernel_type=LO_interpolate_kernel_type,
+            LO_kernel_size=LO_kernel_size,
+            LO_sigma=LO_sigma,
+            LO_balance_grad=False,
+            free_chan_per_pos=inplanes // hparams["learnable_offset"]["bind_chan"],
+            dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"],
+            regress_offset=hparams["learnable_offset"]["regress_offset"],
+            LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"])
+        Experiment.exp.displace_mods.append(self.displace)
+        self.pre_offset = nn.Conv2d(inplanes, inplanes, 1)
+        self.post_offset = nn.Conv2d(inplanes, inplanes, 1)
+        self.atten = nn.Sequential(
+            nn.Conv2d(inplanes, inplanes, 1),
+            nn.BatchNorm2d(inplanes),
+            nn.ReLU(inplace=True),
+            SpaceSoftmax())
+        self.bn = nn.BatchNorm2d(inplanes)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        out = self.pre_offset(x)
+        out, out_LO = self.displace(out)
+        if out_LO is not None:
+            out = out_LO
+        out = self.post_offset(self.atten(x) * out)
+        out = x + out
+
+        return self.relu(self.bn(out))
+
 class Bottleneck(nn.Module):
     expansion = 4
 
@@ -561,33 +619,7 @@ class Bottleneck(nn.Module):
         self.block_index = block_index
 
         if stride == 1:
-            LO_interpolate_kernel_type = hparams["learnable_offset"]["interpolate_kernel_type"]
-            if LO_interpolate_kernel_type == "gaussian":
-                LO_sigma = hparams["learnable_offset"]["interpolate_gaussian_sigma"]
-                LO_kernel_size = int(LO_sigma * 3) * 2 + 1
-            else:
-                LO_sigma = 0.
-                LO_kernel_size = 3
-
-            self.displace = DisplaceChannel(
-                hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor,
-                1,
-                self.inplanes,
-                learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
-                disable_displace=False,
-                random_offset_init=hparams["model"]["detail"]["random_offset_init"],
-                use_origin=True,
-                actual_stride=1,
-                displace_size=(1, 1),
-                LO_interpolate_kernel_type=LO_interpolate_kernel_type,
-                LO_kernel_size=LO_kernel_size,
-                LO_sigma=LO_sigma,
-                LO_balance_grad=False,
-                free_chan_per_pos=self.inplanes // hparams["learnable_offset"]["bind_chan"],
-                dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"],
-                regress_offset=hparams["learnable_offset"]["regress_offset"],
-                LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"])
-            Experiment.exp.displace_mods.append(self.displace)
+            self.displace = OffsetBlock(hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor, self.inplanes)
         else:
             self.displace = None
 
@@ -601,9 +633,7 @@ class Bottleneck(nn.Module):
 
     def forward(self, x):
         if self.displace is not None:
-            x, x_LO = self.displace(x)
-            if x_LO is not None:
-                x = x_LO
+            x = self.displace(x)
 
         residual = x
 
@@ -652,33 +682,7 @@ class BasicBlock(nn.Module):
         self.block_index = block_index
 
         if stride == 1:
-            LO_interpolate_kernel_type = hparams["learnable_offset"]["interpolate_kernel_type"]
-            if LO_interpolate_kernel_type == "gaussian":
-                LO_sigma = hparams["learnable_offset"]["sigma"]
-                LO_kernel_size = int(LO_sigma * 3) * 2 + 1
-            else:
-                LO_sigma = 0.
-                LO_kernel_size = 3
-
-            self.displace = DisplaceChannel(
-                hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor,
-                1,
-                self.inplanes,
-                learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
-                disable_displace=False,
-                random_offset_init=hparams["model"]["detail"]["random_offset_init"],
-                use_origin=True,
-                actual_stride=1,
-                displace_size=(1, 1),
-                LO_interpolate_kernel_type=LO_interpolate_kernel_type,
-                LO_kernel_size=LO_kernel_size,
-                LO_sigma=LO_sigma,
-                LO_balance_grad=False,
-                free_chan_per_pos=self.inplanes // hparams["learnable_offset"]["bind_chan"],
-                dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"],
-                regress_offset=hparams["learnable_offset"]["regress_offset"],
-                LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"])
-            Experiment.exp.displace_mods.append(self.displace)
+            self.displace = OffsetBlock(hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor, self.inplanes)
         else:
             self.displace = None
 
@@ -692,9 +696,7 @@ class BasicBlock(nn.Module):
 
     def forward(self, x):
         if self.displace is not None:
-            x, x_LO = self.displace(x)
-            if x_LO is not None:
-                x = x_LO
+            x = self.displace(x)
 
         residual = x
 
