@@ -589,14 +589,36 @@ class OffsetBlock(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
-        out = self.pre_offset(x)
-        out, out_LO = self.displace(out)
-        if out_LO is not None:
-            out = out_LO
-        out = self.post_offset(self.atten(x) * out)
-        out = x + out
+        out_pre = self.pre_offset(x)
+        out_dis, out_dis_LO = self.displace(out_pre)
+        if out_dis_LO is not None:
+            out_dis = out_dis_LO
+        out_atten = self.atten(x)
+        out_post = self.post_offset(out_atten * out_dis)
+        out_skip = x + out_post
 
-        return self.relu(self.bn(out))
+        out_final = self.relu(self.bn(out_skip))
+
+        if config.debug_nan:
+            def get_backward_hook(var_name):
+                def _backward_hook(grad):
+                    exp = self
+                    if isinstance(grad, torch.Tensor) and (grad.data != grad.data).any():
+                        print("[OffsetBlock] " + var_name + " contains NaN during backward")
+                        import ipdb; ipdb.set_trace()
+                return _backward_hook
+
+            all_var_names = ["x", "out_pre", "out_dis", "out_atten", "out_post", "out_skip", "out_final"]
+
+            print("[OffsetBlock] !!!!!PERFORMANCE WARN: BACKWARD NAN DEBUGGING ENABLED!!!!!")
+            for var_name in all_var_names:
+                cur_var = locals()[var_name]
+                if not (cur_var.data == cur_var.data).all():
+                    print("[OffsetBlock] " + var_name + " contains NaN during forward")
+                    import ipdb; ipdb.set_trace()
+                cur_var.register_hook(get_backward_hook(var_name))
+
+        return out_final
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -619,9 +641,9 @@ class Bottleneck(nn.Module):
         self.block_index = block_index
 
         if stride == 1:
-            self.displace = OffsetBlock(hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor, self.inplanes)
+            self.offset_block = OffsetBlock(hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor, self.inplanes)
         else:
-            self.displace = None
+            self.offset_block = None
 
         if self.res_index in [0,1,2] and self.block_index == 1:
             self.early_prediction = True
@@ -632,8 +654,8 @@ class Bottleneck(nn.Module):
             Experiment.exp.early_predictor_size.append(self.inplanes)
 
     def forward(self, x):
-        if self.displace is not None:
-            x = self.displace(x)
+        if self.offset_block is not None:
+            x = self.offset_block(x)
 
         residual = x
 
@@ -682,9 +704,9 @@ class BasicBlock(nn.Module):
         self.block_index = block_index
 
         if stride == 1:
-            self.displace = OffsetBlock(hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor, self.inplanes)
+            self.offset_block = OffsetBlock(hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor, self.inplanes)
         else:
-            self.displace = None
+            self.offset_block = None
 
         if self.res_index in [0,1,2] and self.block_index == 1:
             self.early_prediction = True
@@ -695,8 +717,8 @@ class BasicBlock(nn.Module):
             Experiment.exp.early_predictor_size.append(self.inplanes)
 
     def forward(self, x):
-        if self.displace is not None:
-            x = self.displace(x)
+        if self.offset_block is not None:
+            x = self.offset_block(x)
 
         residual = x
 
