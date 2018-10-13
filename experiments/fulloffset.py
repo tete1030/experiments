@@ -26,6 +26,7 @@ from utils.sync_batchnorm import SynchronizedBatchNorm2d, DataParallelWithCallba
 from utils.checkpoint import load_pretrained_loose, save_checkpoint, RejectLoadError
 from utils.lambdalayer import Lambda
 from experiments.baseexperiment import BaseExperiment, EpochContext
+from utils.lambdalayer import Lambda
 
 FACTOR = 4
 NUM_PARTS = datasets.mscoco.NUM_PARTS
@@ -540,13 +541,13 @@ class Predictor(nn.Module):
     def forward(self, x):
         return self.predict(x)
 
-class SpaceSoftmax(nn.Module):
+class SpaceNormalization(nn.Module):
     def __init__(self):
-        super(SpaceSoftmax, self).__init__()
+        super(SpaceNormalization, self).__init__()
 
     def forward(self, x):
-        x_exp = x.exp()
-        return x_exp / x_exp.sum(-1, keepdim=True).sum(-2, keepdim=True)
+        x = x + torch.tensor(np.finfo(np.float32).eps, device=x.device, dtype=torch.float)
+        return x / x.sum(-1, keepdim=True).sum(-2, keepdim=True)
 
 class OffsetBlock(nn.Module):
     def __init__(self, height, width, inplanes):
@@ -583,8 +584,8 @@ class OffsetBlock(nn.Module):
         self.atten = nn.Sequential(
             nn.Conv2d(inplanes, inplanes, 1),
             nn.BatchNorm2d(inplanes),
-            nn.ReLU(inplace=True),
-            SpaceSoftmax())
+            nn.Softplus(),
+            SpaceNormalization())
         self.bn = nn.BatchNorm2d(inplanes)
         self.relu = nn.ReLU(inplace=True)
 
