@@ -17,19 +17,21 @@ def adjust_learning_rate(optimizer, epoch, init_lr, schedule, gamma):
 class TrainContext(object):
     def __init__(self, model):
         self.model = model
+        self.prev = self.model.training
 
     def __enter__(self):
         self.model.train()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        pass
+        self.model.train(self.prev)
 
 class ValidContext(object):
     def __init__(self, model):
         self.model = model
+        self.prev = self.model.training
 
     def __enter__(self):
         self.model.eval()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        pass
+        self.model.train(self.prev)
