@@ -76,6 +76,7 @@ def ask(question, posstr="y", negstr="n", ansretry=True, ansdefault=None, timeou
             return ansdefault
         finally:
             if timeout_sec:
+                signal.alarm(0)
                 signal.signal(signal.SIGALRM, alarm_handler_ori)
 
         retry_count += 1
