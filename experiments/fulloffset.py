@@ -294,6 +294,7 @@ class Experiment(BaseExperiment):
             self.count = 0
             # self.val = None
             self.avg = None
+            self.lastdiff = None
 
         def update(self, val, n=1):
             for i in range(n):
@@ -304,12 +305,12 @@ class Experiment(BaseExperiment):
                     self._pool.append(val)
                     self._pointer = (self._pointer + 1) % self.size
                     self.count += 1
-            
+
             if self.count > 1:
-                # self.val = val - self._pool[(self._pointer + self.count - 2) % self.count]
-                self.avg = ((val - self._pool[self._pointer % self.count]) / (self.count - 1)).abs().mean()
+                self.lastdiff = (val - self._pool[(self._pointer + self.count - 1) % self.count]).abs().mean().item()
+                self.avg = ((val - self._pool[self._pointer % self.count]) / (self.count - 1)).abs().mean().item()
             else:
-                # self.val = None
+                self.lastdiff = None
                 self.avg = None
 
     @staticmethod
@@ -346,11 +347,13 @@ class Experiment(BaseExperiment):
             self.early_predictor_optimizer.step()
 
         if optimize_offset:
-            move_dises = list()
+            move_dis_avg = list()
+            move_dis = list()
             for idm in range(len(self.displace_mods)):
                 self.move_dis_avgmeter[idm].update((self.displace_mods[idm].offset.detach() * self.displace_mods[idm].scale).cpu())
-                move_dises.append(self.move_dis_avgmeter[idm].avg)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "move_dis"), {"mod": np.mean(move_dises)}, progress["step"] + 1)
+                move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
+                move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "move_dis"), {"mod": np.mean(move_dis_avg), "mod_cur": np.mean(move_dis)}, progress["step"] + 1)
 
         if (progress["step"] + 1) % hparams["learnable_offset"]["offset_save_interval"] == 0:
             self.save_offsets(progress["step"] + 1)
@@ -597,8 +600,7 @@ class OffsetBlock(nn.Module):
     def forward(self, x):
         out_pre = self.pre_offset(x)
         out_atten = self.atten_displace(x)
-        regressor_atten = self.atten_regressor(x)
-        out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=regressor_atten)
+        out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=self.atten_regressor(out_pre))
         if out_dis_LO is not None:
             out_dis = out_dis_LO
         out_post = self.post_offset(out_atten * out_dis)
