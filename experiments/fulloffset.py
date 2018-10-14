@@ -277,6 +277,7 @@ class Experiment(BaseExperiment):
 
     def epoch_start(self, epoch, step):
         self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
+        adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
 
         self.set_offset_learning_rate(epoch, step)
         self.set_offset_learning_para(epoch, step)
@@ -368,6 +369,7 @@ class Experiment(BaseExperiment):
         keypoint = batch["keypoint"]
         is_train = progress["train"]
         batch_size = img.size(0)
+        globalvars.progress = progress
 
         if progress["step"] == hparams["learnable_offset"]["train_min_step"] and progress["train"]:
             self.save_offsets(progress["step"])
@@ -598,6 +600,9 @@ class OffsetBlock(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
+        if globalvars.progress["step"] < hparams["learnable_offset"]["train_min_step"]:
+            return x
+
         out_pre = self.pre_offset(x)
         out_atten = self.atten_displace(x)
         out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=self.atten_regressor(out_pre))
