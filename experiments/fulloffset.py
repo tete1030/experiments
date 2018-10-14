@@ -308,7 +308,7 @@ class Experiment(BaseExperiment):
                     self.count += 1
 
             if self.count > 1:
-                self.lastdiff = (val - self._pool[(self._pointer + self.count - 1) % self.count]).abs().mean().item()
+                self.lastdiff = (val - self._pool[(self._pointer + self.count - 2) % self.count]).abs().mean().item()
                 self.avg = ((val - self._pool[self._pointer % self.count]) / (self.count - 1)).abs().mean().item()
             else:
                 self.lastdiff = None
