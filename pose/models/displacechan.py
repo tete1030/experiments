@@ -39,9 +39,9 @@ class OffsetRegressor(nn.Module):
             nn.BatchNorm2d(self.atten_inplanes),
             StrictNaNReLU(inplace=True))
 
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
         self.regressor = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1, 1)),
-            Lambda(lambda x: x.squeeze(-1).squeeze(-1)),
             nn.Linear(self.atten_inplanes, regressor_channels, bias=False),
             nn.BatchNorm1d(regressor_channels, affine=False),
             Weighted(regressor_channels, init=0.),
@@ -68,7 +68,9 @@ class OffsetRegressor(nn.Module):
     def forward(self, x, atten=None):
         x = self.pre(x)
         if atten is not None:
-            x = x * atten
+            x = (x * atten).sum(-1).sum(-1)
+        else:
+            x = self.avgpool(x).squeeze(-1).squeeze(-1)
         return self.regressor(x)
 
 class DisplaceChannel(nn.Module):

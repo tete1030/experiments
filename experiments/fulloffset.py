@@ -8,6 +8,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import DataParallel
+from torch.nn.modules.utils import _pair
+import torch.nn.functional as F
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
@@ -554,6 +556,21 @@ class SpaceNormalization(nn.Module):
         x = x + torch.tensor(np.finfo(np.float32).eps, device=x.device, dtype=torch.float)
         return x / x.sum(-1, keepdim=True).sum(-2, keepdim=True)
 
+class GaussianBlur(nn.Module):
+    def __init__(self, inplanes, kernel_size=3, sigma=1):
+        super(GaussianBlur, self).__init__()
+        kernel_size = _pair(kernel_size)
+        assert kernel_size[0] % 2 == 1 and kernel_size[1] % 2 == 1
+        y = torch.arange(-int(kernel_size[0] // 2), int(kernel_size[0] // 2) + 1)
+        x = torch.arange(-int(kernel_size[1] // 2), int(kernel_size[1] // 2) + 1)
+        field = torch.stack([x.expand(kernel_size[0], -1), y[:, None].expand(-1, kernel_size[1])], dim=2).float()
+        self.inplanes = inplanes
+        self.kernel_size = kernel_size
+        self.register_buffer("gaussian_kernel", torch.exp(- field.pow(2).sum(dim=2) / 2 / float(sigma) ** 2).view(1, 1, kernel_size[0], kernel_size[1]).repeat(self.inplanes, 1, 1, 1))
+
+    def forward(self, x):
+        return F.conv2d(x, self.gaussian_kernel, padding=(self.kernel_size[0] // 2, self.kernel_size[1] // 2), groups=self.inplanes)
+
 class Attention(nn.Module):
     def __init__(self, inplanes, outplanes, input_shape=None, bias_factor=0):
         super(Attention, self).__init__()
@@ -571,11 +588,12 @@ class Attention(nn.Module):
             nn.Conv2d(self.total_inplanes, outplanes, 1),
             nn.BatchNorm2d(outplanes),
             nn.Softplus(),
+            GaussianBlur(outplanes),
             SpaceNormalization())
 
     def forward(self, x):
         if self.bias is not None:
-            atten_bias = nn.functional.interpolate(self.bias, size=self.input_shape, mode="bilinear", align_corners=True).expand(x.size(0), -1, -1, -1)
+            atten_bias = nn.functional.interpolate(self.bias, size=x.size()[-2:], mode="bilinear", align_corners=True).expand(x.size(0), -1, -1, -1)
             x = torch.cat([x, atten_bias], dim=1)
 
         return self.atten(x)
