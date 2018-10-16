@@ -554,6 +554,32 @@ class SpaceNormalization(nn.Module):
         x = x + torch.tensor(np.finfo(np.float32).eps, device=x.device, dtype=torch.float)
         return x / x.sum(-1, keepdim=True).sum(-2, keepdim=True)
 
+class Attention(nn.Module):
+    def __init__(self, inplanes, outplanes, input_shape=None, bias_factor=0):
+        super(Attention, self).__init__()
+        self.inplanes = inplanes
+        self.outplanes = outplanes
+        self.total_inplanes = inplanes
+        self.input_shape = input_shape
+        self.bias_factor = bias_factor
+        if input_shape is not None and bias_factor > 0:
+            self.total_inplanes += inplanes // 4
+            self.bias = nn.Parameter(torch.ones(1, inplanes // 4, input_shape[0] // bias_factor, input_shape[1] // bias_factor, dtype=torch.float))
+        else:
+            self.bias = None
+        self.atten = nn.Sequential(
+            nn.Conv2d(self.total_inplanes, outplanes, 1),
+            nn.BatchNorm2d(outplanes),
+            nn.Softplus(),
+            SpaceNormalization())
+
+    def forward(self, x):
+        if self.bias is not None:
+            atten_bias = nn.functional.interpolate(self.bias, size=self.input_shape, mode="bilinear", align_corners=True).expand(x.size(0), -1, -1, -1)
+            x = torch.cat([x, atten_bias], dim=1)
+
+        return self.atten(x)
+
 class OffsetBlock(nn.Module):
     def __init__(self, height, width, inplanes):
         super(OffsetBlock, self).__init__()
@@ -564,6 +590,8 @@ class OffsetBlock(nn.Module):
         else:
             LO_sigma = 0.
             LO_kernel_size = 3
+        self.height = height
+        self.width = width
         self.inplanes = inplanes
         self.displace = DisplaceChannel(
             height, width,
@@ -586,16 +614,8 @@ class OffsetBlock(nn.Module):
         Experiment.exp.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(inplanes, inplanes, 1)
         self.post_offset = nn.Conv2d(inplanes, inplanes, 1)
-        self.atten_displace = nn.Sequential(
-            nn.Conv2d(inplanes, inplanes, 1),
-            nn.BatchNorm2d(inplanes),
-            nn.Softplus(),
-            SpaceNormalization())
-        self.atten_regressor = nn.Sequential(
-            nn.Conv2d(inplanes, inplanes, 1),
-            nn.BatchNorm2d(inplanes),
-            nn.Softplus(),
-            SpaceNormalization())
+        self.atten_displace = Attention(inplanes, inplanes, input_shape=(height, width), bias_factor=2)
+        self.atten_regressor = Attention(inplanes, self.displace.offset_regressor.atten_inplanes, input_shape=(height, width), bias_factor=2)
         self.bn = nn.BatchNorm2d(inplanes)
         self.relu = nn.ReLU(inplace=True)
 

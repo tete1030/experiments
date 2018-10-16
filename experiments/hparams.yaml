@@ -336,7 +336,7 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 39
+    id: 40
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -344,7 +344,7 @@ fulloffset:
     train_batch: 16
     test_batch: 16
     learnable_offset:
-        train_min_step: 100
+        train_min_step: 6543
         lr: 1.e-3
         lr_gamma: 0.1
         lr_decay_step: 460000 # 70 * 6543

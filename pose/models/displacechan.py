@@ -25,6 +25,52 @@ class Weighted(nn.Module):
         assert x.dim() == 2
         return x * self.weight[None]
 
+class OffsetRegressor(nn.Module):
+    def __init__(self, inplanes, regressor_channels):
+        super(OffsetRegressor, self).__init__()
+        self.inplanes = inplanes
+        self.atten_inplanes = inplanes // 4
+        self.regressor_channels = regressor_channels
+        self.pre = nn.Sequential(
+            nn.Conv2d(self.inplanes, self.atten_inplanes, kernel_size=1, stride=1),
+            nn.BatchNorm2d(self.atten_inplanes),
+            StrictNaNReLU(inplace=True),
+            nn.Conv2d(self.atten_inplanes, self.atten_inplanes, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(self.atten_inplanes),
+            StrictNaNReLU(inplace=True))
+
+        self.regressor = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),
+            Lambda(lambda x: x.squeeze(-1).squeeze(-1)),
+            nn.Linear(self.atten_inplanes, regressor_channels, bias=False),
+            nn.BatchNorm1d(regressor_channels, affine=False),
+            Weighted(regressor_channels, init=0.),
+            Lambda(lambda x: x.view(x.size(0), -1, 2)))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for m in self.parameters():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n / 100))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d)):
+                if m.weight is not None:
+                    m.weight.data.fill_(1)
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.Linear):
+                m.weight.data.normal_(0, math.sqrt(2. / m.weight.size(0) / 100))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+
+    def forward(self, x, atten=None):
+        x = self.pre(x)
+        if atten is not None:
+            x = x * atten
+        return self.regressor(x)
+
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, init_stride, chan_per_pos,
                  learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5,
@@ -72,33 +118,7 @@ class DisplaceChannel(nn.Module):
 
                 if regress_offset:
                     regressor_channels = self.num_pos * self.free_chan_per_pos * 2
-                    self.offset_regressor = nn.Sequential(
-                        nn.Conv2d(self.inplanes, self.inplanes // 4, kernel_size=1, stride=1),
-                        nn.BatchNorm2d(self.inplanes // 4),
-                        StrictNaNReLU(inplace=True),
-                        nn.Conv2d(self.inplanes // 4, self.inplanes // 4, kernel_size=3, stride=1, padding=1),
-                        nn.BatchNorm2d(self.inplanes // 4),
-                        StrictNaNReLU(inplace=True),
-                        nn.AdaptiveAvgPool2d((1, 1)),
-                        Lambda(lambda x: x.squeeze(-1).squeeze(-1)),
-                        nn.Linear(self.inplanes // 4, regressor_channels, bias=False),
-                        nn.BatchNorm1d(regressor_channels, affine=False),
-                        Weighted(regressor_channels, init=0.),
-                        Lambda(lambda x: x.view(x.size(0), -1, 2)))
-                    for m in self.offset_regressor:
-                        if isinstance(m, nn.Conv2d):
-                            n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                            m.weight.data.normal_(0, math.sqrt(2. / n / 100))
-                            if m.bias is not None:
-                                m.bias.data.zero_()
-                        elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d)):
-                            if m.weight is not None:
-                                m.weight.data.fill_(1)
-                                m.bias.data.zero_()
-                        elif isinstance(m, nn.Linear):
-                            m.weight.data.normal_(0, math.sqrt(2. / m.weight.size(0) / 100))
-                            if m.bias is not None:
-                                m.bias.data.zero_()
+                    self.offset_regressor = OffsetRegressor(self.inplanes, regressor_channels)
             else:
                 self.switch_LO_state(False)
 
@@ -252,8 +272,7 @@ class DisplaceChannel(nn.Module):
                 if offset_rel.dim() == 2:
                     offset_rel = offset_rel[None]
                 if offset_regressor_atten is not None:
-                    inp_atten = offset_regressor_atten * inp
-                    offset_regressed = self.offset_regressor(inp_atten)
+                    offset_regressed = self.offset_regressor(inp, atten=offset_regressor_atten)
                 else:
                     offset_regressed = self.offset_regressor(inp)
                 offset_rel = offset_rel + offset_regressed
