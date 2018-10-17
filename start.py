@@ -193,6 +193,8 @@ def main(args, unknown_args):
         if not config.evaluate:
             check_future_checkpoint(config.checkpoint, before_epoch + 1)
 
+    assert not (config.evaluate and args.run)
+
     if args.run is not None:
         run_name = args.run
         run_path = os.path.join("runs", run_name)
@@ -214,7 +216,8 @@ def main(args, unknown_args):
         globalvars.tb_writer = SummaryWriter(log_dir=run_path)
 
     log_i("Run name: {}".format(run_name))
-    wait_key()
+    if not config.evaluate:
+        wait_key()
 
     if config.handle_sig:
         enable_sigint_handler()
@@ -222,18 +225,26 @@ def main(args, unknown_args):
     if config.evaluate:
         print()
         log_i("Evaluation-only mode")
-        validate(exp, 0, 0, call_store=True)
+        # Set current state to the last iteration of the last epoch
+        exp.epoch_start(before_epoch, len(exp.train_loader) * (before_epoch - 1), True)
+        cur_step = len(exp.train_loader) * before_epoch - 1
+        validate(exp, before_epoch, cur_step, call_store=True)
+        exp.epoch_end(before_epoch, cur_step, True)
     else:
         train_eval_loop(exp, before_epoch + 1, hparams["epochs"] + 1)
 
     log_suc("Run finished!")
-    if args.run is None and \
-            not ask("Save this run?", posstr="y", negstr="delete", ansretry=False, ansdefault=True, timeout_sec=60) and \
-            input("Input this run name {} to delete: ".format(run_name)) == run_name:
-        log_i("Deleting this run")
-        shutil.rmtree(run_path)
+    if not config.evaluate:
+        if args.run is None and \
+                not ask("Save this run?", posstr="y", negstr="delete", ansretry=False, ansdefault=True, timeout_sec=60) and \
+                input("Input this run name {} to delete: ".format(run_name)) == run_name:
+            log_i("Deleting this run")
+            shutil.rmtree(run_path)
+        else:
+            log_i("Run saved")
     else:
-        log_i("Run saved")
+        log_i("Deleting this run in evaluate-only mode")
+        shutil.rmtree(run_path)
 
 def train_eval_loop(exp, start_epoch, stop_epoch):
     cur_step = len(exp.train_loader) * (start_epoch - 1)
@@ -242,7 +253,7 @@ def train_eval_loop(exp, start_epoch, stop_epoch):
         log_progress("Epoch: %d | LR: %.8f" % (epoch, exp.cur_lr))
         log_progress("Training:")
 
-        exp.epoch_start(epoch, cur_step)
+        exp.epoch_start(epoch, cur_step, False)
 
         if globalvars.sigint_triggered:
             return False
@@ -262,7 +273,7 @@ def train_eval_loop(exp, start_epoch, stop_epoch):
             return False
 
         cur_step += len(exp.train_loader)
-        exp.epoch_end(epoch, cur_step)
+        exp.epoch_end(epoch, cur_step, False)
 
         if globalvars.sigint_triggered:
             return False
@@ -325,8 +336,6 @@ def train(exp:BaseExperiment, epoch:int, cur_step:int, pause_interval:int=0):
             if globalvars.sigint_triggered:
                 break
 
-            cur_step += 1
-
             if config.fast_pass_train > 0 and (i+1) >= config.fast_pass_train:
                 log_progress("Fast Pass!")
                 yield cur_step, True
@@ -335,6 +344,8 @@ def train(exp:BaseExperiment, epoch:int, cur_step:int, pause_interval:int=0):
             is_final = (i == iter_length - 1)
             if is_final or (pause_interval > 0 and (i+1) % pause_interval == 0 and iter_length - i - 1 > pause_interval / 2):
                 yield cur_step, is_final
+
+            cur_step += 1
 
             end = time.time()
 

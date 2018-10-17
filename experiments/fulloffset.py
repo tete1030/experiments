@@ -275,11 +275,11 @@ class Experiment(BaseExperiment):
                 if dm.LO_kernel_size == 1:
                     dm.switch_LO_state(False)
 
-    def epoch_start(self, epoch, step):
-        self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
-        adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
-
-        self.set_offset_learning_rate(epoch, step)
+    def epoch_start(self, epoch, step, evaluate_only):
+        if not evaluate_only:
+            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
+            adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
+            self.set_offset_learning_rate(epoch, step)
         self.set_offset_learning_para(epoch, step)
 
     class OffsetCycleAverageMeter(object):
@@ -327,8 +327,9 @@ class Experiment(BaseExperiment):
         if not offset_disabled:
             torch.save([(dm.offset.detach() * dm.scale).cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(step)))
 
-    def epoch_end(self, epoch, step):
-        self.save_offsets(step)
+    def epoch_end(self, epoch, step, evaluate_only):
+        if not evaluate_only:
+            self.save_offsets(step)
 
     def iter_step(self, epoch_ctx:EpochContext, loss:torch.Tensor, progress:dict):
         optimize_offset = False
