@@ -93,7 +93,7 @@ class BaseExperiment(object):
     def evaluate(self, epoch_ctx:EpochContext, epoch:int, step:int):
         pass
 
-    def epoch_start(self, epoch:int, step:int):
+    def epoch_start(self, epoch:int, step:int, evaluate_only:bool):
         pass
 
     def iter_process(self, epoch_ctx:EpochContext, batch:dict, progress:dict) -> dict:
@@ -104,7 +104,7 @@ class BaseExperiment(object):
         loss.backward()
         self.optimizer.step()
 
-    def epoch_end(self, epoch:int, step:int):
+    def epoch_end(self, epoch:int, step:int, evaluate_only:bool):
         pass
 
     def process_stored(self, epoch_ctx:EpochContext, epoch:int, step:int):
