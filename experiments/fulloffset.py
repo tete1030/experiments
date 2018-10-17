@@ -379,7 +379,22 @@ class Experiment(BaseExperiment):
         # dirty trick for debug
         if config.vis:
             globalvars.cur_img = img
+        if not is_train:
+            globalvars.offset_pool = list()
+            globalvars.atten_displace = list()
+            globalvars.atten_regressor = list()
         output_maps, early_predictor_outputs = self.model(img)
+        if not is_train:
+            torch.save(
+                dict(
+                    offset=globalvars.offset_pool,
+                    atten_displace=globalvars.atten_displace,
+                    atten_regressor=globalvars.atten_regressor,
+                    img=self.val_dataset.restore_image(img)),
+                "state_iter_{}.pth".format(progress["iter"]))
+            globalvars.offset_pool = list()
+            globalvars.atten_displace = list()
+            globalvars.atten_regressor = list()
         # dirty trick for debug, release
         if config.vis:
             globalvars.cur_img = None
@@ -626,6 +641,7 @@ class OffsetBlock(nn.Module):
 
         out_pre = self.pre_offset(x)
         out_atten = self.atten_displace(x)
+        globalvars.atten_displace.append(out_atten.detach().cpu())
         out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=self.atten_regressor(out_pre))
         if out_dis_LO is not None:
             out_dis = out_dis_LO

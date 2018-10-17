@@ -273,6 +273,7 @@ class DisplaceChannel(nn.Module):
                     offset_rel = offset_rel[None]
                 if offset_regressor_atten is not None:
                     offset_regressed = self.offset_regressor(inp, atten=offset_regressor_atten)
+                    globalvars.atten_regressor.append(offset_regressor_atten.detach().cpu())
                 else:
                     offset_regressed = self.offset_regressor(inp)
                 offset_rel = offset_rel + offset_regressed
@@ -290,6 +291,8 @@ class DisplaceChannel(nn.Module):
                 out = DisplaceCUDA.apply(inp, offset_abs.detach().round().int(), bind_chan)
             else:
                 raise ValueError()
+
+            globalvars.offset_pool.append(offset_abs.detach().cpu())
 
             if self.learnable_offset and (LO_active is True or (LO_active is None and self.LO_active is True)):
                 if device not in self.field:
