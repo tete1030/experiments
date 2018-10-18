@@ -336,7 +336,7 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 43
+    id: 44
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -355,7 +355,7 @@ fulloffset:
         interpolate_gaussian_sigma_decay_step: 330000
         interpolate_gaussian_sigma_decay_rate: 0.66
         offset_save_interval: 1000
-        bind_chan: 1
+        bind_chan: 2
         half_reversed_offset: false
         dconv_for_LO_stride: 1
         regress_offset: true
@@ -370,7 +370,7 @@ fulloffset:
         parse_threshold: 0.1
         resnet: 50
         detail:
-            early_predictor_label_index: [1, 0]
+            early_predictor_label_index: [2, 1, 0]
             displace_learnable_offset: true
             random_offset_init: 0
             early_predictor: true
