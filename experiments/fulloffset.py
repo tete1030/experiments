@@ -589,7 +589,6 @@ class Attention(nn.Module):
             nn.Conv2d(self.total_inplanes, outplanes, 1),
             nn.BatchNorm2d(outplanes),
             nn.Softplus(),
-            GaussianBlur(outplanes),
             SpaceNormalization())
 
     def forward(self, x):
@@ -693,12 +692,12 @@ class Bottleneck(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        if stride == 1:
+        if stride == 1 and self.res_index > 0:
             self.offset_block = OffsetBlock(hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor, self.inplanes)
         else:
             self.offset_block = None
 
-        if self.res_index in [0,1,2] and self.block_index == 1:
+        if self.res_index in [1,2] and self.block_index == 1:
             self.early_prediction = True
         else:
             self.early_prediction = False
@@ -730,7 +729,7 @@ class Bottleneck(nn.Module):
 
         out = self.relu(out)
 
-        if self.res_index in [0,1,2] and self.block_index == 1:
+        if self.early_prediction:
             Experiment.exp.pre_early_predictor_outs[out.device].append(out)
 
         return out
@@ -761,7 +760,7 @@ class BasicBlock(nn.Module):
         else:
             self.offset_block = None
 
-        if self.res_index in [0,1,2] and self.block_index == 1:
+        if self.res_index in [1,2] and self.block_index == 1:
             self.early_prediction = True
         else:
             self.early_prediction = False
@@ -788,7 +787,7 @@ class BasicBlock(nn.Module):
         out = out + residual
         out = self.relu(out)
 
-        if self.res_index in [0,1,2] and self.block_index == 1:
+        if self.early_prediction:
             Experiment.exp.pre_early_predictor_outs[out.device].append(out)
 
         return out
