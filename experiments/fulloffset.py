@@ -588,7 +588,7 @@ class Attention(nn.Module):
         self.atten = nn.Sequential(
             nn.Conv2d(self.total_inplanes, outplanes, 1),
             nn.BatchNorm2d(outplanes),
-            nn.Softplus(),
+            nn.ReLU(inplace=True),
             SpaceNormalization())
 
     def forward(self, x):
@@ -643,7 +643,7 @@ class OffsetBlock(nn.Module):
 
         out_pre = self.pre_offset(x)
         out_atten = self.atten_displace(x)
-        out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=self.atten_regressor(out_pre))
+        out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=self.atten_regressor(x))
         if out_dis_LO is not None:
             out_dis = out_dis_LO
         out_post = self.post_offset(out_atten * out_dis)
