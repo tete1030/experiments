@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import DataParallel
+import torch.nn.functional as F
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
@@ -383,18 +384,27 @@ class Experiment(BaseExperiment):
             globalvars.offset_pool = list()
             globalvars.atten_displace = list()
             globalvars.atten_regressor = list()
+            globalvars.displace_x = list()
+            globalvars.displace_out = list()
+            globalvars.locations = None
         output_maps, early_predictor_outputs = self.model(img)
         if not is_train:
             torch.save(
                 dict(
                     offset=globalvars.offset_pool,
-                    atten_displace=globalvars.atten_displace,
-                    atten_regressor=globalvars.atten_regressor,
-                    img=self.val_dataset.restore_image(img)),
+                    #atten_displace=globalvars.atten_displace,
+                    #atten_regressor=globalvars.atten_regressor,
+                    img=self.val_dataset.restore_image(img),
+                    #displace_x=globalvars.displace_x,
+                    #displace_out=globalvars.displace_out,
+                    location_maps=globalvars.locations),
                 "state_iter_{}.pth".format(progress["iter"]))
             globalvars.offset_pool = list()
             globalvars.atten_displace = list()
             globalvars.atten_regressor = list()
+            globalvars.displace_x = list()
+            globalvars.displace_out = list()
+            globalvars.locations = None
         # dirty trick for debug, release
         if config.vis:
             globalvars.cur_img = None
@@ -639,14 +649,80 @@ class OffsetBlock(nn.Module):
         if globalvars.progress["step"] < hparams["learnable_offset"]["train_min_step"]:
             return x
 
-        out_pre = self.pre_offset(x)
-        out_atten = self.atten_displace(x)
-        globalvars.atten_displace.append(out_atten.detach().cpu())
-        out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=self.atten_regressor(out_pre))
-        if out_dis_LO is not None:
-            out_dis = out_dis_LO
-        out_post = self.post_offset(out_atten * out_dis)
+        x.requires_grad_()
+        with torch.enable_grad():
+            out_pre = self.pre_offset(x)
+            out_atten = self.atten_displace(x)
+            globalvars.atten_displace.append(out_atten.detach().cpu())
+            with torch.no_grad():
+                regressor_atten = self.atten_regressor(out_pre)
+            out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=regressor_atten)
+            if out_dis_LO is not None:
+                out_dis = out_dis_LO
+            out_post = self.post_offset(out_atten * out_dis)
+
+        if len(globalvars.atten_displace) == 4:
+            # isample x N x (input_loc, output_loc)
+            location_maps = list()
+            class GradHook(object):
+                def __init__(self, inp, input_max, width):
+                    self.input = inp
+                    self.input_max = input_max
+                    self.width = width
+                    self.current_sig_out = None
+                    self.current_out_loc = None
+
+                @staticmethod
+                def get_max(x_, sig_out, sig_inp, local=False):
+                    x_ = x_.detach()
+                    if local:
+                        x_maxpool = F.max_pool2d(x_, 3, 1, 1, 1, False, False)
+                        return ((x_ == x_maxpool) & sig_out[:, None, None, None] & sig_inp[:, :, None, None]).nonzero()
+                    else:
+                        return ((x_ == x_.view(x_.size(0), x_.size(1), -1).max(dim=-1)[0].view(x_.size(0), x_.size(1), 1, 1)) & sig_out[:, None, None, None] & sig_inp[:, :, None, None]).nonzero()
+
+                def __call__(self, grad):
+                    grad_max = (grad.detach().abs() * self.input.abs()).view(grad.size(0), grad.size(1), -1).max(dim=-1)[0]
+                    grad_to_input_ratio = (grad_max / self.input.abs().mean(dim=-1, keepdim=False).mean(dim=-1, keepdim=False) / self.input_max)
+                    grad_to_input_ratio[self.input_max == 0] = 0
+                    grad_to_input_ratio_5th = grad_to_input_ratio.topk(20)[0][:, -1].view(-1, 1)
+                    sig_input = (grad_to_input_ratio >= grad_to_input_ratio_5th)
+                    grad_local_argmax = GradHook.get_max(grad.abs(), self.current_sig_out, sig_input).detach().cpu()
+                    print("len(grad_local_argmax)={}".format(len(grad_local_argmax)))
+                    for isamp, iinpchannel, y, x in grad_local_argmax:
+                        print("grad_local_ind={},{},{},{}".format(isamp, iinpchannel, y, x))
+                        location_maps[isamp].append(((int(x), int(y)), (int(self.current_out_loc[isamp] % self.width), int(self.current_out_loc[isamp] // self.width))))
+
+            input_max = x.detach().abs().view(x.size(0), x.size(1), -1).max(dim=-1)[0]
+            grad_hook = GradHook(x.detach(), input_max, x.size(-1))
+            x.register_hook(grad_hook)
+            out_post_max, out_post_argmax = out_post.detach().abs().view(out_post.size(0), out_post.size(1), -1).max(dim=-1)
+            out_inp_ratio = (out_post_max / input_max)
+            out_inp_ratio[input_max == 0] = 0
+            out_inp_ratio_5th = out_inp_ratio.topk(20)[0][:, -1].view(-1, 1)
+            sig_output = (out_inp_ratio >= out_inp_ratio_5th)
+            ind_samps = torch.arange(out_post.size(0), dtype=torch.long)
+            for isamp in ind_samps:
+                location_maps.append(list())
+            print("count={}".format(sig_output.int().sum()))
+            for ichannel in range(out_post.size(1)):
+                if sig_output[:, ichannel].int().sum() == 0:
+                    continue
+                print("ichannel={}".format(ichannel))
+                grad_out = torch.zeros_like(out_post).view(out_post.size(0), out_post.size(1), -1)
+                pos_out_max_ichan = out_post_argmax[:, ichannel][sig_output[:, ichannel]]
+                ind_samps_out_max_ichan = ind_samps[sig_output[:, ichannel]]
+                grad_out[ind_samps_out_max_ichan, ichannel, pos_out_max_ichan] = 1
+                grad_hook.current_sig_out = sig_output[:, ichannel]
+                grad_hook.current_out_loc = out_post_argmax[:, ichannel].cpu()
+                out_post.backward(gradient=grad_out.view(out_post.size()), retain_graph=ichannel < out_post.size(1) - 1)
+            print("finished")
+            globalvars.locations = {"locations": location_maps, "height": x.size(-2), "width": x.size(-1)}
+
         out_skip = x + out_post
+
+        globalvars.displace_x.append(x.detach().cpu())
+        globalvars.displace_out.append(out_post.detach().cpu())
 
         out_final = self.relu(self.bn(out_skip))
 
