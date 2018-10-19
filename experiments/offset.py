@@ -544,7 +544,7 @@ class ExtraMod(nn.Module):
         self.block_index = block_index
         LO_sigma = hparams["learnable_offset"]["sigma"][res_index]
         LO_kernel_size = int(LO_sigma * 3) * 2 + 1
-        free_chan_per_pos = hparams["learnable_offset"]["free_chan_per_pos"][res_index]
+        free_offset_per_init_pos = hparams["learnable_offset"]["free_offset_per_init_pos"][res_index]
         self.displace = DisplaceChannel(
             height, width,
             hparams["model"]["detail"]["displace_stride"][res_index],
@@ -558,18 +558,18 @@ class ExtraMod(nn.Module):
             LO_kernel_size=LO_kernel_size,
             LO_sigma=LO_sigma,
             LO_balance_grad=hparams["learnable_offset"]["balance_grad"],
-            free_chan_per_pos=free_chan_per_pos,
+            free_offset_per_init_pos=free_offset_per_init_pos,
             dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"][res_index],
             regress_offset=hparams["learnable_offset"]["regress_offset"],
             LO_grad_inside_only=hparams["learnable_offset"]["grad_inside_only"])
         
         # TODO: better method
         Experiment.exp.displace_mods.append(self.displace)
-        num_pos = self.displace.num_pos
-        num_y = self.displace.num_y
-        num_x = self.displace.num_x
+        num_pos = self.displace.num_init_pos
+        num_y = self.displace.num_init_y
+        num_x = self.displace.num_init_x
         offset_channels = self.displace.inplanes
-        free_offset_channels = free_chan_per_pos * num_pos
+        free_offset_channels = free_offset_per_init_pos * num_pos
 
         print("Displace{}_{} configuration:".format(res_index, block_index))
         print("\tinp_channels=" + str(inplanes))

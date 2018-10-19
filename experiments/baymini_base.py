@@ -313,10 +313,10 @@ class BlockBase(nn.Module):
                                        use_origin=hparams["model"]["detail"]["use_origin"],
                                        actual_stride=hparams["model"]["detail"]["actual_stride"][self.res_index],
                                        displace_size=hparams["model"]["detail"]["displace_size"][self.res_index])
-            num_pos = displace.num_pos
-            num_y = displace.num_y
-            num_x = displace.num_x
-            offset_channels = hparams["model"]["detail"]["channels_per_pos"][self.res_index] * displace.num_pos
+            num_pos = displace.num_init_pos
+            num_y = displace.num_init_y
+            num_x = displace.num_init_x
+            offset_channels = hparams["model"]["detail"]["channels_per_pos"][self.res_index] * displace.num_init_pos
             displace = nn.Sequential(
                 displace,
                 nn.Conv2d(offset_channels, self.inplanes // 4, kernel_size=1, stride=1))

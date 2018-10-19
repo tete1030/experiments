@@ -74,10 +74,10 @@ class OffsetRegressor(nn.Module):
         return self.regressor(x)
 
 class DisplaceChannel(nn.Module):
-    def __init__(self, height, width, init_stride, chan_per_pos,
+    def __init__(self, height, width, init_stride, chan_per_init_pos,
                  learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5,
                  disable_displace=False, random_offset_init=None, use_origin=False, actual_stride=None,
-                 displace_size=None, LO_balance_grad=True, free_chan_per_pos=1,
+                 displace_size=None, LO_balance_grad=True, free_offset_per_init_pos=1,
                  dconv_for_LO_stride=1, regress_offset=False,
                  LO_grad_inside_only=False, LO_half_reversed_offset=False,
                  LO_interpolate_kernel_type="gaussian"):
@@ -86,23 +86,23 @@ class DisplaceChannel(nn.Module):
         self.width = width
         self.scale = float(max(width, height))
         self.init_stride = init_stride
-        self.chan_per_pos = chan_per_pos
+        self.chan_per_init_pos = chan_per_init_pos
         self.learnable_offset = learnable_offset
         self.disable_displace = disable_displace
         self.random_offset_init = random_offset_init
         self.use_origin = use_origin
         self.actual_stride = actual_stride
         self.displace_size = displace_size
-        self.free_chan_per_pos = free_chan_per_pos
+        self.free_offset_per_init_pos = free_offset_per_init_pos
         self.dconv_for_LO_stride = dconv_for_LO_stride
         self.LO_grad_inside_only = LO_grad_inside_only
         self.LO_half_reversed_offset = LO_half_reversed_offset
-        self.num_y, self.num_x, self.num_pos = self.get_num_offset(height, width, displace_size, init_stride, use_origin)
-        self.inplanes = self.num_pos * self.chan_per_pos
+        self.num_init_y, self.num_init_x, self.num_init_pos = self.get_num_offset(height, width, displace_size, init_stride, use_origin)
+        self.inplanes = self.num_init_pos * self.chan_per_init_pos
         self.regress_offset = regress_offset
 
         if not disable_displace:
-            self.offset = nn.parameter.Parameter(torch.Tensor(self.num_pos * self.free_chan_per_pos, 2), requires_grad=False)
+            self.offset = nn.parameter.Parameter(torch.Tensor(self.num_init_pos * self.free_offset_per_init_pos, 2), requires_grad=False)
             self.init_offset()
             if learnable_offset:
                 assert isinstance(LO_kernel_size, int)
@@ -119,7 +119,7 @@ class DisplaceChannel(nn.Module):
                     self.offset.register_hook(self.balance_offset_grad)
 
                 if regress_offset:
-                    regressor_channels = self.num_pos * self.free_chan_per_pos * 2
+                    regressor_channels = self.num_init_pos * self.free_offset_per_init_pos * 2
                     self.offset_regressor = OffsetRegressor(self.inplanes, regressor_channels)
                 else:
                     self.offset_regressor = None
@@ -137,7 +137,7 @@ class DisplaceChannel(nn.Module):
         x = torch.arange(kernel_size, dtype=torch.float).view(1, -1, 1).expand(kernel_size, -1, -1) - float(kernel_size // 2)
         y = torch.arange(kernel_size, dtype=torch.float).view(-1, 1, 1).expand(-1, kernel_size, -1) - float(kernel_size // 2)
         field = torch.cat([x, y], dim=2).expand(1, -1, -1, -1)\
-            .repeat(self.num_pos * self.free_chan_per_pos, 1, 1, 1)
+            .repeat(self.num_init_pos * self.free_offset_per_init_pos, 1, 1, 1)
         if self.LO_half_reversed_offset:
             field = field.repeat(2, 1, 1, 1)
         self.field = dict()
@@ -174,7 +174,7 @@ class DisplaceChannel(nn.Module):
         return num_y, num_x, num_pos
 
     def init_offset(self):
-        nh, nw = self.num_y, self.num_x
+        nh, nw = self.num_init_y, self.num_init_x
         if self.random_offset_init is not None:
             self.offset.data.uniform_(-self.random_offset_init, self.random_offset_init)
             return
@@ -184,11 +184,11 @@ class DisplaceChannel(nn.Module):
                 if not self.use_origin and ih == 0 and iw == 0:
                     continue
                 if not self.actual_stride:
-                    self.offset.data[count_off*self.free_chan_per_pos:(count_off+1)*self.free_chan_per_pos, 0] = iw * self.init_stride / self.scale
-                    self.offset.data[count_off*self.free_chan_per_pos:(count_off+1)*self.free_chan_per_pos, 1] = ih * self.init_stride / self.scale
+                    self.offset.data[count_off*self.free_offset_per_init_pos:(count_off+1)*self.free_offset_per_init_pos, 0] = iw * self.init_stride / self.scale
+                    self.offset.data[count_off*self.free_offset_per_init_pos:(count_off+1)*self.free_offset_per_init_pos, 1] = ih * self.init_stride / self.scale
                 else:
-                    self.offset.data[count_off*self.free_chan_per_pos:(count_off+1)*self.free_chan_per_pos, 0] = iw * self.actual_stride / self.scale
-                    self.offset.data[count_off*self.free_chan_per_pos:(count_off+1)*self.free_chan_per_pos, 1] = ih * self.actual_stride / self.scale
+                    self.offset.data[count_off*self.free_offset_per_init_pos:(count_off+1)*self.free_offset_per_init_pos, 0] = iw * self.actual_stride / self.scale
+                    self.offset.data[count_off*self.free_offset_per_init_pos:(count_off+1)*self.free_offset_per_init_pos, 1] = ih * self.actual_stride / self.scale
                 count_off += 1
 
     def reset_outsider(self):
@@ -202,8 +202,8 @@ class DisplaceChannel(nn.Module):
         num_channels = x.size(1)
         height = x.size(2)
         width = x.size(3)
-        offset_channels = offset_rel.size(-2)
-        bind_chan = num_channels // offset_channels
+        free_offsets = offset_rel.size(-2)
+        bind_chan = num_channels // free_offsets
         field = self.field[x.device]
         suboffset_rel = offset_rel - offset_rel.detach().round()
         if offset_rel.dim() == 3:
@@ -214,7 +214,7 @@ class DisplaceChannel(nn.Module):
             elif self.LO_interpolate_kernel_type == "bilinear":
                 kernel = (1 - (field[None] + suboffset_rel[:, :, None, None, :]).abs()).clamp(min=0).prod(dim=-1)
             # nsamp*npos*bind_chan x kh x kw
-            kernel = kernel.view(batch_size*offset_channels, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, bind_chan, 1, 1).view(batch_size*num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
+            kernel = kernel.view(batch_size*free_offsets, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, bind_chan, 1, 1).view(batch_size*num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
             # 1 x nsamp*npos*bind_chan x height x width
             out = CustomizedGradDepthwiseConv2d.apply(
                 x.view(1, batch_size*num_channels, height, width), kernel, None,
@@ -238,7 +238,7 @@ class DisplaceChannel(nn.Module):
             elif self.LO_interpolate_kernel_type == "bilinear":
                 kernel = (1 - (field + suboffset_rel[:, None, None, :]).abs()).clamp(min=0).prod(dim=-1)
             # npos*bind_chan x kh x kw
-            kernel = kernel.view(offset_channels, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, bind_chan, 1, 1).view(num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
+            kernel = kernel.view(free_offsets, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, bind_chan, 1, 1).view(num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
             # nsamp x npos*bind_chan x height x width
             out = CustomizedGradDepthwiseConv2d.apply(
                 x, kernel, None,
@@ -259,9 +259,9 @@ class DisplaceChannel(nn.Module):
         height = inp.size(2)
         width = inp.size(3)
         device = inp.device
-        free_channels = self.num_pos * self.free_chan_per_pos
+        free_offsets = self.num_init_pos * self.free_offset_per_init_pos
         assert self.height == height and self.width == width
-        assert num_channels % free_channels == 0, "num of channels cannot be divided by number of offsets"
+        assert num_channels % free_offsets == 0, "num of channels cannot be divided by number of offsets"
         assert offset_plus_rel is None or offset_plus_rel.size(1) == self.offset.size(0)
 
         out_LO = None
@@ -281,7 +281,7 @@ class DisplaceChannel(nn.Module):
                     offset_regressed = self.offset_regressor(inp)
                 offset_rel = offset_rel + offset_regressed
 
-            bind_chan = num_channels // free_channels
+            bind_chan = num_channels // free_offsets
             if self.LO_half_reversed_offset:
                 assert bind_chan % 2 == 0
                 bind_chan = bind_chan // 2

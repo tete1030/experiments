@@ -233,7 +233,7 @@ offset:
         sigma_decay_step: 100000
         sigma_decay_rate: 0.8
         offset_save_interval: 1000
-        free_chan_per_pos: [4, 8, 16, null]
+        free_offset_per_init_pos: [4, 8, 16, null]
         dconv_for_LO_stride: [1, 1, 1, null]
         regress_offset: false
         grad_inside_only: false

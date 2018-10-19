@@ -625,7 +625,7 @@ class OffsetBlock(nn.Module):
             LO_kernel_size=LO_kernel_size,
             LO_sigma=LO_sigma,
             LO_balance_grad=False,
-            free_chan_per_pos=inplanes // hparams["learnable_offset"]["bind_chan"],
+            free_offset_per_init_pos=inplanes // hparams["learnable_offset"]["bind_chan"],
             dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"],
             regress_offset=hparams["learnable_offset"]["regress_offset"],
             LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"])
