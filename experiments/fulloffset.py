@@ -57,7 +57,10 @@ class Experiment(BaseExperiment):
         if config.resume is not None:
             pretrained = None
 
+        self._offset_block_counter = 0
         self.model = nn.DataParallel(Controller(MainModel(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda()))
+        assert self._offset_block_counter == len(hparams["learnable_offset"]["expand_chan_ratio"])
+        del self._offset_block_counter
 
         self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods] + list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in self.displace_mods if dm.offset_regressor is not None]))))
 
@@ -611,10 +614,11 @@ class OffsetBlock(nn.Module):
         self.height = height
         self.width = width
         self.inplanes = inplanes
+        self.displace_planes = int(inplanes * hparams["learnable_offset"]["expand_chan_ratio"][Experiment.exp._offset_block_counter])
         self.displace = DisplaceChannel(
             height, width,
             1,
-            inplanes,
+            self.displace_planes,
             learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
             disable_displace=False,
             random_offset_init=hparams["model"]["detail"]["random_offset_init"],
@@ -625,20 +629,21 @@ class OffsetBlock(nn.Module):
             LO_kernel_size=LO_kernel_size,
             LO_sigma=LO_sigma,
             LO_balance_grad=False,
-            free_offset_per_init_pos=inplanes // hparams["learnable_offset"]["bind_chan"],
+            free_offset_per_init_pos=int(self.displace_planes // hparams["learnable_offset"]["bind_chan"]),
             dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"],
             regress_offset=hparams["learnable_offset"]["regress_offset"],
             LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"])
         Experiment.exp.displace_mods.append(self.displace)
-        self.pre_offset = nn.Conv2d(inplanes, inplanes, 1)
-        self.post_offset = nn.Conv2d(inplanes, inplanes, 1)
-        self.atten_displace = Attention(inplanes, inplanes, input_shape=(height, width), bias_factor=2)
+        self.pre_offset = nn.Conv2d(inplanes, self.displace_planes, 1)
+        self.post_offset = nn.Conv2d(self.displace_planes, inplanes, 1)
+        self.atten_displace = Attention(inplanes, self.displace_planes, input_shape=(height, width), bias_factor=2)
         if hparams["learnable_offset"]["regress_offset"]:
             self.atten_regressor = Attention(inplanes, self.displace.offset_regressor.atten_inplanes, input_shape=(height, width), bias_factor=2)
         else:
             self.atten_regressor = None
         self.bn = nn.BatchNorm2d(inplanes)
         self.relu = nn.ReLU(inplace=True)
+        Experiment.exp._offset_block_counter += 1
 
     def forward(self, x):
         if globalvars.progress["step"] < hparams["learnable_offset"]["train_min_step"]:
