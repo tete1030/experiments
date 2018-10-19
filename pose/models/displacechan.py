@@ -80,7 +80,8 @@ class DisplaceChannel(nn.Module):
                  displace_size=None, LO_balance_grad=True, free_offset_per_init_pos=1,
                  dconv_for_LO_stride=1, regress_offset=False,
                  LO_grad_inside_only=False, LO_half_reversed_offset=False,
-                 LO_interpolate_kernel_type="gaussian"):
+                 LO_interpolate_kernel_type="gaussian",
+                 previous_dischan=None):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -102,7 +103,15 @@ class DisplaceChannel(nn.Module):
         self.regress_offset = regress_offset
 
         if not disable_displace:
-            self.offset = nn.parameter.Parameter(torch.Tensor(self.num_init_pos * self.free_offset_per_init_pos, 2), requires_grad=False)
+            self.previous_dischan = previous_dischan
+            previous_offset_channels = 0
+            if previous_dischan is not None:
+                assert isinstance(previous_dischan, DisplaceChannel)
+                assert self.random_offset_init is not None
+                previous_offset_channels = self.previous_dischan.get_all_offsets_num()
+
+            assert self.num_init_pos * self.free_offset_per_init_pos >= previous_offset_channels
+            self.offset = nn.parameter.Parameter(torch.Tensor(self.num_init_pos * self.free_offset_per_init_pos - previous_offset_channels, 2), requires_grad=False)
             self.init_offset()
             if learnable_offset:
                 assert isinstance(LO_kernel_size, int)
@@ -115,7 +124,7 @@ class DisplaceChannel(nn.Module):
                 self.LO_balance_grad = LO_balance_grad
                 self.switch_LO_state(True)
                 self.offset.requires_grad = True
-                if LO_balance_grad:
+                if LO_balance_grad and self.offset.size(0) > 0:
                     self.offset.register_hook(self.balance_offset_grad)
 
                 if regress_offset:
@@ -178,6 +187,8 @@ class DisplaceChannel(nn.Module):
         if self.random_offset_init is not None:
             self.offset.data.uniform_(-self.random_offset_init, self.random_offset_init)
             return
+
+        assert self.offset.size(0) == self.num_init_pos * self.free_offset_per_init_pos
         count_off = 0
         for ih in range(-(nh // 2), nh // 2 + 1):
             for iw in range(-(nw // 2), nw // 2 + 1):
@@ -192,6 +203,9 @@ class DisplaceChannel(nn.Module):
                 count_off += 1
 
     def reset_outsider(self):
+        if self.offset.size(0) == 0:
+            return
+
         self.offset.data[:, 0].clamp_(min=(-self.width + 0.6) / self.scale,
                                       max=(self.width - 0.6) / self.scale)
         self.offset.data[:, 1].clamp_(min=(-self.height + 0.6) / self.scale,
@@ -253,6 +267,27 @@ class DisplaceChannel(nn.Module):
         else:
             raise ValueError()
 
+    def get_all_offsets_num(self):
+        offsets_num = self.offset.size(0)
+        if self.previous_dischan is not None:
+            offsets_num += self.previous_dischan.get_all_offsets_num()
+        return offsets_num
+
+    def get_all_offsets(self, detach=False, cat=True):
+        if self.offset.size(0) == 0:
+            all_offsets = []
+        else:
+            all_offsets = [self.offset.detach() if detach else self.offset]
+
+        if self.previous_dischan is not None:
+            all_offsets = self.previous_dischan.get_all_offsets(detach=detach, cat=False) + all_offsets
+            if cat:
+                all_offsets = torch.cat(all_offsets, dim=0)
+        elif cat:
+            all_offsets = all_offsets[0]
+
+        return all_offsets
+
     def forward(self, inp, LO_active=None, offset_plus_rel=None, offset_regressor_atten=None):
         batch_size = inp.size(0)
         num_channels = inp.size(1)
@@ -262,15 +297,15 @@ class DisplaceChannel(nn.Module):
         free_offsets = self.num_init_pos * self.free_offset_per_init_pos
         assert self.height == height and self.width == width
         assert num_channels % free_offsets == 0, "num of channels cannot be divided by number of offsets"
-        assert offset_plus_rel is None or offset_plus_rel.size(1) == self.offset.size(0)
+        assert offset_plus_rel is None or offset_plus_rel.size(1) == free_offsets
 
         out_LO = None
 
         if not self.disable_displace:
+            offset_rel = self.get_all_offsets()
+
             if offset_plus_rel is not None:
-                offset_rel = self.offset[None] + offset_plus_rel
-            else:
-                offset_rel = self.offset
+                offset_rel = offset_rel[None] + offset_plus_rel
 
             if self.regress_offset:
                 if offset_rel.dim() == 2:

@@ -123,6 +123,8 @@ class Experiment(BaseExperiment):
 
         self.move_dis_avgmeter = []
         for dm in self.displace_mods:
+            if dm.offset.size(0) == 0:
+                continue
             self.move_dis_avgmeter.append(Experiment.OffsetCycleAverageMeter(hparams["learnable_offset"]["move_average_cycle"], (dm.offset.detach() * dm.scale).cpu()))
 
     def load_checkpoint(self, checkpoint_folder, checkpoint_file,
@@ -318,7 +320,7 @@ class Experiment(BaseExperiment):
             if dm.LO_active:
                 offset_disabled = False
         if not offset_disabled:
-            torch.save([(dm.offset.detach() * dm.scale).cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(step)))
+            torch.save([(dm.get_all_offsets(detach=True) * dm.scale).cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(step)))
 
     def epoch_end(self, epoch, step):
         self.save_offsets(step)
@@ -342,7 +344,10 @@ class Experiment(BaseExperiment):
 
         if optimize_offset:
             for idm in range(len(self.displace_mods)):
-                self.move_dis_avgmeter[idm].update((self.displace_mods[idm].offset.detach() * self.displace_mods[idm].scale).cpu())
+                dm = self.displace_mods[idm]
+                if dm.offset.size(0) == 0:
+                    continue
+                self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.scale).cpu())
                 globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "move_dis"), {"mod{}".format(idm): self.move_dis_avgmeter[idm].avg}, progress["step"] + 1)
 
         if (progress["step"] + 1) % hparams["learnable_offset"]["offset_save_interval"] == 0:

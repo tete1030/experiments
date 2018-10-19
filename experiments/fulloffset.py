@@ -130,6 +130,8 @@ class Experiment(BaseExperiment):
 
         self.move_dis_avgmeter = []
         for dm in self.displace_mods:
+            if dm.offset.size(0) == 0:
+                continue
             self.move_dis_avgmeter.append(Experiment.OffsetCycleAverageMeter(hparams["learnable_offset"]["move_average_cycle"], (dm.offset.data * dm.scale).cpu()))
 
     def load_checkpoint(self, checkpoint_folder, checkpoint_file,
@@ -330,7 +332,7 @@ class Experiment(BaseExperiment):
             if dm.LO_active:
                 offset_disabled = False
         if not offset_disabled:
-            torch.save([(dm.offset.detach() * dm.scale).cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(step)))
+            torch.save([(dm.get_all_offsets(detach=True) * dm.scale).cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(step)))
 
     def epoch_end(self, epoch, step, evaluate_only):
         if not evaluate_only:
@@ -357,7 +359,10 @@ class Experiment(BaseExperiment):
             move_dis_avg = list()
             move_dis = list()
             for idm in range(len(self.displace_mods)):
-                self.move_dis_avgmeter[idm].update((self.displace_mods[idm].offset.detach() * self.displace_mods[idm].scale).cpu())
+                dm = self.displace_mods[idm]
+                if dm.offset.size(0) == 0:
+                    continue
+                self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.scale).cpu())
                 move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
                 move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
             globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "move_dis"), {"mod": np.mean(move_dis_avg), "mod_cur": np.mean(move_dis)}, progress["step"] + 1)
@@ -632,7 +637,8 @@ class OffsetBlock(nn.Module):
             free_offset_per_init_pos=int(self.displace_planes // hparams["learnable_offset"]["bind_chan"]),
             dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"],
             regress_offset=hparams["learnable_offset"]["regress_offset"],
-            LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"])
+            LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"],
+            previous_dischan=Experiment.exp.displace_mods[-1] if hparams["learnable_offset"]["reuse_offset"] and len(Experiment.exp.displace_mods) > 0 else None)
         Experiment.exp.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(inplanes, self.displace_planes, 1)
         self.post_offset = nn.Conv2d(self.displace_planes, inplanes, 1)

@@ -336,7 +336,7 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 48
+    id: 49
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -357,6 +357,7 @@ fulloffset:
         offset_save_interval: 1000
         expand_chan_ratio: [2, 2, 2, 1, 1, 1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.25]
         bind_chan: 1
+        reuse_offset: true
         half_reversed_offset: false
         dconv_for_LO_stride: 1
         regress_offset: false
