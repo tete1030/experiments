@@ -121,6 +121,8 @@ class DisplaceChannel(nn.Module):
                 if regress_offset:
                     regressor_channels = self.num_pos * self.free_chan_per_pos * 2
                     self.offset_regressor = OffsetRegressor(self.inplanes, regressor_channels)
+                else:
+                    self.offset_regressor = None
             else:
                 self.switch_LO_state(False)
 

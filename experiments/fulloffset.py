@@ -59,7 +59,7 @@ class Experiment(BaseExperiment):
 
         self.model = nn.DataParallel(Controller(MainModel(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda()))
 
-        self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods] + list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in self.displace_mods]))))
+        self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods] + list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in self.displace_mods if dm.offset_regressor is not None]))))
 
         if hparams["model"]["detail"]["early_predictor"]:
             self.early_predictor_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([ep.parameters() for ep in self.early_predictors])))
@@ -588,7 +588,7 @@ class Attention(nn.Module):
         self.atten = nn.Sequential(
             nn.Conv2d(self.total_inplanes, outplanes, 1),
             nn.BatchNorm2d(outplanes),
-            nn.ReLU(inplace=True),
+            nn.Softplus(),
             SpaceNormalization())
 
     def forward(self, x):
@@ -633,7 +633,10 @@ class OffsetBlock(nn.Module):
         self.pre_offset = nn.Conv2d(inplanes, inplanes, 1)
         self.post_offset = nn.Conv2d(inplanes, inplanes, 1)
         self.atten_displace = Attention(inplanes, inplanes, input_shape=(height, width), bias_factor=2)
-        self.atten_regressor = Attention(inplanes, self.displace.offset_regressor.atten_inplanes, input_shape=(height, width), bias_factor=2)
+        if hparams["learnable_offset"]["regress_offset"]:
+            self.atten_regressor = Attention(inplanes, self.displace.offset_regressor.atten_inplanes, input_shape=(height, width), bias_factor=2)
+        else:
+            self.atten_regressor = None
         self.bn = nn.BatchNorm2d(inplanes)
         self.relu = nn.ReLU(inplace=True)
 
@@ -643,7 +646,7 @@ class OffsetBlock(nn.Module):
 
         out_pre = self.pre_offset(x)
         out_atten = self.atten_displace(x)
-        out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=self.atten_regressor(x))
+        out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=self.atten_regressor(out_pre) if self.atten_regressor else None)
         if out_dis_LO is not None:
             out_dis = out_dis_LO
         out_post = self.post_offset(out_atten * out_dis)
