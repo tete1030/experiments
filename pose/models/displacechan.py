@@ -85,7 +85,7 @@ class DisplaceChannel(nn.Module):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
-        self.scale = float(max(width, height))
+        self.scale = np.sqrt(float(max(width, height))).item()
         self.init_stride = init_stride
         self.chan_per_init_pos = chan_per_init_pos
         self.learnable_offset = learnable_offset
@@ -124,8 +124,6 @@ class DisplaceChannel(nn.Module):
                 self.LO_balance_grad = LO_balance_grad
                 self.switch_LO_state(True)
                 self.offset.requires_grad = True
-                if LO_balance_grad and self.offset.size(0) > 0:
-                    self.offset.register_hook(self.balance_offset_grad)
 
                 if regress_offset:
                     regressor_channels = self.num_init_pos * self.free_offset_per_init_pos * 2
@@ -162,9 +160,12 @@ class DisplaceChannel(nn.Module):
             log_i("Learnable offset is disabled")
         self.LO_active = active
 
-    def balance_offset_grad(self, grad):
-        area = (self.width - self.scale * self.offset.data[:, 0].round().abs()) * (self.height - self.scale * self.offset.data[:, 1].round().abs())
-        return grad / area.view(-1, 1)
+    def offset_grad_hook(self, grad):
+        if self.LO_balance_grad:
+            area = (self.width - self.scale * self.offset.data[:, 0].round().abs()) * (self.height - self.scale * self.offset.data[:, 1].round().abs())
+            grad = grad / area.view(-1, 1)
+
+        return grad
 
     @staticmethod
     def get_num_offset(height, width, displace_size, init_stride, use_origin):
@@ -321,6 +322,9 @@ class DisplaceChannel(nn.Module):
                 assert bind_chan % 2 == 0
                 bind_chan = bind_chan // 2
                 offset_rel = torch.cat([offset_rel, -offset_rel], dim=-2)
+
+            if self.LO_balance_grad:
+                offset_rel.register_hook(self.offset_grad_hook)
 
             offset_abs = offset_rel * self.scale
             if offset_abs.dim() == 3:
