@@ -85,7 +85,7 @@ class DisplaceChannel(nn.Module):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
-        self.scale = np.sqrt(float(max(width, height))).item()
+        self.scale = float(max(width, height))
         self.init_stride = init_stride
         self.chan_per_init_pos = chan_per_init_pos
         self.learnable_offset = learnable_offset
