@@ -57,10 +57,8 @@ class Experiment(BaseExperiment):
         if config.resume is not None:
             pretrained = None
 
-        self._offset_block_counter = 0
         self.model = nn.DataParallel(Controller(MainModel(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda()))
-        assert self._offset_block_counter == len(hparams["learnable_offset"]["expand_chan_ratio"])
-        del self._offset_block_counter
+        assert OffsetBlock._counter == len(hparams["learnable_offset"]["expand_chan_ratio"])
 
         if not hparams["model"]["detail"]["disable_displace"]:
             self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods if hasattr(dm, "offset")] + list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in self.displace_mods if hasattr(dm, "offset_regressor")]))))
@@ -267,10 +265,10 @@ class Experiment(BaseExperiment):
         if step >= hparams["learnable_offset"]["train_min_step"] and hparams["learnable_offset"]["lr_decay_step"] > 0 and hparams["learnable_offset"]["lr_gamma"] > 0:
             step_offset = max(0, step - hparams["learnable_offset"]["train_min_step"])
         else:
-            step_offset = 0
+            step_offset = -1
 
         for param_group in self.offset_optimizer.param_groups:
-            if step_offset > 0:
+            if step_offset >= 0:
                 cur_lr_offset = param_group["init_lr"] * (hparams["learnable_offset"]["lr_gamma"] ** (float(step_offset) / hparams["learnable_offset"]["lr_decay_step"]))
                 log_i("Set {} to {:.5f}".format(param_group["para_name"], cur_lr_offset))
             else:
@@ -498,8 +496,13 @@ class Controller(nn.Module):
         if hparams["model"]["detail"]["early_predictor"]:
             early_predictor = list()
             assert len(Experiment.exp.early_predictor_size) > 0
-            for sz in Experiment.exp.early_predictor_size:
-                early_predictor.append(Predictor(sz, hparams["model"]["out_shape"][::-1], NUM_PARTS))
+            for inplanes, inshape_factor in Experiment.exp.early_predictor_size:
+                early_predictor.append(
+                    Predictor(
+                        inplanes, 
+                        (hparams["model"]["inp_shape"][1] // inshape_factor, hparams["model"]["inp_shape"][0] // inshape_factor),
+                        hparams["model"]["out_shape"][::-1],
+                        NUM_PARTS))
             self.early_predictor = nn.ModuleList(early_predictor)
         else:
             self.early_predictor = None
@@ -536,12 +539,12 @@ class MainModel(nn.Module):
         return global_out
 
 class Predictor(nn.Module):
-    def __init__(self, inplanes, output_shape, num_class):
+    def __init__(self, inplanes, input_shape, output_shape, num_class):
         super(Predictor, self).__init__()
-        self.predict = self._make_predictor(inplanes, output_shape, num_class)
+        self.predict = self._make_predictor(inplanes, input_shape, output_shape, num_class)
         Experiment.exp.early_predictors.append(self)
     
-    def _make_predictor(self, inplanes, output_shape, num_class):
+    def _make_predictor(self, inplanes, input_shape, output_shape, num_class):
         layers = []
         # lateral of globalNet
         layers.append(nn.Conv2d(inplanes, 256,
@@ -557,6 +560,7 @@ class Predictor(nn.Module):
 
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
+        layers.append(OffsetBlock(input_shape[0], input_shape[1], num_class, 256))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
         layers.append(nn.Conv2d(num_class, num_class,
             kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
@@ -599,7 +603,10 @@ class Attention(nn.Module):
         self.bias_factor = bias_factor
         if input_shape is not None and bias_factor > 0:
             self.total_inplanes += inplanes // 4
-            self.bias = nn.Parameter(torch.ones(1, inplanes // 4, input_shape[0] // bias_factor, input_shape[1] // bias_factor, dtype=torch.float))
+            bias_shape = (int(input_shape[0] // bias_factor), int(input_shape[1] // bias_factor))
+            if config.check:
+                log_i("bias_shape = {}".format(str(bias_shape)))
+            self.bias = nn.Parameter(torch.ones(1, inplanes // 4, bias_shape[0], bias_shape[1], dtype=torch.float))
         else:
             self.bias = None
         self.atten = nn.Sequential(
@@ -616,7 +623,8 @@ class Attention(nn.Module):
         return self.atten(x)
 
 class OffsetBlock(nn.Module):
-    def __init__(self, height, width, inplanes):
+    _counter = 0
+    def __init__(self, height, width, inplanes, displace_planes):
         super(OffsetBlock, self).__init__()
         LO_interpolate_kernel_type = hparams["learnable_offset"]["interpolate_kernel_type"]
         if LO_interpolate_kernel_type == "gaussian":
@@ -628,7 +636,7 @@ class OffsetBlock(nn.Module):
         self.height = height
         self.width = width
         self.inplanes = inplanes
-        self.displace_planes = int(inplanes * hparams["learnable_offset"]["expand_chan_ratio"][Experiment.exp._offset_block_counter])
+        self.displace_planes = displace_planes
         self.displace = DisplaceChannel(
             height, width,
             1,
@@ -658,9 +666,11 @@ class OffsetBlock(nn.Module):
             self.atten_regressor = None
         self.bn = nn.BatchNorm2d(inplanes)
         self.relu = nn.ReLU(inplace=True)
-        Experiment.exp._offset_block_counter += 1
 
     def forward(self, x):
+        if config.check:
+            assert x.size(2) == self.height and x.size(3) == self.width
+
         if globalvars.progress["step"] < hparams["learnable_offset"]["train_min_step"]:
             return x
 
@@ -716,7 +726,12 @@ class Bottleneck(nn.Module):
         self.block_index = block_index
 
         if stride == 1:
-            self.offset_block = OffsetBlock(hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor, self.inplanes)
+            self.offset_block = OffsetBlock(
+                hparams["model"]["inp_shape"][1] // self.inshape_factor,
+                hparams["model"]["inp_shape"][0] // self.inshape_factor,
+                self.inplanes,
+                int(inplanes * hparams["learnable_offset"]["expand_chan_ratio"][OffsetBlock._counter]))
+            OffsetBlock._counter += 1
         else:
             self.offset_block = None
 
@@ -726,7 +741,7 @@ class Bottleneck(nn.Module):
             self.early_prediction = False
 
         if self.early_prediction:
-            Experiment.exp.early_predictor_size.append(self.inplanes)
+            Experiment.exp.early_predictor_size.append((self.inplanes, self.inshape_factor))
 
     def forward(self, x):
         if self.offset_block is not None:
@@ -779,7 +794,12 @@ class BasicBlock(nn.Module):
         self.block_index = block_index
 
         if stride == 1:
-            self.offset_block = OffsetBlock(hparams["model"]["inp_shape"][1] // self.inshape_factor, hparams["model"]["inp_shape"][0] // self.inshape_factor, self.inplanes)
+            self.offset_block = OffsetBlock(
+                hparams["model"]["inp_shape"][1] // self.inshape_factor,
+                hparams["model"]["inp_shape"][0] // self.inshape_factor,
+                self.inplanes,
+                int(inplanes * hparams["learnable_offset"]["expand_chan_ratio"][OffsetBlock._counter]))
+            OffsetBlock._counter += 1
         else:
             self.offset_block = None
 
@@ -789,7 +809,7 @@ class BasicBlock(nn.Module):
             self.early_prediction = False
 
         if self.early_prediction:
-            Experiment.exp.early_predictor_size.append(self.inplanes)
+            Experiment.exp.early_predictor_size.append((self.inplanes, self.inshape_factor))
 
     def forward(self, x):
         if self.offset_block is not None:
@@ -923,12 +943,14 @@ class GlobalNet(nn.Module):
     def __init__(self, channel_settings, output_shape, num_class):
         super(GlobalNet, self).__init__()
         self.channel_settings = channel_settings
+        output_shape_factor = 2 ** (len(channel_settings) - 1)
         laterals, upsamples, predict = [], [], []
         for i in range(len(channel_settings)):
             laterals.append(self._lateral(channel_settings[i]))
-            predict.append(self._predict(output_shape, num_class))
+            predict.append(self._predict(output_shape, num_class, output_shape_factor))
             if i != len(channel_settings) - 1:
                 upsamples.append(self._upsample())
+                output_shape_factor /= 2
         self.laterals = nn.ModuleList(laterals)
         self.upsamples = nn.ModuleList(upsamples)
         self.predict = nn.ModuleList(predict)
@@ -961,7 +983,7 @@ class GlobalNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def _predict(self, output_shape, num_class):
+    def _predict(self, output_shape, num_class, output_shape_factor):
         layers = []
         layers.append(nn.Conv2d(256, 256,
             kernel_size=1, stride=1, bias=False))
@@ -970,6 +992,7 @@ class GlobalNet(nn.Module):
 
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
+        layers.append(OffsetBlock(output_shape[0] // output_shape_factor, output_shape[1] // output_shape_factor, num_class, 256))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
         layers.append(nn.Conv2d(num_class, num_class,
             kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))

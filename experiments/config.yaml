@@ -15,6 +15,7 @@ default: &DEFAULT
     no_criterion_load: false
     no_optimizer_load: false
     store: false
+    check: false
 
 profile: &PROFILE
     <<: *DEFAULT
@@ -38,6 +39,7 @@ fast: &FAST
     workers: 0
     fast_pass_train: 1
     fast_pass_valid: 1
+    check: true
 
 fastresume:
     <<: *FAST
@@ -59,3 +61,4 @@ fasteval:
     fast_pass_valid: 3
     resume: 'checkpoint/{exp}/{id}'
     evaluate: true
+    check: true

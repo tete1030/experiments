@@ -336,7 +336,7 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 53
+    id: 54
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -373,7 +373,7 @@ fulloffset:
         resnet: 50
         detail:
             early_predictor_label_index: [2, 1, 0]
-            disable_displace: true
+            disable_displace: false
             displace_learnable_offset: true
             random_offset_init: 0
             early_predictor: true
