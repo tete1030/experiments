@@ -62,7 +62,10 @@ class Experiment(BaseExperiment):
         assert self._offset_block_counter == len(hparams["learnable_offset"]["expand_chan_ratio"])
         del self._offset_block_counter
 
-        self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods] + list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in self.displace_mods if dm.offset_regressor is not None]))))
+        if not hparams["model"]["detail"]["disable_displace"]:
+            self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods if hasattr(dm, "offset")] + list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in self.displace_mods if hasattr(dm, "offset_regressor")]))))
+        else:
+            self.offset_parameters = []
 
         if hparams["model"]["detail"]["early_predictor"]:
             self.early_predictor_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([ep.parameters() for ep in self.early_predictors])))
@@ -77,10 +80,11 @@ class Experiment(BaseExperiment):
             lr=hparams["learning_rate"],
             weight_decay=hparams['weight_decay'])
 
-        offset_optimizer_args = [
+        if not hparams["model"]["detail"]["disable_displace"]:
+            offset_optimizer_args = [
             {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]}]
 
-        self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
+            self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
 
         if hparams["model"]["detail"]["early_predictor"]:
             self.early_predictor_optimizer = torch.optim.Adam(
@@ -128,11 +132,12 @@ class Experiment(BaseExperiment):
         self.worker_init_fn = datasets.mscoco.worker_init
         self.print_iter_start = " | "
 
-        self.move_dis_avgmeter = []
-        for dm in self.displace_mods:
-            if dm.offset.size(0) == 0:
-                continue
-            self.move_dis_avgmeter.append(Experiment.OffsetCycleAverageMeter(hparams["learnable_offset"]["move_average_cycle"], (dm.offset.data * dm.scale).cpu()))
+        if not hparams["model"]["detail"]["disable_displace"]:
+            self.move_dis_avgmeter = []
+            for dm in self.displace_mods:
+                if dm.offset.size(0) == 0:
+                    continue
+                self.move_dis_avgmeter.append(Experiment.OffsetCycleAverageMeter(hparams["learnable_offset"]["move_average_cycle"], (dm.offset.data * dm.scale).cpu()))
 
     def load_checkpoint(self, checkpoint_folder, checkpoint_file,
                         no_strict_model_load=False,
@@ -155,10 +160,12 @@ class Experiment(BaseExperiment):
             self.criterion.load_state_dict(checkpoint["criterion"])
         if not no_optimizer_load:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
-            self.offset_optimizer.load_state_dict(checkpoint["offset_optimizer"])
+            if not hparams["model"]["detail"]["disable_displace"]:
+                self.offset_optimizer.load_state_dict(checkpoint["offset_optimizer"])
             if self.early_predictor_optimizer:
                 self.early_predictor_optimizer.load_state_dict(checkpoint["early_predictor_optimizer"])
-        self.move_dis_avgmeter = checkpoint["move_dis_avgmeter"]
+        if not hparams["model"]["detail"]["disable_displace"]:
+            self.move_dis_avgmeter = checkpoint["move_dis_avgmeter"]
         return checkpoint["epoch"]
 
     def save_checkpoint(self, checkpoint_folder, checkpoint_file, epoch):
@@ -167,9 +174,9 @@ class Experiment(BaseExperiment):
             "state_dict": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "criterion": self.criterion.state_dict(),
-            "offset_optimizer": self.offset_optimizer.state_dict(),
+            "offset_optimizer": self.offset_optimizer.state_dict() if not hparams["model"]["detail"]["disable_displace"] else None,
             "early_predictor_optimizer": self.early_predictor_optimizer.state_dict() if self.early_predictor_optimizer else None,
-            "move_dis_avgmeter": self.move_dis_avgmeter
+            "move_dis_avgmeter": self.move_dis_avgmeter if not hparams["model"]["detail"]["disable_displace"] else None
         }
         save_checkpoint(checkpoint_dict, checkpoint_folder=checkpoint_folder, checkpoint_file=checkpoint_file, force_replace=True)
 
@@ -286,8 +293,10 @@ class Experiment(BaseExperiment):
         if not evaluate_only:
             self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
             adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
-            self.set_offset_learning_rate(epoch, step)
-        self.set_offset_learning_para(epoch, step)
+            if not hparams["model"]["detail"]["disable_displace"]:
+                self.set_offset_learning_rate(epoch, step)
+        if not hparams["model"]["detail"]["disable_displace"]:
+            self.set_offset_learning_para(epoch, step)
 
     class OffsetCycleAverageMeter(object):
         """Computes and stores the cycled average of offset"""
@@ -335,12 +344,12 @@ class Experiment(BaseExperiment):
             torch.save([(dm.get_all_offsets(detach=True) * dm.scale).cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(step)))
 
     def epoch_end(self, epoch, step, evaluate_only):
-        if not evaluate_only:
+        if not evaluate_only and not hparams["model"]["detail"]["disable_displace"]:
             self.save_offsets(step)
 
     def iter_step(self, epoch_ctx:EpochContext, loss:torch.Tensor, progress:dict):
         optimize_offset = False
-        if progress["step"] >= hparams["learnable_offset"]["train_min_step"]:
+        if not hparams["model"]["detail"]["disable_displace"] and progress["step"] >= hparams["learnable_offset"]["train_min_step"]:
             optimize_offset = True
 
         self.optimizer.zero_grad()
@@ -367,7 +376,7 @@ class Experiment(BaseExperiment):
                 move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
             globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "move_dis"), {"mod": np.mean(move_dis_avg), "mod_cur": np.mean(move_dis)}, progress["step"] + 1)
 
-        if (progress["step"] + 1) % hparams["learnable_offset"]["offset_save_interval"] == 0:
+        if not hparams["model"]["detail"]["disable_displace"] and (progress["step"] + 1) % hparams["learnable_offset"]["offset_save_interval"] == 0:
             self.save_offsets(progress["step"] + 1)
 
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict) -> dict:
@@ -382,7 +391,7 @@ class Experiment(BaseExperiment):
         batch_size = img.size(0)
         globalvars.progress = progress
 
-        if progress["step"] == hparams["learnable_offset"]["train_min_step"] and progress["train"]:
+        if not hparams["model"]["detail"]["disable_displace"] and progress["step"] == hparams["learnable_offset"]["train_min_step"] and progress["train"]:
             self.save_offsets(progress["step"])
 
         det_map_gt_cuda = [dm.cuda() for dm in det_maps_gt]
@@ -625,7 +634,7 @@ class OffsetBlock(nn.Module):
             1,
             self.displace_planes,
             learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
-            disable_displace=False,
+            disable_displace=hparams["model"]["detail"]["disable_displace"],
             random_offset_init=hparams["model"]["detail"]["random_offset_init"],
             use_origin=True,
             actual_stride=1,
@@ -643,7 +652,7 @@ class OffsetBlock(nn.Module):
         self.pre_offset = nn.Conv2d(inplanes, self.displace_planes, 1)
         self.post_offset = nn.Conv2d(self.displace_planes, inplanes, 1)
         self.atten_displace = Attention(inplanes, self.displace_planes, input_shape=(height, width), bias_factor=2)
-        if hparams["learnable_offset"]["regress_offset"]:
+        if hasattr(self.displace, "offset_regressor"):
             self.atten_regressor = Attention(inplanes, self.displace.offset_regressor.atten_inplanes, input_shape=(height, width), bias_factor=2)
         else:
             self.atten_regressor = None

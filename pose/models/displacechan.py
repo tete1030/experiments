@@ -124,14 +124,14 @@ class DisplaceChannel(nn.Module):
                 self.LO_balance_grad = LO_balance_grad
                 self.switch_LO_state(True)
                 self.offset.requires_grad = True
-
-                if regress_offset:
-                    regressor_channels = self.num_init_pos * self.free_offset_per_init_pos * 2
-                    self.offset_regressor = OffsetRegressor(self.inplanes, regressor_channels)
-                else:
-                    self.offset_regressor = None
             else:
                 self.switch_LO_state(False)
+
+            if regress_offset:
+                regressor_channels = self.num_init_pos * self.free_offset_per_init_pos * 2
+                self.offset_regressor = OffsetRegressor(self.inplanes, regressor_channels)
+        else:
+            self.switch_LO_state(False)
 
     def set_learnable_offset_para(self, kernel_size, sigma):
         assert not hasattr(self, "LO_kernel_size") or self.LO_interpolate_kernel_type == "gaussian"
@@ -300,6 +300,7 @@ class DisplaceChannel(nn.Module):
         assert num_channels % free_offsets == 0, "num of channels cannot be divided by number of offsets"
         assert offset_plus_rel is None or offset_plus_rel.size(1) == free_offsets
 
+        LO_active = self.learnable_offset and (LO_active is True or (LO_active is None and self.LO_active is True))
         out_LO = None
 
         if not self.disable_displace:
@@ -323,7 +324,7 @@ class DisplaceChannel(nn.Module):
                 bind_chan = bind_chan // 2
                 offset_rel = torch.cat([offset_rel, -offset_rel], dim=-2)
 
-            if self.LO_balance_grad:
+            if LO_active and self.LO_balance_grad:
                 offset_rel.register_hook(self.offset_grad_hook)
 
             offset_abs = offset_rel * self.scale
@@ -334,7 +335,7 @@ class DisplaceChannel(nn.Module):
             else:
                 raise ValueError()
 
-            if self.learnable_offset and (LO_active is True or (LO_active is None and self.LO_active is True)):
+            if LO_active:
                 if device not in self.field:
                     self.field[device] = self.field[torch.device("cpu")].to(device)
 
