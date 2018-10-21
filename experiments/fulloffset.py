@@ -560,10 +560,9 @@ class Predictor(nn.Module):
 
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
-        layers.append(OffsetBlock(input_shape[0], input_shape[1], num_class, 256))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
-        layers.append(nn.Conv2d(num_class, num_class,
-            kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
+        layers.append(nn.BatchNorm2d(num_class))
+        layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256))
 
         return nn.Sequential(*layers)
 
@@ -992,10 +991,9 @@ class GlobalNet(nn.Module):
 
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
-        layers.append(OffsetBlock(output_shape[0] // output_shape_factor, output_shape[1] // output_shape_factor, num_class, 256))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
-        layers.append(nn.Conv2d(num_class, num_class,
-            kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
+        layers.append(nn.BatchNorm2d(num_class))
+        layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256))
 
         return nn.Sequential(*layers)
 
