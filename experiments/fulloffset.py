@@ -562,7 +562,8 @@ class Predictor(nn.Module):
             kernel_size=3, stride=1, padding=1, bias=False))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
         layers.append(nn.BatchNorm2d(num_class))
-        layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256))
+        if hparams["learnable_offset"]["use_in_predictor"]:
+            layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256))
 
         return nn.Sequential(*layers)
 
@@ -656,14 +657,21 @@ class OffsetBlock(nn.Module):
             LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"],
             previous_dischan=Experiment.exp.displace_mods[-1] if hparams["learnable_offset"]["reuse_offset"] and len(Experiment.exp.displace_mods) > 0 else None)
         Experiment.exp.displace_mods.append(self.displace)
-        self.pre_offset = nn.Conv2d(inplanes, self.displace_planes, 1)
-        self.post_offset = nn.Conv2d(self.displace_planes, inplanes, 1)
+        self.bn_displace = nn.BatchNorm2d(self.displace_planes)
+        self.pre_offset = nn.Sequential(
+            nn.Conv2d(inplanes, self.displace_planes, 1),
+            nn.BatchNorm2d(self.displace_planes),
+            nn.ReLU())
+        self.post_offset = nn.Sequential(
+            nn.Conv2d(self.displace_planes, inplanes, 1),
+            nn.BatchNorm2d(self.displace_planes),
+            nn.ReLU())
         self.atten_displace = Attention(inplanes, self.displace_planes, input_shape=(height, width), bias_factor=2)
         if hasattr(self.displace, "offset_regressor"):
             self.atten_regressor = Attention(inplanes, self.displace.offset_regressor.atten_inplanes, input_shape=(height, width), bias_factor=2)
         else:
             self.atten_regressor = None
-        self.bn = nn.BatchNorm2d(inplanes)
+        self.bn_final = nn.BatchNorm2d(inplanes)
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
@@ -678,10 +686,11 @@ class OffsetBlock(nn.Module):
         out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=self.atten_regressor(out_pre) if self.atten_regressor else None)
         if out_dis_LO is not None:
             out_dis = out_dis_LO
+        out_dis = self.relu(self.bn_displace(out_dis))
         out_post = self.post_offset(out_atten * out_dis)
         out_skip = x + out_post
 
-        out_final = self.relu(self.bn(out_skip))
+        out_final = self.relu(self.bn_final(out_skip))
 
         if config.debug_nan:
             def get_backward_hook(var_name):
@@ -993,7 +1002,8 @@ class GlobalNet(nn.Module):
             kernel_size=3, stride=1, padding=1, bias=False))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
         layers.append(nn.BatchNorm2d(num_class))
-        layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256))
+        if hparams["learnable_offset"]["use_in_predictor"]:
+            layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256))
 
         return nn.Sequential(*layers)
 

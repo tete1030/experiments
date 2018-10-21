@@ -336,7 +336,7 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 55
+    id: 56
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -362,6 +362,7 @@ fulloffset:
         dconv_for_LO_stride: 1
         regress_offset: false
         grad_inside_only: true
+        use_in_predictor: false
     config:
         store_map: false
     model:
