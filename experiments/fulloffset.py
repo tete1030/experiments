@@ -664,14 +664,12 @@ class OffsetBlock(nn.Module):
             nn.ReLU())
         self.post_offset = nn.Sequential(
             nn.Conv2d(self.displace_planes, inplanes, 1),
-            nn.BatchNorm2d(self.displace_planes),
-            nn.ReLU())
+            nn.BatchNorm2d(self.displace_planes))
         self.atten_displace = Attention(inplanes, self.displace_planes, input_shape=(height, width), bias_factor=2)
         if hasattr(self.displace, "offset_regressor"):
             self.atten_regressor = Attention(inplanes, self.displace.offset_regressor.atten_inplanes, input_shape=(height, width), bias_factor=2)
         else:
             self.atten_regressor = None
-        self.bn_final = nn.BatchNorm2d(inplanes)
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
@@ -686,11 +684,10 @@ class OffsetBlock(nn.Module):
         out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=self.atten_regressor(out_pre) if self.atten_regressor else None)
         if out_dis_LO is not None:
             out_dis = out_dis_LO
-        out_dis = self.relu(self.bn_displace(out_dis))
         out_post = self.post_offset(out_atten * out_dis)
         out_skip = x + out_post
 
-        out_final = self.relu(self.bn_final(out_skip))
+        out_final = self.relu(out_skip)
 
         if config.debug_nan:
             def get_backward_hook(var_name):
