@@ -336,18 +336,18 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 58
+    id: 59
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
-    schedule: [25, 30, 35, 40]
+    schedule: []
     train_batch: 16
     test_batch: 16
     learnable_offset:
         train_min_step: 6543
         lr: 1.e-3
         lr_gamma: 0.1
-        lr_decay_step: 100000 # 15 * 6543
+        lr_decay_step: 200000 # 15 * 6543
         momentum: 0.0
         interpolate_kernel_type: bilinear
         interpolate_gaussian_sigma: 0.5
@@ -355,7 +355,7 @@ fulloffset:
         interpolate_gaussian_sigma_decay_step: 330000
         interpolate_gaussian_sigma_decay_rate: 0.66
         offset_save_interval: 1000
-        expand_chan_ratio: [2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 0.5, 0.5]
+        expand_chan_ratio: [2, 2, 1, 1, 1, 1, 1, 1, 0.5]
         bind_chan: 1
         reuse_offset: false
         half_reversed_offset: false
