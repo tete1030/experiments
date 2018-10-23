@@ -80,7 +80,7 @@ class Experiment(BaseExperiment):
 
         if not hparams["model"]["detail"]["disable_displace"]:
             offset_optimizer_args = [
-            {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]}]
+                {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]}]
 
             self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
 
@@ -561,7 +561,8 @@ class Predictor(nn.Module):
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
-        layers.append(nn.BatchNorm2d(num_class))
+        layers.append(nn.Conv2d(num_class, num_class,
+            kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
         if hparams["learnable_offset"]["use_in_predictor"]:
             layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256))
 
@@ -657,19 +658,14 @@ class OffsetBlock(nn.Module):
             LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"],
             previous_dischan=Experiment.exp.displace_mods[-1] if hparams["learnable_offset"]["reuse_offset"] and len(Experiment.exp.displace_mods) > 0 else None)
         Experiment.exp.displace_mods.append(self.displace)
-        self.bn_displace = nn.BatchNorm2d(self.displace_planes)
-        self.pre_offset = nn.Sequential(
-            nn.Conv2d(inplanes, self.displace_planes, 1),
-            nn.BatchNorm2d(self.displace_planes),
-            nn.ReLU())
-        self.post_offset = nn.Sequential(
-            nn.Conv2d(self.displace_planes, inplanes, 1),
-            nn.BatchNorm2d(self.displace_planes))
+        self.pre_offset = nn.Conv2d(inplanes, self.displace_planes, 1)
+        self.post_offset = nn.Conv2d(self.displace_planes, inplanes, 1)
         self.atten_displace = Attention(inplanes, self.displace_planes, input_shape=(height, width), bias_factor=2)
         if hasattr(self.displace, "offset_regressor"):
             self.atten_regressor = Attention(inplanes, self.displace.offset_regressor.atten_inplanes, input_shape=(height, width), bias_factor=2)
         else:
             self.atten_regressor = None
+        self.bn = nn.BatchNorm2d(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
@@ -687,7 +683,7 @@ class OffsetBlock(nn.Module):
         out_post = self.post_offset(out_atten * out_dis)
         out_skip = x + out_post
 
-        out_final = self.relu(out_skip)
+        out_final = self.relu(self.bn(out_skip))
 
         if config.debug_nan:
             def get_backward_hook(var_name):
@@ -998,7 +994,8 @@ class GlobalNet(nn.Module):
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
-        layers.append(nn.BatchNorm2d(num_class))
+        layers.append(nn.Conv2d(num_class, num_class,
+            kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
         if hparams["learnable_offset"]["use_in_predictor"]:
             layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256))
 
