@@ -26,26 +26,10 @@ class Weighted(nn.Module):
         return x * self.weight[None]
 
 class OffsetRegressor(nn.Module):
-    def __init__(self, inplanes, regressor_channels):
+    def __init__(self, num_offsets):
         super(OffsetRegressor, self).__init__()
-        self.inplanes = inplanes
-        self.atten_inplanes = inplanes // 4
-        self.regressor_channels = regressor_channels
-        self.pre = nn.Sequential(
-            nn.Conv2d(self.inplanes, self.atten_inplanes, kernel_size=1, stride=1),
-            nn.BatchNorm2d(self.atten_inplanes),
-            StrictNaNReLU(inplace=True),
-            nn.Conv2d(self.atten_inplanes, self.atten_inplanes, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(self.atten_inplanes),
-            StrictNaNReLU(inplace=True))
-
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-
-        self.regressor = nn.Sequential(
-            nn.Linear(self.atten_inplanes, regressor_channels, bias=False),
-            nn.BatchNorm1d(regressor_channels, affine=False),
-            Weighted(regressor_channels, init=0.),
-            Lambda(lambda x: x.view(x.size(0), -1, 2)))
+        self.num_offsets = num_offsets
+        self.regressor = nn.Linear(self.num_offsets * 2, self.num_offsets, bias=False)
 
         self.reset_parameters()
 
@@ -65,13 +49,16 @@ class OffsetRegressor(nn.Module):
                 if m.bias is not None:
                     m.bias.data.zero_()
 
-    def forward(self, x, atten=None):
-        x = self.pre(x)
-        if atten is not None:
-            x = (x * atten).sum(-1).sum(-1)
-        else:
-            x = self.avgpool(x).squeeze(-1).squeeze(-1)
-        return self.regressor(x)
+    def forward(self, inp, atten):
+        pos_inp = inp.view(inp.size(0), inp.size(1), -1).argmax(dim=-1)
+        pos_inp_x = (pos_inp % inp.size(-1)).float()
+        pos_inp_y = (pos_inp / inp.size(-1)).float()
+        pos_atten = atten.view(atten.size(0), atten.size(1), -1).argmax(dim=-1)
+        pos_atten_x = (pos_atten % atten.size(-1)).float()
+        pos_atten_y = (pos_atten / atten.size(-1)).float()
+        return torch.stack([
+            self.regressor(torch.cat([pos_inp_x, pos_atten_x], dim=-1)),
+            self.regressor(torch.cat([pos_inp_y, pos_atten_y], dim=-1))], dim=2)
 
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, init_stride, chan_per_init_pos,
@@ -128,8 +115,7 @@ class DisplaceChannel(nn.Module):
                 self.switch_LO_state(False)
 
             if regress_offset:
-                regressor_channels = self.num_init_pos * self.free_offset_per_init_pos * 2
-                self.offset_regressor = OffsetRegressor(self.inplanes, regressor_channels)
+                self.offset_regressor = OffsetRegressor(self.inplanes)
         else:
             self.switch_LO_state(False)
 
@@ -289,7 +275,7 @@ class DisplaceChannel(nn.Module):
 
         return all_offsets
 
-    def forward(self, inp, LO_active=None, offset_plus_rel=None, offset_regressor_atten=None):
+    def forward(self, inp, offset_regressor_atten, LO_active=None, offset_plus_rel=None):
         batch_size = inp.size(0)
         num_channels = inp.size(1)
         height = inp.size(2)
@@ -309,25 +295,23 @@ class DisplaceChannel(nn.Module):
             if offset_plus_rel is not None:
                 offset_rel = offset_rel[None] + offset_plus_rel
 
+            offset_abs = offset_rel * self.scale
+
             if self.regress_offset:
-                if offset_rel.dim() == 2:
-                    offset_rel = offset_rel[None]
-                if offset_regressor_atten is not None:
-                    offset_regressed = self.offset_regressor(inp, atten=offset_regressor_atten)
-                else:
-                    offset_regressed = self.offset_regressor(inp)
-                offset_rel = offset_rel + offset_regressed
+                if offset_abs.dim() == 2:
+                    offset_abs = offset_abs[None]
+                offset_regressed_abs = self.offset_regressor(inp, offset_regressor_atten)
+                offset_abs = offset_abs + offset_regressed_abs
+
+            if LO_active and self.LO_balance_grad:
+                offset_abs.register_hook(self.offset_grad_hook)
 
             bind_chan = num_channels // free_offsets
             if self.LO_half_reversed_offset:
                 assert bind_chan % 2 == 0
                 bind_chan = bind_chan // 2
-                offset_rel = torch.cat([offset_rel, -offset_rel], dim=-2)
+                offset_abs = torch.cat([offset_abs, -offset_abs], dim=-2)
 
-            if LO_active and self.LO_balance_grad:
-                offset_rel.register_hook(self.offset_grad_hook)
-
-            offset_abs = offset_rel * self.scale
             if offset_abs.dim() == 3:
                 out = DisplaceCUDA.apply(inp.view(1, -1, height, width), offset_abs.detach().round().int().view(-1, 2), bind_chan).view(batch_size, -1, height, width)
             elif offset_abs.dim() == 2:

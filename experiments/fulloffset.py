@@ -661,10 +661,6 @@ class OffsetBlock(nn.Module):
         self.pre_offset = nn.Conv2d(inplanes, self.displace_planes, 1)
         self.post_offset = nn.Conv2d(self.displace_planes, inplanes, 1)
         self.atten_displace = Attention(inplanes, self.displace_planes, input_shape=(height, width), bias_factor=2)
-        if hasattr(self.displace, "offset_regressor"):
-            self.atten_regressor = Attention(inplanes, self.displace.offset_regressor.atten_inplanes, input_shape=(height, width), bias_factor=2)
-        else:
-            self.atten_regressor = None
         self.bn = nn.BatchNorm2d(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
 
@@ -677,7 +673,7 @@ class OffsetBlock(nn.Module):
 
         out_pre = self.pre_offset(x)
         out_atten = self.atten_displace(x)
-        out_dis, out_dis_LO = self.displace(out_pre, offset_regressor_atten=self.atten_regressor(out_pre) if self.atten_regressor else None)
+        out_dis, out_dis_LO = self.displace(out_pre, out_atten)
         if out_dis_LO is not None:
             out_dis = out_dis_LO
         out_post = self.post_offset(out_atten * out_dis)
@@ -726,7 +722,7 @@ class Bottleneck(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        if stride == 1 and self.block_index != 1:
+        if stride == 1:
             self.offset_block = OffsetBlock(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
