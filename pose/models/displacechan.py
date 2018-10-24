@@ -33,7 +33,7 @@ class OffsetRegressor(nn.Module):
         self.regressor.weight.data.zero_()
 
     def forward(self, inp, atten):
-        pos_inp = inp.view(inp.size(0), inp.size(1), -1).argmax(dim=-1)
+        pos_inp = inp.abs().view(inp.size(0), inp.size(1), -1).argmax(dim=-1)
         pos_inp_x = (pos_inp % inp.size(-1)).float()
         pos_inp_y = (pos_inp / inp.size(-1)).float()
         pos_atten = atten.view(atten.size(0), atten.size(1), -1).argmax(dim=-1)
