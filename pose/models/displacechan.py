@@ -30,24 +30,7 @@ class OffsetRegressor(nn.Module):
         super(OffsetRegressor, self).__init__()
         self.num_offsets = num_offsets
         self.regressor = nn.Linear(self.num_offsets * 2, self.num_offsets, bias=False)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        for m in self.parameters():
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n / 100))
-                if m.bias is not None:
-                    m.bias.data.zero_()
-            elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d)):
-                if m.weight is not None:
-                    m.weight.data.fill_(1)
-                    m.bias.data.zero_()
-            elif isinstance(m, nn.Linear):
-                m.weight.data.normal_(0, math.sqrt(2. / m.weight.size(0) / 100))
-                if m.bias is not None:
-                    m.bias.data.zero_()
+        self.regressor.weight.data.zero_()
 
     def forward(self, inp, atten):
         pos_inp = inp.view(inp.size(0), inp.size(1), -1).argmax(dim=-1)

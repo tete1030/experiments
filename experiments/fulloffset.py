@@ -61,16 +61,18 @@ class Experiment(BaseExperiment):
         assert OffsetBlock._counter == len(hparams["learnable_offset"]["expand_chan_ratio"])
 
         if not hparams["model"]["detail"]["disable_displace"]:
-            self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods if hasattr(dm, "offset")] + list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in self.displace_mods if hasattr(dm, "offset_regressor")]))))
+            self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods if hasattr(dm, "offset")]))
+            self.offset_regressor_parameters = list(filter(lambda x: x.requires_grad, list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in self.displace_mods if hasattr(dm, "offset_regressor")]))))
         else:
             self.offset_parameters = []
+            self.offset_regressor_parameters = []
 
         if hparams["model"]["detail"]["early_predictor"]:
             self.early_predictor_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([ep.parameters() for ep in self.early_predictors])))
         else:
             self.early_predictor_parameters = []
 
-        special_parameter_ids = list(map(lambda x: id(x), self.offset_parameters + self.early_predictor_parameters))
+        special_parameter_ids = list(map(lambda x: id(x), self.offset_parameters + self.offset_regressor_parameters + self.early_predictor_parameters))
         self.normal_parameters = list(filter(lambda x: x.requires_grad and id(x) not in special_parameter_ids, self.model.parameters()))
 
         self.optimizer = torch.optim.Adam(
@@ -80,7 +82,8 @@ class Experiment(BaseExperiment):
 
         if not hparams["model"]["detail"]["disable_displace"]:
             offset_optimizer_args = [
-                {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]}]
+                {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]},
+                {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams["learnable_offset"]["lr_regressor"], "init_lr": hparams["learnable_offset"]["lr_regressor"]}]
 
             self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
 
