@@ -423,6 +423,13 @@ class Experiment(BaseExperiment):
                 else:
                     loss = loss + (outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2).mean().sqrt()
 
+        for dm in self.displace_mods:
+            if dm.offset.size(0) == 0:
+                continue
+            if hasattr(dm, "offset_regressor"):
+                weight_reg = dm.offset_regressor.regressor.weight
+                loss += (weight_reg.sum(1).mean()) ** 2
+
         epoch_ctx.add_scalar("loss", loss.item())
 
         if (loss.data != loss.data).any():
