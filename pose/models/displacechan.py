@@ -258,7 +258,7 @@ class DisplaceChannel(nn.Module):
 
         return all_offsets
 
-    def forward(self, inp, offset_regressor_atten, LO_active=None, offset_plus_rel=None):
+    def forward(self, inp, LO_active=None, offset_plus_rel=None):
         batch_size = inp.size(0)
         num_channels = inp.size(1)
         height = inp.size(2)
@@ -281,9 +281,10 @@ class DisplaceChannel(nn.Module):
             offset_abs = offset_rel * self.scale
 
             if self.regress_offset:
+                raise ValueError("No atten map provided")
                 if offset_abs.dim() == 2:
                     offset_abs = offset_abs[None]
-                offset_regressed_abs = self.offset_regressor(inp, offset_regressor_atten)
+                offset_regressed_abs = self.offset_regressor(inp, None)
                 offset_abs = offset_abs + offset_regressed_abs
 
             if LO_active and self.LO_balance_grad:

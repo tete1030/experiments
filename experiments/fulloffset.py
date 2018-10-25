@@ -82,8 +82,9 @@ class Experiment(BaseExperiment):
 
         if not hparams["model"]["detail"]["disable_displace"]:
             offset_optimizer_args = [
-                {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]},
-                {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams["learnable_offset"]["lr_regressor"], "init_lr": hparams["learnable_offset"]["lr_regressor"]}]
+                {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]}]
+            if len(self.offset_regressor_parameters) > 0:
+                offset_optimizer_args.append({"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams["learnable_offset"]["lr_regressor"], "init_lr": hparams["learnable_offset"]["lr_regressor"]})
 
             self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
 
@@ -423,13 +424,6 @@ class Experiment(BaseExperiment):
                 else:
                     loss = loss + (outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2).mean().sqrt()
 
-        for dm in self.displace_mods:
-            if dm.offset.size(0) == 0:
-                continue
-            if hasattr(dm, "offset_regressor"):
-                weight_reg = dm.offset_regressor.regressor.weight
-                loss += (weight_reg.sum(1) ** 2).mean()
-
         epoch_ctx.add_scalar("loss", loss.item())
 
         if (loss.data != loss.data).any():
@@ -670,7 +664,7 @@ class OffsetBlock(nn.Module):
         Experiment.exp.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(inplanes, self.displace_planes, 1)
         self.post_offset = nn.Conv2d(self.displace_planes, inplanes, 1)
-        self.atten_displace = Attention(inplanes, self.displace_planes, input_shape=(height, width), bias_factor=2)
+        self.atten_displace = Attention(inplanes + self.displace_planes, self.displace_planes, input_shape=(height, width), bias_factor=2)
         self.bn = nn.BatchNorm2d(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
 
@@ -682,10 +676,10 @@ class OffsetBlock(nn.Module):
             return x
 
         out_pre = self.pre_offset(x)
-        out_atten = self.atten_displace(x)
-        out_dis, out_dis_LO = self.displace(out_pre, out_atten)
+        out_dis, out_dis_LO = self.displace(out_pre)
         if out_dis_LO is not None:
             out_dis = out_dis_LO
+        out_atten = self.atten_displace(torch.cat([x, out_dis], dim=1))
         out_post = self.post_offset(out_atten * out_dis)
         out_skip = x + out_post
 
