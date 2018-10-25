@@ -664,7 +664,7 @@ class OffsetBlock(nn.Module):
         Experiment.exp.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(inplanes, self.displace_planes, 1)
         self.post_offset = nn.Conv2d(self.displace_planes, inplanes, 1)
-        self.atten_displace = Attention(inplanes + self.displace_planes, self.displace_planes, input_shape=(height, width), bias_factor=2)
+        self.atten_displace = Attention(inplanes, self.displace_planes, input_shape=(height, width), bias_factor=2)
         self.bn = nn.BatchNorm2d(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
 
@@ -679,7 +679,7 @@ class OffsetBlock(nn.Module):
         out_dis, out_dis_LO = self.displace(out_pre)
         if out_dis_LO is not None:
             out_dis = out_dis_LO
-        out_atten = self.atten_displace(torch.cat([x, out_dis], dim=1))
+        out_atten = self.atten_displace(x)
         out_post = self.post_offset(out_atten * out_dis)
         out_skip = x + out_post
 
