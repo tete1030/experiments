@@ -1,0 +1,2 @@
+Additional:
+- Extract displace_atten from not only input, but also displace_out
