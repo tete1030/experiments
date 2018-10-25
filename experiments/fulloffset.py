@@ -428,7 +428,7 @@ class Experiment(BaseExperiment):
                 continue
             if hasattr(dm, "offset_regressor"):
                 weight_reg = dm.offset_regressor.regressor.weight
-                loss += (weight_reg.sum(1).mean()) ** 2
+                loss += (weight_reg.sum(1) ** 2).mean()
 
         epoch_ctx.add_scalar("loss", loss.item())
 
