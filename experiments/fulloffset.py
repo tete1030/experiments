@@ -599,7 +599,7 @@ class GaussianBlur(nn.Module):
         return F.conv2d(x, self.gaussian_kernel, padding=(self.kernel_size[0] // 2, self.kernel_size[1] // 2), groups=self.inplanes)
 
 class Attention(nn.Module):
-    def __init__(self, inplanes, outplanes, input_shape=None, bias_planes=0, bias_factor=0):
+    def __init__(self, inplanes, outplanes, input_shape=None, bias_planes=0, bias_factor=0, space_norm=True):
         super(Attention, self).__init__()
         self.inplanes = inplanes
         self.outplanes = outplanes
@@ -615,11 +615,19 @@ class Attention(nn.Module):
             self.bias = nn.Parameter(torch.ones(1, bias_planes, bias_shape[0], bias_shape[1], dtype=torch.float))
         else:
             self.bias = None
-        self.atten = nn.Sequential(
-            nn.Conv2d(self.total_inplanes, outplanes, 1),
-            nn.BatchNorm2d(outplanes),
-            nn.Softplus(),
-            SpaceNormalization())
+
+        self.space_norm = space_norm
+        if space_norm:
+            self.atten = nn.Sequential(
+                nn.Conv2d(self.total_inplanes, outplanes, 1),
+                nn.BatchNorm2d(outplanes),
+                nn.Softplus(),
+                SpaceNormalization())
+        else:
+            self.atten = nn.Sequential(
+                nn.Conv2d(self.total_inplanes, outplanes, 1),
+                nn.BatchNorm2d(outplanes),
+                nn.Sigmoid())
 
     def forward(self, x):
         if self.bias is not None:
@@ -668,8 +676,8 @@ class OffsetBlock(nn.Module):
         Experiment.exp.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(inplanes, self.displace_planes, 1)
         self.post_offset = nn.Conv2d(self.displace_planes, inplanes, 1)
-        self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(height, width), bias_planes=0, bias_factor=0)
-        self.atten_post = Attention(0, self.inplanes, input_shape=(height, width), bias_planes=inplanes // 4, bias_factor=2)
+        self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(height, width), bias_planes=0, bias_factor=0, space_norm=True)
+        self.atten_post = Attention(0, self.inplanes, input_shape=(height, width), bias_planes=inplanes // 4, bias_factor=2, space_norm=False)
         self.bn = nn.BatchNorm2d(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
 
