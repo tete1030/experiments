@@ -406,7 +406,7 @@ class Experiment(BaseExperiment):
             globalvars.cur_img = None
 
         loss = 0.
-        for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
+        for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda[:len(output_maps)])):
             # if ilabel < len(det_map_gt_cuda) - 1:
             #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
             if ilabel < len(det_map_gt_cuda) - 1 and not hparams["model"]["detail"]["loss_invisible"]:
