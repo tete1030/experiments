@@ -739,7 +739,7 @@ class Bottleneck(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        if stride == 1:
+        if not (self.res_index in [1, 2, 3] and self.block_index == 1):
             self.offset_block = OffsetBlock(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
@@ -748,14 +748,6 @@ class Bottleneck(nn.Module):
             OffsetBlock._counter += 1
         else:
             self.offset_block = None
-
-        if self.res_index in [0,1,2] and self.block_index == 1:
-            self.early_prediction = True
-        else:
-            self.early_prediction = False
-
-        if self.early_prediction:
-            Experiment.exp.early_predictor_size.append((self.inplanes, self.inshape_factor))
 
     def forward(self, x):
         if self.offset_block is not None:
@@ -781,9 +773,6 @@ class Bottleneck(nn.Module):
 
         out = self.relu(out)
 
-        if self.early_prediction:
-            Experiment.exp.pre_early_predictor_outs[out.device].append(out)
-
         return out
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -807,7 +796,7 @@ class BasicBlock(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        if stride == 1:
+        if not (self.res_index in [1, 2, 3] and self.block_index == 1):
             self.offset_block = OffsetBlock(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
@@ -816,14 +805,6 @@ class BasicBlock(nn.Module):
             OffsetBlock._counter += 1
         else:
             self.offset_block = None
-
-        if self.res_index in [0,1,2] and self.block_index == 1:
-            self.early_prediction = True
-        else:
-            self.early_prediction = False
-
-        if self.early_prediction:
-            Experiment.exp.early_predictor_size.append((self.inplanes, self.inshape_factor))
 
     def forward(self, x):
         if self.offset_block is not None:
@@ -843,9 +824,6 @@ class BasicBlock(nn.Module):
 
         out = out + residual
         out = self.relu(out)
-
-        if self.early_prediction:
-            Experiment.exp.pre_early_predictor_outs[out.device].append(out)
 
         return out
 
@@ -903,6 +881,9 @@ class ResNet(nn.Module):
         for i in range(1, blocks):
             layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=i))
 
+        if res_index < 3:
+            Experiment.exp.early_predictor_size.append((self.inplanes, self.inshape_factor))
+
         # TODO:
         # Use BreakableSequential to support middle break 
         return BreakableSequential(*layers)
@@ -918,10 +899,13 @@ class ResNet(nn.Module):
 
         # TODO:
         x1 = self.layer1(x)
+        Experiment.exp.pre_early_predictor_outs[x.device].append(x1)
         if x1 is not None:
             x2 = self.layer2(x1)
+            Experiment.exp.pre_early_predictor_outs[x.device].append(x2)
         if x2 is not None:
             x3 = self.layer3(x2)
+            Experiment.exp.pre_early_predictor_outs[x.device].append(x3)
         if x3 is not None:
             x4 = self.layer4(x3)
 
