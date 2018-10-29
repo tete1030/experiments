@@ -100,10 +100,10 @@ class Experiment(BaseExperiment):
         
         self.cur_lr = hparams["learning_rate"]
 
-        self.coco = COCO("data/mscoco/person_keypoints_train2014.json")
-        self.train_dataset = datasets.COCOSinglePose("data/mscoco/images",
+        self.coco = COCO("data/mscoco/person_keypoints_train2017.json")
+        self.train_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
                                                self.coco,
-                                               "data/mscoco/sp_split.pth",
+                                               "data/mscoco/sp_split_2017.pth",
                                                "data/mscoco/" + hparams["dataset"]["mean_std_file"],
                                                True,
                                                img_res=hparams["model"]["inp_shape"],
@@ -115,9 +115,9 @@ class Experiment(BaseExperiment):
                                                rot_factor=hparams["dataset"]["rotate_factor"],
                                                trans_factor=hparams["dataset"]["translation_factor"])
 
-        self.val_dataset = datasets.COCOSinglePose("data/mscoco/images",
+        self.val_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
                                              self.coco,
-                                             "data/mscoco/sp_split.pth",
+                                             "data/mscoco/sp_split_2017.pth",
                                              "data/mscoco/" + hparams["dataset"]["mean_std_file"],
                                              False,
                                              img_res=hparams["model"]["inp_shape"],
