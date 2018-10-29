@@ -71,6 +71,13 @@ class DisplaceChannel(nn.Module):
         self.num_init_y, self.num_init_x, self.num_init_pos = self.get_num_offset(height, width, displace_size, init_stride, use_origin)
         self.inplanes = self.num_init_pos * self.chan_per_init_pos
         self.regress_offset = regress_offset
+        self.LO_interpolate_kernel_type = LO_interpolate_kernel_type
+        assert isinstance(LO_kernel_size, int)
+        assert LO_kernel_size % 2 == 1
+        self.LO_kernel_size_init = LO_kernel_size
+        self.LO_sigma_init = LO_sigma
+        self.LO_balance_grad = LO_balance_grad
+        self.set_learnable_offset_para(LO_kernel_size, LO_sigma)
 
         if not disable_displace:
             self.previous_dischan = previous_dischan
@@ -84,14 +91,6 @@ class DisplaceChannel(nn.Module):
             self.offset = nn.parameter.Parameter(torch.Tensor(self.num_init_pos * self.free_offset_per_init_pos - previous_offset_channels, 2), requires_grad=False)
             self.init_offset()
             if learnable_offset:
-                assert isinstance(LO_kernel_size, int)
-                assert LO_kernel_size % 2 == 1
-
-                self.LO_interpolate_kernel_type = LO_interpolate_kernel_type
-                self.LO_kernel_size_init = LO_kernel_size
-                self.LO_sigma_init = LO_sigma
-                self.set_learnable_offset_para(LO_kernel_size, LO_sigma)
-                self.LO_balance_grad = LO_balance_grad
                 self.switch_LO_state(True)
                 self.offset.requires_grad = True
             else:
