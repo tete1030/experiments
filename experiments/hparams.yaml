@@ -336,7 +336,7 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 73
+    id: 74
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -380,6 +380,7 @@ fulloffset:
             random_offset_init: 0
             early_predictor: true
             loss_invisible: true
+            enable_offset_block: false
     dataset:
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]

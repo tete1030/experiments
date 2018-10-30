@@ -58,7 +58,7 @@ class Experiment(BaseExperiment):
             pretrained = None
 
         self.model = nn.DataParallel(Controller(MainModel(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda()))
-        assert OffsetBlock._counter == len(hparams["learnable_offset"]["expand_chan_ratio"])
+        assert OffsetBlock._counter == len(hparams["learnable_offset"]["expand_chan_ratio"]) or not hparams["model"]["detail"]["enable_offset_block"]
 
         if not hparams["model"]["detail"]["disable_displace"]:
             self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods if hasattr(dm, "offset")]))
@@ -748,7 +748,7 @@ class Bottleneck(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        if not (self.res_index in [1, 2, 3] and self.block_index == 1):
+        if not (self.res_index in [1, 2, 3] and self.block_index == 1) and hparams["model"]["detail"]["enable_offset_block"]:
             self.offset_block = OffsetBlock(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
@@ -805,7 +805,7 @@ class BasicBlock(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        if not (self.res_index in [1, 2, 3] and self.block_index == 1):
+        if not (self.res_index in [1, 2, 3] and self.block_index == 1) and hparams["model"]["detail"]["enable_offset_block"]:
             self.offset_block = OffsetBlock(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
