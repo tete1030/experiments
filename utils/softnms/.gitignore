@@ -1,0 +1,4 @@
+softnms.c
+dist
+build
+*.egg-info
