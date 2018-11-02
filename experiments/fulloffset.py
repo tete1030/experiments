@@ -295,8 +295,8 @@ class Experiment(BaseExperiment):
         if not evaluate_only:
             self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
             adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
-            if not hparams["model"]["detail"]["disable_displace"]:
-                self.set_offset_learning_rate(epoch, step)
+            adjust_learning_rate(self.offset_optimizer, epoch, hparams["learnable_offset"]["lr"], hparams["schedule"], hparams["lr_gamma"])
+
         if not hparams["model"]["detail"]["disable_displace"]:
             self.set_offset_learning_para(epoch, step)
 
