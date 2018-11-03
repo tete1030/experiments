@@ -608,7 +608,7 @@ class GaussianBlur(nn.Module):
         return F.conv2d(x, self.gaussian_kernel, padding=(self.kernel_size[0] // 2, self.kernel_size[1] // 2), groups=self.inplanes)
 
 class Attention(nn.Module):
-    def __init__(self, inplanes, outplanes, input_shape=None, bias_planes=0, bias_factor=0, space_norm=True):
+    def __init__(self, inplanes, outplanes, input_shape=None, bias_planes=0, bias_factor=0, space_norm=True, stride=1):
         super(Attention, self).__init__()
         self.inplanes = inplanes
         self.outplanes = outplanes
@@ -628,13 +628,13 @@ class Attention(nn.Module):
         self.space_norm = space_norm
         if space_norm:
             self.atten = nn.Sequential(
-                nn.Conv2d(self.total_inplanes, outplanes, 1),
+                nn.Conv2d(self.total_inplanes, outplanes, 1, stride=stride),
                 nn.BatchNorm2d(outplanes),
                 nn.Softplus(),
                 SpaceNormalization())
         else:
             self.atten = nn.Sequential(
-                nn.Conv2d(self.total_inplanes, outplanes, 1),
+                nn.Conv2d(self.total_inplanes, outplanes, 1, stride=stride),
                 nn.BatchNorm2d(outplanes),
                 nn.Sigmoid())
 
@@ -650,7 +650,7 @@ class Attention(nn.Module):
 
 class OffsetBlock(nn.Module):
     _counter = 0
-    def __init__(self, height, width, inplanes, displace_planes):
+    def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1):
         super(OffsetBlock, self).__init__()
         LO_interpolate_kernel_type = hparams["learnable_offset"]["interpolate_kernel_type"]
         if LO_interpolate_kernel_type == "gaussian":
@@ -661,10 +661,14 @@ class OffsetBlock(nn.Module):
             LO_kernel_size = 3
         self.height = height
         self.width = width
+        self.out_height = (height + stride - 1) // stride
+        self.out_width = (width + stride - 1) // stride
         self.inplanes = inplanes
         self.displace_planes = displace_planes
+        self.outplanes = outplanes
+        self.stride = stride
         self.displace = DisplaceChannel(
-            height, width,
+            self.out_height, self.out_width,
             1,
             self.displace_planes,
             learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
@@ -683,18 +687,23 @@ class OffsetBlock(nn.Module):
             LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"],
             previous_dischan=Experiment.exp.displace_mods[-1] if hparams["learnable_offset"]["reuse_offset"] and len(Experiment.exp.displace_mods) > 0 else None)
         Experiment.exp.displace_mods.append(self.displace)
-        self.pre_offset = nn.Conv2d(inplanes, self.displace_planes, 1)
-        self.post_offset = nn.Conv2d(self.displace_planes, inplanes, 1)
+        self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
+        self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
         if hparams["learnable_offset"]["enable_atten"]:
-            self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(height, width), bias_planes=0, bias_factor=0, space_norm=False)
+            self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=False, stride=stride)
         else:
             self.atten_displace = None
         if hparams["learnable_offset"]["enable_mask"]:
-            self.atten_post = Attention(0, self.inplanes, input_shape=(height, width), bias_planes=inplanes // 4, bias_factor=2, space_norm=False)
+            self.atten_post = Attention(0, self.outplanes, input_shape=(self.out_height, self.out_width), bias_planes=inplanes // 4, bias_factor=2, space_norm=False)
         else:
             self.atten_post = None
-        self.bn = nn.BatchNorm2d(self.inplanes)
+        self.bn = nn.BatchNorm2d(self.outplanes)
         self.relu = nn.ReLU(inplace=True)
+        if stride > 1 or inplanes != outplanes:
+            self.downsample = nn.Conv2d(self.inplanes, self.outplanes,
+                          kernel_size=1, stride=stride, bias=False)
+        else:
+            self.downsample = None
 
     def forward(self, x):
         if config.check:
@@ -712,6 +721,8 @@ class OffsetBlock(nn.Module):
         else:
             out_atten = None
         out_post = self.post_offset(out_atten * out_dis if out_atten is not None else out_dis)
+        if self.downsample is not None:
+            x = self.downsample(x)
         out_skip = x + (out_post * self.atten_post(x) if self.atten_post is not None else out_post)
 
         out_final = self.relu(self.bn(out_skip))
@@ -745,9 +756,6 @@ class Bottleneck(nn.Module):
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         self.inplanes = inplanes
         self.bn1 = BatchNorm2dImpl(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
-                               padding=1, bias=False)
-        self.bn2 = BatchNorm2dImpl(planes)
         self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
         self.bn3 = BatchNorm2dImpl(planes * 4)
         self.relu = StrictNaNReLU(inplace=True)
@@ -757,19 +765,19 @@ class Bottleneck(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        if not (self.res_index in [1, 2, 3] and self.block_index == 1) and hparams["model"]["detail"]["enable_offset_block"]:
+        if hparams["model"]["detail"]["enable_offset_block"]:
             self.offset_block = OffsetBlock(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
-                self.inplanes,
-                int(inplanes * hparams["learnable_offset"]["expand_chan_ratio"][OffsetBlock._counter]))
+                planes,
+                planes,
+                int(planes * hparams["learnable_offset"]["expand_chan_ratio"][OffsetBlock._counter]),
+                stride=stride)
             OffsetBlock._counter += 1
         else:
             self.offset_block = None
 
     def forward(self, x):
-        if self.offset_block is not None:
-            x = self.offset_block(x)
 
         residual = x
 
@@ -777,9 +785,7 @@ class Bottleneck(nn.Module):
         out = self.bn1(out)
         out = self.relu(out)
 
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out = self.relu(out)
+        out = self.offset_block(out)
 
         out = self.conv3(out)
         out = self.bn3(out)
