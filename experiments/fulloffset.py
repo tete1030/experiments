@@ -690,7 +690,7 @@ class OffsetBlock(nn.Module):
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
         self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
         if hparams["learnable_offset"]["enable_atten"]:
-            self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=False, stride=stride)
+            self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=True, stride=stride)
         else:
             self.atten_displace = None
         if hparams["learnable_offset"]["enable_mask"]:
@@ -756,6 +756,9 @@ class Bottleneck(nn.Module):
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         self.inplanes = inplanes
         self.bn1 = BatchNorm2dImpl(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
+                               padding=1, bias=False)
+        self.bn2 = BatchNorm2dImpl(planes)
         self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
         self.bn3 = BatchNorm2dImpl(planes * 4)
         self.relu = StrictNaNReLU(inplace=True)
@@ -765,19 +768,20 @@ class Bottleneck(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        if hparams["model"]["detail"]["enable_offset_block"]:
+        if not (self.res_index in [1, 2, 3] and self.block_index == 1) and hparams["model"]["detail"]["enable_offset_block"]:
             self.offset_block = OffsetBlock(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
-                planes,
-                planes,
-                int(planes * hparams["learnable_offset"]["expand_chan_ratio"][OffsetBlock._counter]),
-                stride=stride)
+                self.inplanes,
+                self.inplanes,
+                int(self.inplanes * hparams["learnable_offset"]["expand_chan_ratio"][OffsetBlock._counter]))
             OffsetBlock._counter += 1
         else:
             self.offset_block = None
 
     def forward(self, x):
+        if self.offset_block is not None:
+            x = self.offset_block(x)
 
         residual = x
 
@@ -785,7 +789,9 @@ class Bottleneck(nn.Module):
         out = self.bn1(out)
         out = self.relu(out)
 
-        out = self.offset_block(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
 
         out = self.conv3(out)
         out = self.bn3(out)
