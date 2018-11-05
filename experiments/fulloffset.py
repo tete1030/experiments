@@ -38,7 +38,7 @@ class GroupNormWrapper(nn.GroupNorm):
         assert num_features % num_groups == 0, "num_features({}) is not dividend by num_groups({})".format(num_features, num_groups)
         super(GroupNormWrapper, self).__init__(num_groups, num_features, eps=1e-5)
 
-BatchNorm2dImpl = GroupNormWrapper
+BatchNorm2dImpl = None
 
 class Experiment(BaseExperiment):
     exp = None
@@ -56,6 +56,12 @@ class Experiment(BaseExperiment):
         pretrained = hparams["model"]["resnet_pretrained"]
         if config.resume is not None:
             pretrained = None
+
+        global BatchNorm2dImpl
+        if hparams["model"]["use_gn"]:
+            BatchNorm2dImpl = GroupNormWrapper
+        else:
+            BatchNorm2dImpl = nn.BatchNorm2d
 
         self.model = nn.DataParallel(Controller(MainModel(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda()))
         assert OffsetBlock._counter == len(hparams["learnable_offset"]["expand_chan_ratio"]) or not hparams["model"]["detail"]["enable_offset_block"]
@@ -815,6 +821,7 @@ class BasicBlock(nn.Module):
 
     def __init__(self, inplanes, planes, inshape_factor, res_index, block_index, stride=1, downsample=None):
         super(BasicBlock, self).__init__()
+        self.inplanes = inplanes
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = BatchNorm2dImpl(planes)
         self.relu = StrictNaNReLU(inplace=True)
@@ -831,7 +838,8 @@ class BasicBlock(nn.Module):
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
                 self.inplanes,
-                int(inplanes * hparams["learnable_offset"]["expand_chan_ratio"][OffsetBlock._counter]))
+                self.inplanes,
+                int(self.inplanes * hparams["learnable_offset"]["expand_chan_ratio"][OffsetBlock._counter]))
             OffsetBlock._counter += 1
         else:
             self.offset_block = None
