@@ -63,7 +63,7 @@ class Experiment(BaseExperiment):
         else:
             BatchNorm2dImpl = nn.BatchNorm2d
 
-        self.model = nn.DataParallel(Controller(MainModel(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained).cuda()))
+        self.model = nn.DataParallel(Controller(MainModel(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained)).cuda())
         assert OffsetBlock._counter == len(hparams["learnable_offset"]["expand_chan_ratio"]) or not hparams["model"]["detail"]["enable_offset_block"]
 
         if not hparams["model"]["detail"]["disable_displace"]:
