@@ -635,13 +635,13 @@ class Attention(nn.Module):
         if space_norm:
             self.atten = nn.Sequential(
                 nn.Conv2d(self.total_inplanes, outplanes, 1, stride=stride),
-                nn.BatchNorm2d(outplanes),
+                nn.BatchNorm2d(outplanes, momentum=hparams["learnable_offset"]["bn_momentum"]),
                 nn.Softplus(),
                 SpaceNormalization())
         else:
             self.atten = nn.Sequential(
                 nn.Conv2d(self.total_inplanes, outplanes, 1, stride=stride),
-                nn.BatchNorm2d(outplanes),
+                nn.BatchNorm2d(outplanes, momentum=hparams["learnable_offset"]["bn_momentum"]),
                 nn.Sigmoid())
 
     def forward(self, x):
@@ -703,7 +703,7 @@ class OffsetBlock(nn.Module):
             self.atten_post = Attention(0, self.outplanes, input_shape=(self.out_height, self.out_width), bias_planes=inplanes // 4, bias_factor=2, space_norm=False)
         else:
             self.atten_post = None
-        self.bn = nn.BatchNorm2d(self.outplanes)
+        self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams["learnable_offset"]["bn_momentum"])
         self.relu = nn.ReLU(inplace=True)
         if stride > 1 or inplanes != outplanes:
             self.downsample = nn.Conv2d(self.inplanes, self.outplanes,
