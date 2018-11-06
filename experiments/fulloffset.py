@@ -549,6 +549,9 @@ class MainModel(nn.Module):
         elif hparams["model"]["resnet"] == 50:
             self.resnet = resnet50(pretrained=pretrained)
             self.global_net = GlobalNet([2048, 1024, 512, 256], output_shape, num_points)
+        elif hparams["model"]["resnet"] == 101:
+            self.resnet = resnet101(pretrained=pretrained)
+            self.global_net = GlobalNet([2048, 1024, 512, 256], output_shape, num_points)
         else:
             assert False
 
@@ -774,7 +777,7 @@ class Bottleneck(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        if not (self.res_index in [1, 2, 3] and self.block_index == 1) and hparams["model"]["detail"]["enable_offset_block"]:
+        if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams["model"]["detail"]["enable_offset_block"]:
             self.offset_block = OffsetBlock(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
@@ -833,7 +836,7 @@ class BasicBlock(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        if not (self.res_index in [1, 2, 3] and self.block_index == 1) and hparams["model"]["detail"]["enable_offset_block"]:
+        if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams["model"]["detail"]["enable_offset_block"]:
             self.offset_block = OffsetBlock(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
@@ -970,6 +973,19 @@ def resnet50(pretrained=None, **kwargs):
     model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
     if pretrained is not None:
         print("Loading pretrained resnet50 ...")
+        model_state_dict = model.state_dict()
+        model_state_dict = load_pretrained_loose(model_state_dict, torch.load(pretrained))
+        model.load_state_dict(model_state_dict)
+    return model
+
+def resnet101(pretrained=None, **kwargs):
+    """Constructs a ResNet-101 model.
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+    """
+    model = ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
+    if pretrained is not None:
+        print("Loading pretrained resnet101 ...")
         model_state_dict = model.state_dict()
         model_state_dict = load_pretrained_loose(model_state_dict, torch.load(pretrained))
         model.load_state_dict(model_state_dict)
