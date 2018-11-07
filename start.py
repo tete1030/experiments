@@ -61,12 +61,12 @@ def init_sigint_handler():
         signal.signal(signal.SIGINT, sigint_handler)
     enable_sigint_handler = _enable_sigint_handler
 
-def check_hparams_consistency(old_hparams, new_hparams, ignore_hparams_mismatch=False):
-    def safe_yaml_convert(rt_yaml):
-        sio = StringIO()
-        YAML().dump(rt_yaml, sio)
-        return YAML(typ="safe").load(sio.getvalue())
+def safe_yaml_convert(rt_yaml):
+    sio = StringIO()
+    YAML().dump(rt_yaml, sio)
+    return YAML(typ="safe").load(sio.getvalue())
 
+def check_hparams_consistency(old_hparams, new_hparams, ignore_hparams_mismatch=False):
     if safe_yaml_convert(old_hparams) != safe_yaml_convert(new_hparams):
         log_w("hparams from config and from checkpoint are not equal")
         if not ignore_hparams_mismatch:
@@ -118,14 +118,16 @@ def main(args, unknown_args):
 
     init_config(args.CONF, args.config)
     exp_module_name = args.EXP
-    hparams.update(get_hparams(exp_module_name))
+    loaded_hparams = get_hparams(exp_module_name)
+    # Override config from command line
+    if args.override is not None:
+        override_hparams(loaded_hparams, args.override)
+
+    hparams.update(safe_yaml_convert(loaded_hparams))
+
     exp_name = hparams["name"]
     before_epoch = hparams["before_epoch"]
     globalvars.exp_name = exp_name
-
-    # Override config from command line
-    if args.override is not None:
-        override_hparams(hparams, args.override)
 
     # Substitude var in configs
     config.checkpoint = config.checkpoint.format(**{"exp": exp_name, "id": hparams["id"]})
@@ -156,7 +158,7 @@ def main(args, unknown_args):
     if config.resume is None:
         hparams_cp_file = os.path.join(config.checkpoint, "hparams.yaml")
         with open(hparams_cp_file, "w") as f:
-            YAML().dump(hparams, f)
+            YAML().dump(loaded_hparams, f)
     else:
         # Load checkpoint
         if args.resume_file is None:
@@ -173,7 +175,7 @@ def main(args, unknown_args):
         if os.path.isfile(old_hparams_file):
             with open(old_hparams_file, "r") as f:
                 old_hparams = YAML().load(f)
-            if not check_hparams_consistency(old_hparams, hparams, ignore_hparams_mismatch=args.ignore_hparams_mismatch):
+            if not check_hparams_consistency(old_hparams, loaded_hparams, ignore_hparams_mismatch=args.ignore_hparams_mismatch):
                 log_q("hparams mismatch")
                 sys.exit(0)
         else:

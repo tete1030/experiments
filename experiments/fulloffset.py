@@ -15,7 +15,6 @@ from pycocotools.cocoeval import COCOeval
 
 import pose.models as models
 import pose.datasets as datasets
-from pose.models.bayproj import AutoCorrProj
 from pose.models.common import StrictNaNReLU
 from pose.models.displacechan import DisplaceChannel
 from pose.utils.transforms import fliplr_pts
