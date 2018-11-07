@@ -756,6 +756,36 @@ class OffsetBlock(nn.Module):
 
         return out_final
 
+class ConvBlockWithAtten(nn.Module):
+    def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1):
+        super(ConvBlockWithAtten, self).__init__()
+        self.height = height
+        self.width = width
+        self.out_height = (height + stride - 1) // stride
+        self.out_width = (width + stride - 1) // stride
+        self.inplanes = inplanes
+        # self.displace_planes = displace_planes
+        self.displace_planes = inplanes // 2
+        self.outplanes = outplanes
+        self.stride = stride
+        self.pre_poffset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
+        self.post_poffset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
+        self.atten_pdisplace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=True, stride=stride)
+        self.pdisplace = nn.Conv2d(self.displace_planes, self.displace_planes, (3, 3), padding=(1, 1))
+        self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams["learnable_offset"]["bn_momentum"])
+        self.relu = nn.ReLU(inplace=True)
+        if stride > 1 or inplanes != outplanes:
+            self.downsample = nn.Conv2d(self.inplanes, self.outplanes,
+                          kernel_size=1, stride=stride, bias=False)
+        else:
+            self.downsample = None
+
+    def forward(self, x):
+        dis = self.post_poffset(self.pdisplace(self.pre_poffset(x)) * self.atten_pdisplace(x))
+        if self.downsample is not None:
+            x = self.downsample(x)
+        return self.relu(self.bn(x + dis))
+
 class Bottleneck(nn.Module):
     expansion = 4
 
@@ -777,7 +807,7 @@ class Bottleneck(nn.Module):
         self.block_index = block_index
 
         if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams["model"]["detail"]["enable_offset_block"]:
-            self.offset_block = OffsetBlock(
+            self.offset_block = ConvBlockWithAtten(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
                 self.inplanes,
@@ -836,7 +866,7 @@ class BasicBlock(nn.Module):
         self.block_index = block_index
 
         if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams["model"]["detail"]["enable_offset_block"]:
-            self.offset_block = OffsetBlock(
+            self.offset_block = ConvBlockWithAtten(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
                 self.inplanes,
