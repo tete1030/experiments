@@ -1021,13 +1021,16 @@ class ResNet(nn.Module):
 
         # TODO:
         x1 = self.layer1(x)
-        Experiment.exp.pre_early_predictor_outs[x.device].append(x1)
+        if hparams["model"]["detail"]["early_predictor"]:
+            Experiment.exp.pre_early_predictor_outs[x.device].append(x1)
         if x1 is not None:
             x2 = self.layer2(x1)
-            Experiment.exp.pre_early_predictor_outs[x.device].append(x2)
+            if hparams["model"]["detail"]["early_predictor"]:
+                Experiment.exp.pre_early_predictor_outs[x.device].append(x2)
         if x2 is not None:
             x3 = self.layer3(x2)
-            Experiment.exp.pre_early_predictor_outs[x.device].append(x3)
+            if hparams["model"]["detail"]["early_predictor"]:
+                Experiment.exp.pre_early_predictor_outs[x.device].append(x3)
         if x3 is not None:
             x4 = self.layer4(x3)
 

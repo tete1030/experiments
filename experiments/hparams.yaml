@@ -336,7 +336,7 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 87
+    id: 88
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -382,11 +382,11 @@ fulloffset:
             disable_displace: false
             displace_learnable_offset: true
             random_offset_init: 0
-            early_predictor: true
+            early_predictor: false
             loss_invisible: true
             enable_offset_block: true
     dataset:
-        data: mpii
+        data: coco
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
         scale_factor: 0.25
