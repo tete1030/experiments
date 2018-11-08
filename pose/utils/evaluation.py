@@ -37,7 +37,7 @@ def calc_dists(preds, target, normalize):
     for n in range(preds.size(0)):
         for c in range(preds.size(1)):
             if target[n, c, 0] >= 0 and target[n, c, 1] >= 0:
-                dists[c, n] = torch.dist(preds[n,c,:], target[n,c,:])/normalize[n]
+                dists[c, n] = torch.dist(preds[n,c,:2], target[n,c,:2])/normalize[n]
             else:
                 dists[c, n] = -1
     return dists
@@ -49,26 +49,24 @@ def dist_acc(dists, thr=0.5):
     else:
         return -1
 
-def accuracy(output, target, idxs, thr=0.5):
+def accuracy(preds, gts, head_boxes, thr=0.5):
     ''' Calculate accuracy according to PCK, but uses ground truth heatmap rather than x,y locations
         First value to be returned is average accuracy across 'idxs', followed by individual accuracies
     '''
-    preds   = get_preds(output)
-    gts     = get_preds(target)
-    norm    = torch.ones(preds.size(0))*output.size(3)/10
+    norm    = 0.6*torch.from_numpy(np.linalg.norm(head_boxes.numpy()[:, 1] - head_boxes.numpy()[:, 0], axis=-1))
     dists   = calc_dists(preds, gts, norm)
 
-    acc = torch.zeros(len(idxs)+1)
+    acc = torch.zeros(preds.size(1)+1)
     avg_acc = 0
     cnt = 0
 
-    for i in range(len(idxs)):
-        acc[i+1] = dist_acc(dists[idxs[i]-1])
-        if acc[i+1] >= 0: 
+    for i in range(preds.size(1)):
+        acc[i+1] = dist_acc(dists[i])
+        if acc[i+1] >= 0:
             avg_acc = avg_acc + acc[i+1]
             cnt += 1
             
-    if cnt != 0:  
+    if cnt != 0:
         acc[0] = avg_acc / cnt
     return acc
  
@@ -90,30 +88,6 @@ def part_accuracy(output, target, score_thr=0.5, IoU_thr=0.5):
     avg_acc = correct.mean()
     
     return torch.cat([torch.FloatTensor([avg_acc]), chn_acc])
-
-def final_preds(output, center, scale, res):
-    coords = get_preds(output) # float type
-
-    # pose-processing
-    for n in range(coords.size(0)):
-        for p in range(coords.size(1)):
-            hm = output[n, p]
-            px = int(math.floor(coords[n, p, 0]))
-            py = int(math.floor(coords[n, p, 1]))
-            if px >= 0 and px < res[0] and py >= 0 and py < res[1]:
-                diff = torch.Tensor([hm[py, px+1] - hm[py, px-1], hm[py+1, px] - hm[py-1, px]])
-                coords[n, p] += diff.sign() * .25
-    coords += 0.5
-    preds = coords.clone()
-
-    # Transform back
-    for i in range(coords.size(0)):
-        preds[i] = transform_preds(coords[i], center[i], scale[i], res)
-
-    if preds.dim() < 3:
-        preds = preds.view(1, preds.size())
-
-    return preds
 
     
 class AverageMeter(object):

@@ -18,7 +18,7 @@ import pose.datasets as datasets
 from pose.models.common import StrictNaNReLU
 from pose.models.displacechan import DisplaceChannel
 from pose.utils.transforms import fliplr_pts
-from pose.utils.evaluation import AverageMeter, CycleAverageMeter
+from pose.utils.evaluation import AverageMeter, CycleAverageMeter, accuracy
 from utils.globals import config, hparams, globalvars
 from utils.log import log_i, log_w, log_progress
 from utils.train import adjust_learning_rate, TrainContext, ValidContext
@@ -30,7 +30,6 @@ from experiments.baseexperiment import BaseExperiment, EpochContext
 from utils.lambdalayer import Lambda
 
 FACTOR = 4
-NUM_PARTS = datasets.mscoco.NUM_PARTS
 
 class GroupNormWrapper(nn.GroupNorm):
     def __init__(self, num_features, eps=1e-5, num_groups=32):
@@ -51,7 +50,16 @@ class Experiment(BaseExperiment):
             self.early_predictors = list()
             self.pre_early_predictor_outs = dict()
 
-        self.num_parts = NUM_PARTS
+        self.data_source = hparams["dataset"]["data"]
+        if self.data_source == "coco":
+            self.num_parts = datasets.mscoco.NUM_PARTS
+            self.flip_index = datasets.mscoco.FLIP_INDEX
+        elif self.data_source == "mpii":
+            self.num_parts = datasets.mpii.NUM_PARTS
+            self.flip_index = datasets.mpii.FLIP_INDEX
+        else:
+            assert False
+
         pretrained = hparams["model"]["resnet_pretrained"]
         if config.resume is not None:
             pretrained = None
@@ -109,37 +117,66 @@ class Experiment(BaseExperiment):
         
         self.cur_lr = hparams["learning_rate"]
 
-        self.coco = COCO("data/mscoco/person_keypoints_train2017.json")
-        self.train_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
-                                               self.coco,
-                                               "data/mscoco/sp_split_2017.pth",
-                                               "data/mscoco/" + hparams["dataset"]["mean_std_file"],
-                                               True,
-                                               img_res=hparams["model"]["inp_shape"],
-                                               ext_border=hparams["dataset"]["ext_border"],
-                                               kpmap_res=hparams["model"]["out_shape"],
-                                               keypoint_res=hparams["model"]["out_shape"],
-                                               kpmap_sigma=hparams["model"]["gaussian_kernels"],
-                                               scale_factor=hparams["dataset"]["scale_factor"],
-                                               rot_factor=hparams["dataset"]["rotate_factor"],
-                                               trans_factor=hparams["dataset"]["translation_factor"])
+        if self.data_source == "coco":
+            self.coco = COCO("data/mscoco/person_keypoints_train2017.json")
+            self.train_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
+                                                self.coco,
+                                                "data/mscoco/sp_split_2017.pth",
+                                                "data/mscoco/" + hparams["dataset"]["mean_std_file"],
+                                                True,
+                                                img_res=hparams["model"]["inp_shape"],
+                                                ext_border=hparams["dataset"]["ext_border"],
+                                                kpmap_res=hparams["model"]["out_shape"],
+                                                keypoint_res=hparams["model"]["out_shape"],
+                                                kpmap_sigma=hparams["model"]["gaussian_kernels"],
+                                                scale_factor=hparams["dataset"]["scale_factor"],
+                                                rot_factor=hparams["dataset"]["rotate_factor"],
+                                                trans_factor=hparams["dataset"]["translation_factor"])
 
-        self.val_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
-                                             self.coco,
-                                             "data/mscoco/sp_split_2017.pth",
-                                             "data/mscoco/" + hparams["dataset"]["mean_std_file"],
-                                             False,
-                                             img_res=hparams["model"]["inp_shape"],
-                                             ext_border=hparams["dataset"]["ext_border"],
-                                             kpmap_res=hparams["model"]["out_shape"],
-                                             keypoint_res=hparams["model"]["out_shape"],
-                                             kpmap_sigma=hparams["model"]["gaussian_kernels"],
-                                             scale_factor=hparams["dataset"]["scale_factor"],
-                                             rot_factor=hparams["dataset"]["rotate_factor"],
-                                             trans_factor=hparams["dataset"]["translation_factor"])
-        
-        self.train_collate_fn = datasets.COCOSinglePose.collate_function
-        self.valid_collate_fn = datasets.COCOSinglePose.collate_function
+            self.val_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
+                                                self.coco,
+                                                "data/mscoco/sp_split_2017.pth",
+                                                "data/mscoco/" + hparams["dataset"]["mean_std_file"],
+                                                False,
+                                                img_res=hparams["model"]["inp_shape"],
+                                                ext_border=hparams["dataset"]["ext_border"],
+                                                kpmap_res=hparams["model"]["out_shape"],
+                                                keypoint_res=hparams["model"]["out_shape"],
+                                                kpmap_sigma=hparams["model"]["gaussian_kernels"],
+                                                scale_factor=hparams["dataset"]["scale_factor"],
+                                                rot_factor=hparams["dataset"]["rotate_factor"],
+                                                trans_factor=hparams["dataset"]["translation_factor"])
+            self.train_collate_fn = datasets.COCOSinglePose.collate_function
+            self.valid_collate_fn = datasets.COCOSinglePose.collate_function
+        elif self.data_source == "mpii":
+            self.train_dataset = datasets.MPII("data/mpii/images",
+                "data/mpii/mpii_human_pose.json",
+                "data/mpii/split_sig.pth",
+                "data/mpii/mean_std.pth",
+                True,
+                True,
+                img_res=hparams["model"]["inp_shape"],
+                kpmap_res=hparams["model"]["out_shape"],
+                kpmap_sigma=hparams["model"]["gaussian_kernels"],
+                scale_factor=hparams["dataset"]["scale_factor"],
+                rot_factor=hparams["dataset"]["rotate_factor"],
+                trans_factor=hparams["dataset"]['mpii']["translation_factor"])
+
+            self.val_dataset = datasets.MPII("data/mpii/images",
+                "data/mpii/mpii_human_pose.json",
+                "data/mpii/split_sig.pth",
+                "data/mpii/mean_std.pth",
+                False,
+                True,
+                img_res=hparams["model"]["inp_shape"],
+                kpmap_res=hparams["model"]["out_shape"],
+                kpmap_sigma=hparams["model"]["gaussian_kernels"],
+                scale_factor=hparams["dataset"]["scale_factor"],
+                rot_factor=hparams["dataset"]["rotate_factor"],
+                trans_factor=hparams["dataset"]['mpii']["translation_factor"])
+            self.train_collate_fn = datasets.MPII.collate_function
+            self.valid_collate_fn = datasets.MPII.collate_function
+
         self.worker_init_fn = datasets.mscoco.worker_init
         self.print_iter_start = " | "
 
@@ -240,32 +277,43 @@ class Experiment(BaseExperiment):
     def evaluate(self, epoch_ctx:EpochContext, epoch, step):
         if "annotates" not in epoch_ctx.stored:
             return
-        annotates = epoch_ctx.stored["annotates"]
-        image_ids = annotates["image_index"]
-        ans = annotates["annotate"]
-        if ans is not None and len(ans) > 0:
-            coco_dets = self.coco.loadRes(ans)
-            coco_eval = COCOeval(self.coco, coco_dets, "keypoints")
-            coco_eval.params.imgIds = list(image_ids)
-            coco_eval.params.catIds = [1]
-            coco_eval.evaluate()
-            coco_eval.accumulate()
+        if self.data_source == "coco":
+            annotates = epoch_ctx.stored["annotates"]
+            image_ids = annotates["image_index"]
+            ans = annotates["annotate"]
+            if ans is not None and len(ans) > 0:
+                coco_dets = self.coco.loadRes(ans)
+                coco_eval = COCOeval(self.coco, coco_dets, "keypoints")
+                coco_eval.params.imgIds = list(image_ids)
+                coco_eval.params.catIds = [1]
+                coco_eval.evaluate()
+                coco_eval.accumulate()
 
-            self._summarize_tensorboard(coco_eval.eval, coco_eval.params, step)
-            coco_eval.summarize()
-        else:
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"avg": 0}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"i50": 0}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"i75": 0}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"med": 0}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"lar": 0}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"avg": 0}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"i50": 0}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"i75": 0}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"med": 0}, step)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"lar": 0}, step)
+                self._summarize_tensorboard(coco_eval.eval, coco_eval.params, step)
+                coco_eval.summarize()
+            else:
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"avg": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"i50": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"i75": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"med": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"lar": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"avg": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"i50": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"i75": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"med": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"lar": 0}, step)
 
-            print("No points")
+                print("No points")
+        elif self.data_source == "mpii":
+            annotates = epoch_ctx.stored["annotates"]
+            acc = accuracy(annotates["pred"], annotates["gt"], annotates["head_box"])
+            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "PCKh"), {"avg": float(acc[0])}, step)
+            results = list()
+            results.append("avg: {:2.2f}".format(float(acc[0]) * 100))
+            for i in range(0, acc.size(0)-1):
+                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "PCKh"), {datasets.mpii.PART_LABELS[i]: float(acc[i+1])}, step)
+                results.append("{}: {:2.2f}".format(datasets.mpii.PART_LABELS[i], float(acc[i+1]) * 100))
+            print(" | ".join(results) + "\n")
 
     def process_stored(self, epoch_ctx:EpochContext, epoch, step):
         if config.store:
@@ -449,15 +497,18 @@ class Experiment(BaseExperiment):
             for samp_i in range(batch_size):
                 kp_pred_affined[samp_i, :, :2] = kpt_affine(kp_pred_affined[samp_i, :, :2] * FACTOR, np.linalg.pinv(transform_mat[samp_i])[:2])
                 if img_flipped[samp_i]:
-                    kp_pred_affined[samp_i] = fliplr_pts(kp_pred_affined[samp_i], datasets.mscoco.FLIP_INDEX, width=img_ori_size[samp_i, 0].item())
-            ans = generate_ans(image_ids, kp_pred_affined, score)
-            epoch_ctx.add_store("annotates", {"image_index": image_ids, "annotate": ans})
+                    kp_pred_affined[samp_i] = fliplr_pts(kp_pred_affined[samp_i], self.flip_index, width=img_ori_size[samp_i, 0].item())
+            if self.data_source == "coco":
+                ans = generate_ans(image_ids, kp_pred_affined, score)
+            else:
+                ans = generate_mpii_ans(image_ids, batch["person_index"], kp_pred_affined)
+            epoch_ctx.add_store("annotates", {"image_index": image_ids, "annotate": ans, "pred": torch.from_numpy(kp_pred_affined), "gt": batch["keypoint_ori"], "head_box": batch["head_box"]})
 
             if config.store and hparams["config"]["store_map"] and is_train:
                 if not hasattr(epoch_ctx, "store_counter"):
                     epoch_ctx.store_counter = 0
                 if epoch_ctx.store_counter < 30:
-                    epoch_ctx.add_store("pred", {"image_index": image_ids, "img": img, "gt": det_maps_gt, "pred": output_maps})
+                    epoch_ctx.add_store("pred", {"image_index": image_ids, "img": np.ascontiguousarray(self.train_dataset.restore_image(img.data.cpu().numpy())), "gt": det_maps_gt, "pred": output_maps})
                 epoch_ctx.store_counter += 1
 
         if config.vis and False:
@@ -520,7 +571,7 @@ class Controller(nn.Module):
                         inplanes, 
                         (hparams["model"]["inp_shape"][1] // inshape_factor, hparams["model"]["inp_shape"][0] // inshape_factor),
                         hparams["model"]["out_shape"][::-1],
-                        NUM_PARTS))
+                        Experiment.exp.num_parts))
             self.early_predictor = nn.ModuleList(early_predictor)
         else:
             self.early_predictor = None
@@ -807,7 +858,7 @@ class Bottleneck(nn.Module):
         self.block_index = block_index
 
         if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams["model"]["detail"]["enable_offset_block"]:
-            self.offset_block = ConvBlockWithAtten(
+            self.offset_block = OffsetBlock(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
                 self.inplanes,
@@ -866,7 +917,7 @@ class BasicBlock(nn.Module):
         self.block_index = block_index
 
         if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams["model"]["detail"]["enable_offset_block"]:
-            self.offset_block = ConvBlockWithAtten(
+            self.offset_block = OffsetBlock(
                 hparams["model"]["inp_shape"][1] // self.inshape_factor,
                 hparams["model"]["inp_shape"][0] // self.inshape_factor,
                 self.inplanes,
@@ -1151,6 +1202,10 @@ def generate_ans(image_ids, preds, scores):
             tmp["keypoints"] = val.ravel().tolist()
             ans.append(tmp)
     return ans
+
+def generate_mpii_ans(image_ids, person_ids, preds):
+    assert len(image_ids) == len(person_ids) and len(person_ids) == len(preds)
+    return {"image_ids": image_ids, "person_ids": person_ids, "preds": preds}
 
 def kpt_affine(kpt, mat):
     kpt = np.array(kpt)
