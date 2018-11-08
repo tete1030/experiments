@@ -500,9 +500,10 @@ class Experiment(BaseExperiment):
                     kp_pred_affined[samp_i] = fliplr_pts(kp_pred_affined[samp_i], self.flip_index, width=img_ori_size[samp_i, 0].item())
             if self.data_source == "coco":
                 ans = generate_ans(image_ids, kp_pred_affined, score)
+                epoch_ctx.add_store("annotates", {"image_index": image_ids, "annotate": ans})
             else:
                 ans = generate_mpii_ans(image_ids, batch["person_index"], kp_pred_affined)
-            epoch_ctx.add_store("annotates", {"image_index": image_ids, "annotate": ans, "pred": torch.from_numpy(kp_pred_affined), "gt": batch["keypoint_ori"], "head_box": batch["head_box"]})
+                epoch_ctx.add_store("annotates", {"image_index": image_ids, "annotate": ans, "pred": torch.from_numpy(kp_pred_affined), "gt": batch["keypoint_ori"], "head_box": batch["head_box"]})
 
             if config.store and hparams["config"]["store_map"] and is_train:
                 if not hasattr(epoch_ctx, "store_counter"):

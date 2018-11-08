@@ -45,7 +45,7 @@ def calc_dists(preds, target, normalize):
 def dist_acc(dists, thr=0.5):
     ''' Return percentage below threshold while ignoring values with a -1 '''
     if dists.ne(-1).sum() > 0:
-        return dists.le(thr).eq(dists.ne(-1)).sum()*1.0 / dists.ne(-1).sum()
+        return dists.le(thr).eq(dists.ne(-1)).sum().float() / dists.ne(-1).sum().float()
     else:
         return -1
 
@@ -56,7 +56,7 @@ def accuracy(preds, gts, head_boxes, thr=0.5):
     norm    = 0.6*torch.from_numpy(np.linalg.norm(head_boxes.numpy()[:, 1] - head_boxes.numpy()[:, 0], axis=-1))
     dists   = calc_dists(preds, gts, norm)
 
-    acc = torch.zeros(preds.size(1)+1)
+    acc = torch.zeros(preds.size(1)+1, dtype=torch.float)
     avg_acc = 0
     cnt = 0
 
@@ -65,7 +65,7 @@ def accuracy(preds, gts, head_boxes, thr=0.5):
         if acc[i+1] >= 0:
             avg_acc = avg_acc + acc[i+1]
             cnt += 1
-            
+
     if cnt != 0:
         acc[0] = avg_acc / cnt
     return acc
