@@ -468,23 +468,43 @@ class Experiment(BaseExperiment):
             globalvars.cur_img = None
 
         loss = 0.
+
+        mask_notlabeled = (keypoint[:, :, 2] <= 0.1).cuda()
+        mask_labeled = (~mask_notlabeled)
+        mask_visible = (keypoint[:, :, 2] > 1.1).cuda()
+        mask_notvisible = (mask_labeled & (~mask_visible))
+
+        if hparams["model"]["detail"]["loss_early"] == "all":
+            masking_early = 1.
+        elif hparams["model"]["detail"]["loss_early"] == "labeled":
+            masking_early = mask_labeled.float().view(-1, self.num_parts, 1, 1)
+        elif hparams["model"]["detail"]["loss_early"] == "visible":
+            masking_early = mask_visible.float().view(-1, self.num_parts, 1, 1)
+        else:
+            assert False
+
+        if hparams["model"]["detail"]["loss_final"] == "all":
+            masking_final = 1.
+        elif hparams["model"]["detail"]["loss_final"] == "labeled":
+            masking_final = mask_labeled.float().view(-1, self.num_parts, 1, 1)
+        elif hparams["model"]["detail"]["loss_final"] == "visible":
+            masking_final = mask_visible.float().view(-1, self.num_parts, 1, 1)
+        else:
+            assert False
+
         for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
             # if ilabel < len(det_map_gt_cuda) - 1:
             #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
-            if ilabel < len(det_map_gt_cuda) - 1 and not hparams["model"]["detail"]["loss_invisible"]:
-                loss = loss + ((outv - gtv).pow(2) * \
-                    (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
+            if ilabel < len(det_map_gt_cuda) - 1:
+                loss = loss + ((outv - gtv).pow(2) * masking_early).mean().sqrt()
             else:
-                loss = loss + (outv - gtv).pow(2).mean().sqrt()
+                loss = loss + ((outv - gtv).pow(2) * masking_final).mean().sqrt()
 
         if hparams["model"]["detail"]["early_predictor"]:
             assert len(early_predictor_outputs) == len(hparams["model"]["detail"]["early_predictor_label_index"])
             for ilabel, outv in enumerate(early_predictor_outputs):
-                if not hparams["model"]["detail"]["loss_invisible"]:
-                    loss = loss + ((outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2) * \
-                        (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
-                else:
-                    loss = loss + (outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2).mean().sqrt()
+                loss = loss + ((outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2) * \
+                    masking_early).mean().sqrt()
 
         epoch_ctx.add_scalar("loss", loss.item())
 
