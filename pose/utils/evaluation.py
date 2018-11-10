@@ -7,7 +7,9 @@ from sklearn.linear_model import LinearRegression
 import torch
 
 from .transforms import transform, transform_preds
+from utils.softnms import cpu_soft_nms
 import munkres
+import copy
 
 __all__ = ['accuracy', 'AverageMeter']
 
@@ -300,3 +302,176 @@ def PR_multi(pred, gt, person_norm, num_parts, threshold):
     final_precision = counter_TP.sum() / counter_P.sum()
     final_recall = counter_TP.sum() / counter_GT.sum()
     return final_precision, final_recall, precision, recall, indices_TP
+
+def generate_person_det_ans(image_ids, rois, roi_scores):
+    assert len(image_ids) == len(rois) and len(rois) == len(roi_scores)
+    anns = []
+    for i in range(len(image_ids)):
+        anns.append({
+            "image_id": image_ids[i],
+            "bbox": [rois[i, 0], rois[i, 1], rois[i, 2]-rois[i, 0], rois[i, 3]-rois[i, 1]],
+            "score": roi_scores[i]
+        })
+    return anns
+
+def filter_person_det(det_anns, nms=False, min_score=1e-10, min_box_size=0, return_ind=False, softnms_sigma=0.5, softnms_thres=0.001):
+    last_img_id = -1
+    last_img_id_start = -1
+    num_anns = len(det_anns)
+    ann_ind = 0
+    all_ind_keep = list()
+    all_dets = list()
+    while True:
+        if ann_ind >= num_anns or det_anns[ann_ind]["image_id"] != last_img_id:
+            if last_img_id_start >= 0:
+                # DO
+                num_dets = ann_ind - last_img_id_start
+                dets = np.zeros((num_dets, 5), dtype=np.float32)
+                for i in range(num_dets):
+                    bbox = det_anns[last_img_id_start+i]["bbox"]
+                    dets[i, :4] = np.array([bbox[0], bbox[1], bbox[0]+bbox[2], bbox[1]+bbox[3]])
+                    dets[i, 4] = det_anns[last_img_id_start+i]["score"]
+
+                ind_keep = np.nonzero(
+                    (dets[:, 4] >= min_score) &
+                    ((dets[:, 2] - dets[:, 0]) * (dets[:, 3] - dets[:, 1]) >= min_box_size))[0]
+                dets = np.ascontiguousarray(dets[ind_keep])
+
+                if nms:
+                    ind_keep_nms = cpu_soft_nms(dets, sigma=softnms_sigma, threshold=softnms_thres, method=2)
+                    dets = dets[:ind_keep_nms.shape[0]]
+                    ind_keep = ind_keep[ind_keep_nms]
+
+                ind_keep += last_img_id_start
+                all_dets.append(dets)
+                all_ind_keep.append(ind_keep)
+
+            last_img_id_start = ann_ind
+
+        if ann_ind >= num_anns:
+            break
+        last_img_id = det_anns[ann_ind]["image_id"]
+        ann_ind += 1
+
+    all_dets = np.concatenate(all_dets, axis=0)
+    all_ind_keep = np.concatenate(all_ind_keep, axis=0)
+    assert len(all_ind_keep) == len(all_dets)
+    if return_ind:
+        return all_ind_keep, all_dets
+
+    det_anns = copy.deepcopy(np.array(det_anns)[all_ind_keep].tolist())
+    for ind in range(len(det_anns)):
+        det_anns[ind]["score"] = all_dets[ind, 4]
+    return det_anns
+
+def nms_oks(kp_predictions, rois, scores, thresh):
+    """Nms based on kp predictions."""
+    order = scores.argsort()[::-1]
+
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
+        ovr = compute_oks(
+            kp_predictions[i], rois[i], kp_predictions[order[1:]],
+            rois[order[1:]])
+        inds = np.where(ovr <= thresh)[0]
+        order = order[inds + 1]
+
+    return keep
+
+def softnms_oks(kp_predictions, rois, scores, sigma=0.5, thresh=0.001):
+    """Nms based on kp predictions."""
+    order = scores.argsort()[::-1]
+
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
+        ovr = compute_oks(
+            kp_predictions[i], rois[i],
+            kp_predictions[order[1:]], rois[order[1:]])
+        weight = np.exp(- (ovr)**2 / sigma)
+        scores[order[1:]] *= weight
+        inds = np.where(weight > thresh)[0]
+        order = order[inds + 1]
+
+    return keep
+
+def compute_oks(src_keypoints, src_roi, dst_keypoints, dst_roi):
+    """Compute OKS for predicted keypoints wrt gt_keypoints.
+    src_keypoints: Kx3
+    src_roi: 4
+    dst_keypoints: NxKx3
+    dst_roi: Nx4
+    """
+
+    sigmas = np.array([
+        .26, .25, .25, .35, .35, .79, .79, .72, .72, .62, .62, 1.07, 1.07, .87,
+        .87, .89, .89]) / 10.0
+    vars = (sigmas * 2)**2
+
+    # area
+    src_area = (src_roi[2] - src_roi[0] + 1) * (src_roi[3] - src_roi[1] + 1)
+
+    dx = dst_keypoints[:, :, 0] - src_keypoints[:, 0]
+    dy = dst_keypoints[:, :, 1] - src_keypoints[:, 1]
+
+    e = (dx**2 + dy**2) / vars / (src_area + np.spacing(1)) / 2
+    e = np.sum(np.exp(-e), axis=1) / e.shape[1]
+
+    return e
+
+def keypoints_nms(anns, rois, num_parts, return_ind=False, method="nms", **kwargs):
+    last_img_id = -1
+    last_img_id_start = -1
+    num_anns = len(anns)
+    ann_ind = 0
+    all_ind_keep = list()
+    all_scores = list()
+    while True:
+        if ann_ind >= num_anns or anns[ann_ind]["image_id"] != last_img_id:
+            if last_img_id_start >= 0:
+                # DO
+                num_dets = ann_ind - last_img_id_start
+                dets = np.zeros((num_dets, num_parts, 3), dtype=np.float32)
+                scores = np.zeros((num_dets), dtype=np.float32)
+                for i in range(num_dets):
+                    kps = np.array(anns[last_img_id_start+i]["keypoints"], dtype=np.float32).reshape((-1, 3))
+                    dets[i] = kps
+                    scores[i] = anns[last_img_id_start+i]["score"]
+
+                if method == "nms":
+                    ind_keep = np.array(nms_oks(dets, rois, scores, kwargs["nms_thres"]))
+                elif method == "softnms":
+                    ind_keep = np.array(softnms_oks(dets, rois, scores, sigma=kwargs["softnms_sigma"], thresh=kwargs["softnms_thres"]))
+                    scores = scores[ind_keep]
+                    all_scores.append(scores)
+
+                ind_keep += last_img_id_start
+                all_ind_keep.append(ind_keep)
+
+            last_img_id_start = ann_ind
+
+        if ann_ind >= num_anns:
+            break
+        last_img_id = anns[ann_ind]["image_id"]
+        ann_ind += 1
+
+    all_ind_keep = np.concatenate(all_ind_keep, axis=0)
+
+    if method == "softnms":
+        all_scores = np.concatenate(all_scores, axis=0)
+        assert len(all_ind_keep) == len(all_scores)
+    else:
+        all_scores = None
+
+    if return_ind:
+        return all_ind_keep, all_scores
+
+    anns = copy.deepcopy(np.array(anns)[all_ind_keep].tolist())
+    if all_scores is not None:
+        for ind in range(len(anns)):
+            anns[ind]["score"] = all_scores[ind]
+    
+    return anns

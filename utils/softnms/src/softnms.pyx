@@ -21,7 +21,8 @@ def cpu_soft_nms(np.ndarray[float, ndim=2] boxes, float sigma=0.5, float Nt=0.3,
     cdef int pos = 0
     cdef float maxscore = 0
     cdef int maxpos = 0
-    cdef float x1,x2,y1,y2,tx1,tx2,ty1,ty2,ts,area,weight,ov
+    cdef float x1,x2,y1,y2,tx1,tx2,ty1,ty2,ts,ind,tind,area,weight,ov
+    cdef np.ndarray inds = np.arange(N, dtype=np.int)
 
     for i in range(N):
         maxscore = boxes[i, 4]
@@ -32,6 +33,7 @@ def cpu_soft_nms(np.ndarray[float, ndim=2] boxes, float sigma=0.5, float Nt=0.3,
         tx2 = boxes[i,2]
         ty2 = boxes[i,3]
         ts = boxes[i,4]
+        tind = inds[i]
 
         pos = i + 1
 	# get max box
@@ -47,6 +49,7 @@ def cpu_soft_nms(np.ndarray[float, ndim=2] boxes, float sigma=0.5, float Nt=0.3,
         boxes[i,2] = boxes[maxpos,2]
         boxes[i,3] = boxes[maxpos,3]
         boxes[i,4] = boxes[maxpos,4]
+        inds[i] = inds[maxpos]
 
 	# swap ith box with position of max box
         boxes[maxpos,0] = tx1
@@ -54,12 +57,14 @@ def cpu_soft_nms(np.ndarray[float, ndim=2] boxes, float sigma=0.5, float Nt=0.3,
         boxes[maxpos,2] = tx2
         boxes[maxpos,3] = ty2
         boxes[maxpos,4] = ts
+        inds[maxpos] = tind
 
         tx1 = boxes[i,0]
         ty1 = boxes[i,1]
         tx2 = boxes[i,2]
         ty2 = boxes[i,3]
         ts = boxes[i,4]
+        tind = inds[i]
 
         pos = i + 1
 	# NMS iterations, note that N changes if detection boxes fall below threshold
@@ -69,6 +74,7 @@ def cpu_soft_nms(np.ndarray[float, ndim=2] boxes, float sigma=0.5, float Nt=0.3,
             x2 = boxes[pos, 2]
             y2 = boxes[pos, 3]
             s = boxes[pos, 4]
+            ind = inds[pos]
 
             area = (x2 - x1 + 1) * (y2 - y1 + 1)
             iw = (min(tx2, x2) - max(tx1, x1) + 1)
@@ -101,63 +107,10 @@ def cpu_soft_nms(np.ndarray[float, ndim=2] boxes, float sigma=0.5, float Nt=0.3,
                         boxes[pos,2] = boxes[N-1, 2]
                         boxes[pos,3] = boxes[N-1, 3]
                         boxes[pos,4] = boxes[N-1, 4]
+                        inds[pos] = inds[N-1]
                         N = N - 1
                         pos = pos - 1
 
             pos = pos + 1
 
-    keep = [i for i in range(N)]
-    return keep
-
-def cpu_nms(np.ndarray[np.float32_t, ndim=2] dets, np.float thresh):
-    cdef np.ndarray[np.float32_t, ndim=1] x1 = dets[:, 0]
-    cdef np.ndarray[np.float32_t, ndim=1] y1 = dets[:, 1]
-    cdef np.ndarray[np.float32_t, ndim=1] x2 = dets[:, 2]
-    cdef np.ndarray[np.float32_t, ndim=1] y2 = dets[:, 3]
-    cdef np.ndarray[np.float32_t, ndim=1] scores = dets[:, 4]
-
-    cdef np.ndarray[np.float32_t, ndim=1] areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-    cdef np.ndarray[np.int_t, ndim=1] order = scores.argsort()[::-1]
-
-    cdef int ndets = dets.shape[0]
-    cdef np.ndarray[np.int_t, ndim=1] suppressed = \
-            np.zeros((ndets), dtype=np.int)
-
-    # nominal indices
-    cdef int _i, _j
-    # sorted indices
-    cdef int i, j
-    # temp variables for box i's (the box currently under consideration)
-    cdef np.float32_t ix1, iy1, ix2, iy2, iarea
-    # variables for computing overlap with box j (lower scoring box)
-    cdef np.float32_t xx1, yy1, xx2, yy2
-    cdef np.float32_t w, h
-    cdef np.float32_t inter, ovr
-
-    keep = []
-    for _i in range(ndets):
-        i = order[_i]
-        if suppressed[i] == 1:
-            continue
-        keep.append(i)
-        ix1 = x1[i]
-        iy1 = y1[i]
-        ix2 = x2[i]
-        iy2 = y2[i]
-        iarea = areas[i]
-        for _j in range(_i + 1, ndets):
-            j = order[_j]
-            if suppressed[j] == 1:
-                continue
-            xx1 = max(ix1, x1[j])
-            yy1 = max(iy1, y1[j])
-            xx2 = min(ix2, x2[j])
-            yy2 = min(iy2, y2[j])
-            w = max(0.0, xx2 - xx1 + 1)
-            h = max(0.0, yy2 - yy1 + 1)
-            inter = w * h
-            ovr = inter / (iarea + areas[j] - inter)
-            if ovr >= thresh:
-                suppressed[j] = 1
-
-    return keep
+    return inds[:N]

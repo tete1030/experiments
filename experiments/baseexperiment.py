@@ -169,6 +169,8 @@ class BaseExperiment(object):
             val_list.append("{sname}: {sval:{sformat}}".format(sname=scalar_name, sval=scalar_value.val, sformat=sformat))
             if epoch_ctx.stat_avg[scalar_name]:
                 avg_list.append("{sname}: {sval:{sformat}}".format(sname=scalar_name[:-1] + "_", sval=scalar_value.avg, sformat=sformat))
-        print(self.print_iter_start + self.print_iter_sep.join(val_list), end="")
-        print(self.print_iter_start + self.print_iter_sep.join(avg_list), end="")
+        if len(val_list) > 0:
+            print(self.print_iter_start + self.print_iter_sep.join(val_list), end="")
+        if len(avg_list) > 0:
+            print(self.print_iter_start + self.print_iter_sep.join(avg_list), end="")
         print("")

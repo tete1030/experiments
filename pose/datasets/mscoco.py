@@ -3,6 +3,7 @@
 import os
 import copy
 import cv2
+import json
 import numpy as np
 from scipy.stats import truncnorm
 
@@ -11,9 +12,12 @@ import torch.utils.data as data
 
 import matplotlib.pyplot as plt
 
+from pose.utils.evaluation import filter_person_det
 from pose.utils.imutils import HeatmapGenerator
 from pose.utils.transforms import fliplr_chwimg, fliplr_pts, get_transform, transform
 from pycocotools.coco import COCO
+from utils.log import log_i
+
 
 # FLIP_INDEX is an involution map
 FLIP_INDEX = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]
@@ -416,7 +420,8 @@ class COCOSinglePose(data.Dataset):
                  is_train, img_res=(192, 256), minus_mean=True,
                  ext_border=(0., 0.),
                  kpmap_res=(48, 64), keypoint_res=None,
-                 kpmap_sigma=1, scale_factor=0.25, rot_factor=30, trans_factor=0.05):
+                 kpmap_sigma=1, scale_factor=0.25, rot_factor=30, trans_factor=0.05,
+                 detector_result=None, detector_nms=False):
         """COCO Keypoints Single Person
         
         Arguments:
@@ -439,7 +444,7 @@ class COCOSinglePose(data.Dataset):
         """
 
         self.img_folder = img_folder    # root image folders
-        self.is_train = is_train           # training set or test set
+        self._is_train = is_train           # training set or test set
         self.img_res = tuple(img_res)
         self.minus_mean = minus_mean
         self.ext_border = tuple(ext_border) if ext_border else None
@@ -467,9 +472,21 @@ class COCOSinglePose(data.Dataset):
         else:
             self.coco = COCO(anno)
 
-        self.train, self.valid = self._split(split_file)
         if self.minus_mean:
             self.mean, self.std = self._compute_mean(meanstd_file)
+
+        if detector_result is not None:
+            assert split_file is None
+            log_i("Using detector result instead of split")
+            with open(detector_result, "r") as f:
+                det_anns = json.load(f)
+            det_anns = list(filter(lambda x: x["category_id"] == 1, det_anns))
+            det_anns.sort(key=lambda x: (x["image_id"], x["score"]), reverse=True)
+            self.detector_result = filter_person_det(det_anns, nms=detector_nms)
+            self.data_ind = None
+        else:
+            self.detector_result = None
+            self.data_ind = self._split(split_file)
 
     def _split(self, split_file):
         if split_file is not None and os.path.isfile(split_file):
@@ -479,7 +496,10 @@ class COCOSinglePose(data.Dataset):
         else:
             raise ValueError("%s not found" % (split_file,))
 
-        return train, valid
+        if self._is_train:
+            return train
+        else:
+            return valid
 
     def _compute_mean(self, meanstd_file):
         if meanstd_file is None:
@@ -512,10 +532,7 @@ class COCOSinglePose(data.Dataset):
         return ((img + self.mean) * 255).round().clip(0, 255).astype(np.uint8)
 
     def __len__(self):
-        if self.is_train:
-            return len(self.train)
-        else:
-            return len(self.valid)
+        return len(self.data_ind) if self.data_ind is not None else len(self.detector_result)
 
     def _load_image(self, img_index, bgr=True):
         img_info = self.coco.loadImgs(img_index)[0]
@@ -537,13 +554,15 @@ class COCOSinglePose(data.Dataset):
         sf = float(self.scale_factor)
         rf = float(self.rot_factor)
 
-        if self.is_train:
-            img_index, ann_index = self.train[index]
+        if self.data_ind is not None:
+            img_index, ann_index = self.data_ind[index]
+            ann = self.coco.anns[ann_index]
         else:
-            img_index, ann_index = self.valid[index]
+            ann = self.detector_result[index]
+            img_index = ann["image_id"]
+            ann_index = index
 
         img_bgr = self._load_image(img_index, bgr=True)
-        ann = self.coco.anns[ann_index]
 
         img_size = np.array(list(img_bgr.shape[:2][::-1]), dtype=np.float32) # W, H
         img_res_np = np.array(self.img_res, dtype=np.float32)
@@ -563,7 +582,7 @@ class COCOSinglePose(data.Dataset):
         rotate = 0
         flip_status = False
 
-        if self.is_train:
+        if self._is_train:
             scale_aug = truncnorm.rvs(-1, 1, loc=1, scale=sf)
             scale = scale * scale_aug
             rotate = truncnorm.rvs(-1, 1, loc=0, scale=rf) \
@@ -589,31 +608,34 @@ class COCOSinglePose(data.Dataset):
             img -= self.mean
         img = img.transpose(2, 0, 1)
 
-        keypoints = np.array(ann["keypoints"], dtype=np.float32).reshape((NUM_PARTS, 3))
+        if self.data_ind is not None:
+            keypoints = np.array(ann["keypoints"], dtype=np.float32).reshape((NUM_PARTS, 3))
 
-        if flip_status:
-            keypoints_tf = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
+            if flip_status:
+                keypoints_tf = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
+            else:
+                keypoints_tf = keypoints.copy()
+            
+            keypoints_tf = np.c_[
+                    transform(keypoints_tf[:, :2], center, None, (self.kpmap_res[0], self.kpmap_res[1]), rot=rotate, scale=float(self.kpmap_res[arg_min_shape]) / scale),
+                    keypoints_tf[:, [2]]
+                ]
+
+            keypoints_tf_ret = keypoints_tf.copy()
+            if self.keypoint_res and self.keypoint_res != self.kpmap_res:
+                keypoints_tf_ret[..., :2] = keypoints_tf_ret[..., :2] * (float(self.keypoint_res[0]) / self.kpmap_res[0])
+
+            if not isinstance(self.kpmap_sigma, list):
+                kp_map = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
+                self._draw_label(keypoints_tf, kp_map, sigma=self.kpmap_sigma)
+            else:
+                kp_map = list()
+                for kpmsigma in self.kpmap_sigma:
+                    kpm = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
+                    self._draw_label(keypoints_tf, kpm, sigma=kpmsigma)
+                    kp_map.append(kpm)
         else:
-            keypoints_tf = keypoints.copy()
-        
-        keypoints_tf = np.c_[
-                transform(keypoints_tf[:, :2], center, None, (self.kpmap_res[0], self.kpmap_res[1]), rot=rotate, scale=float(self.kpmap_res[arg_min_shape]) / scale),
-                keypoints_tf[:, [2]]
-            ]
-
-        keypoints_tf_ret = keypoints_tf.copy()
-        if self.keypoint_res and self.keypoint_res != self.kpmap_res:
-            keypoints_tf_ret[..., :2] = keypoints_tf_ret[..., :2] * (float(self.keypoint_res[0]) / self.kpmap_res[0])
-
-        if not isinstance(self.kpmap_sigma, list):
-            kp_map = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
-            self._draw_label(keypoints_tf, kp_map, sigma=self.kpmap_sigma)
-        else:
-            kp_map = list()
-            for kpmsigma in self.kpmap_sigma:
-                kpm = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
-                self._draw_label(keypoints_tf, kpm, sigma=kpmsigma)
-                kp_map.append(kpm)
+            keypoints = None
 
         if self.debug:
             # print("Aug Setting: scale_fac %.2f , rotate_fac %.2f, trans_fac %.2f" % (sf, rf, self.trans_factor))
@@ -656,13 +678,19 @@ class COCOSinglePose(data.Dataset):
             "img": torch.from_numpy(img),
             "center": torch.from_numpy(center),
             "scale": scale,
-            "keypoint_ori": torch.from_numpy(keypoints),
-            "keypoint": torch.from_numpy(keypoints_tf_ret),
             "img_transform": torch.from_numpy(img_transform_mat),
             "img_flipped": flip_status,
             "img_ori_size": torch.from_numpy(img_size.astype(np.int32)),
-            "keypoint_map": [torch.from_numpy(kpm) for kpm in kp_map] if isinstance(kp_map, list) else torch.from_numpy(kp_map)
+            "roi": torch.tensor([ann["bbox"][0], ann["bbox"][1], ann["bbox"][0] + ann["bbox"][2], ann["bbox"][1] + ann["bbox"][3]], dtype=torch.float),
+            "roi_score": ann["score"] if "score" in ann else 1
         }
+
+        if keypoints is not None:
+            result.update({
+                "keypoint_ori": torch.from_numpy(keypoints),
+                "keypoint": torch.from_numpy(keypoints_tf_ret),
+                "keypoint_map": [torch.from_numpy(kpm) for kpm in kp_map] if isinstance(kp_map, list) else torch.from_numpy(kp_map)
+            })
 
         return result
 

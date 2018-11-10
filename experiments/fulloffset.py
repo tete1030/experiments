@@ -19,7 +19,7 @@ from pose.models.bayproj import AutoCorrProj
 from pose.models.common import StrictNaNReLU
 from pose.models.displacechan import DisplaceChannel
 from pose.utils.transforms import fliplr_pts
-from pose.utils.evaluation import AverageMeter, CycleAverageMeter
+from pose.utils.evaluation import AverageMeter, CycleAverageMeter, keypoints_nms
 from utils.globals import config, hparams, globalvars
 from utils.log import log_i, log_w, log_progress
 from utils.train import adjust_learning_rate, TrainContext, ValidContext
@@ -100,34 +100,72 @@ class Experiment(BaseExperiment):
         
         self.cur_lr = hparams["learning_rate"]
 
-        self.coco = COCO("data/mscoco/person_keypoints_train2017.json")
-        self.train_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
-                                               self.coco,
-                                               "data/mscoco/sp_split_2017.pth",
-                                               "data/mscoco/" + hparams["dataset"]["mean_std_file"],
-                                               True,
-                                               img_res=hparams["model"]["inp_shape"],
-                                               ext_border=hparams["dataset"]["ext_border"],
-                                               kpmap_res=hparams["model"]["out_shape"],
-                                               keypoint_res=hparams["model"]["out_shape"],
-                                               kpmap_sigma=hparams["model"]["gaussian_kernels"],
-                                               scale_factor=hparams["dataset"]["scale_factor"],
-                                               rot_factor=hparams["dataset"]["rotate_factor"],
-                                               trans_factor=hparams["dataset"]["translation_factor"])
+        self.train_coco = COCO("data/mscoco/person_keypoints_train2017.json")
+        self.train_dataset = datasets.COCOSinglePose(
+            "data/mscoco/images2017",
+            self.train_coco,
+            "data/mscoco/sp_split_2017.pth",
+            "data/mscoco/" + hparams["dataset"]["mean_std_file"],
+            True,
+            img_res=hparams["model"]["inp_shape"],
+            ext_border=hparams["dataset"]["ext_border"],
+            kpmap_res=hparams["model"]["out_shape"],
+            keypoint_res=hparams["model"]["out_shape"],
+            kpmap_sigma=hparams["model"]["gaussian_kernels"],
+            scale_factor=hparams["dataset"]["scale_factor"],
+            rot_factor=hparams["dataset"]["rotate_factor"],
+            trans_factor=hparams["dataset"]["translation_factor"])
 
-        self.val_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
-                                             self.coco,
-                                             "data/mscoco/sp_split_2017.pth",
-                                             "data/mscoco/" + hparams["dataset"]["mean_std_file"],
-                                             False,
-                                             img_res=hparams["model"]["inp_shape"],
-                                             ext_border=hparams["dataset"]["ext_border"],
-                                             kpmap_res=hparams["model"]["out_shape"],
-                                             keypoint_res=hparams["model"]["out_shape"],
-                                             kpmap_sigma=hparams["model"]["gaussian_kernels"],
-                                             scale_factor=hparams["dataset"]["scale_factor"],
-                                             rot_factor=hparams["dataset"]["rotate_factor"],
-                                             trans_factor=hparams["dataset"]["translation_factor"])
+        if config.get("eval_on_detector"):
+            self.val_coco = COCO("data/mscoco/person_keypoints_val2017.json")
+            self.val_dataset = datasets.COCOSinglePose(
+                "data/mscoco/valimages2017",
+                self.val_coco,
+                None,
+                "data/mscoco/" + hparams["dataset"]["mean_std_file"],
+                False,
+                img_res=hparams["model"]["inp_shape"],
+                ext_border=hparams["dataset"]["ext_border"],
+                kpmap_res=hparams["model"]["out_shape"],
+                keypoint_res=hparams["model"]["out_shape"],
+                kpmap_sigma=hparams["model"]["gaussian_kernels"],
+                scale_factor=hparams["dataset"]["scale_factor"],
+                rot_factor=hparams["dataset"]["rotate_factor"],
+                trans_factor=hparams["dataset"]["translation_factor"],
+                detector_result="data/mscoco/person_detection_minival411_human553.json.coco",
+                detector_nms=config.get("eval_use_det_nms", False))
+        elif config.get("eval_on_minival"):
+            self.val_coco = COCO("data/mscoco/person_keypoints_val2017.json")
+            self.val_dataset = datasets.COCOSinglePose(
+                "data/mscoco/valimages2017",
+                self.val_coco,
+                "data/mscoco/sp_split_val2017.pth",
+                "data/mscoco/" + hparams["dataset"]["mean_std_file"],
+                False,
+                img_res=hparams["model"]["inp_shape"],
+                ext_border=hparams["dataset"]["ext_border"],
+                kpmap_res=hparams["model"]["out_shape"],
+                keypoint_res=hparams["model"]["out_shape"],
+                kpmap_sigma=hparams["model"]["gaussian_kernels"],
+                scale_factor=hparams["dataset"]["scale_factor"],
+                rot_factor=hparams["dataset"]["rotate_factor"],
+                trans_factor=hparams["dataset"]["translation_factor"])
+        else:
+            self.val_coco = self.train_coco
+            self.val_dataset = datasets.COCOSinglePose(
+                "data/mscoco/images2017",
+                self.val_coco,
+                "data/mscoco/sp_split_2017.pth",
+                "data/mscoco/" + hparams["dataset"]["mean_std_file"],
+                False,
+                img_res=hparams["model"]["inp_shape"],
+                ext_border=hparams["dataset"]["ext_border"],
+                kpmap_res=hparams["model"]["out_shape"],
+                keypoint_res=hparams["model"]["out_shape"],
+                kpmap_sigma=hparams["model"]["gaussian_kernels"],
+                scale_factor=hparams["dataset"]["scale_factor"],
+                rot_factor=hparams["dataset"]["rotate_factor"],
+                trans_factor=hparams["dataset"]["translation_factor"])
         
         self.train_collate_fn = datasets.COCOSinglePose.collate_function
         self.valid_collate_fn = datasets.COCOSinglePose.collate_function
@@ -230,13 +268,20 @@ class Experiment(BaseExperiment):
         if "annotates" not in epoch_ctx.stored:
             return
         annotates = epoch_ctx.stored["annotates"]
-        image_ids = annotates["image_index"]
-        ans = annotates["annotate"]
-        if ans is not None and len(ans) > 0:
-            coco_dets = self.coco.loadRes(ans)
-            coco_eval = COCOeval(self.coco, coco_dets, "keypoints")
-            coco_eval.params.imgIds = list(image_ids)
-            coco_eval.params.catIds = [1]
+        if annotates["annotate"] is not None and len(annotates["annotate"]) > 0:
+            ans, rois = zip(*sorted(zip(annotates["annotate"], annotates["roi"]), key=lambda x: x[0]["image_id"]))
+            ans = list(ans)
+            rois = list(rois)
+            if config.get("eval_on_detector") and config.get("eval_use_oks_nms"):
+                ans = keypoints_nms(ans, rois, self.num_parts)
+
+            coco_dets = self.val_coco.loadRes(ans)
+            coco_eval = COCOeval(self.val_coco, coco_dets, "keypoints")
+
+            if not config.get("eval_on_detector"):
+                # when eval on detector, the result is evaluated on whole dataset
+                image_ids = annotates["image_index"]
+                coco_eval.params.imgIds = list(np.unique(image_ids))
             coco_eval.evaluate()
             coco_eval.accumulate()
 
@@ -259,10 +304,10 @@ class Experiment(BaseExperiment):
     def process_stored(self, epoch_ctx:EpochContext, epoch, step):
         if config.store:
             for store_key in epoch_ctx.stored:
-                if epoch == 0:
-                    pred_file = "{}_evaluate.npy".format(store_key)
+                if config.evaluate:
+                    pred_file = "{}_evaluate.pth".format(store_key)
                 else:
-                    pred_file = "{}_{}.npy".format(store_key, epoch)
+                    pred_file = "{}_{}.pth".format(store_key, epoch)
                 save_pred(epoch_ctx.stored[store_key], checkpoint_folder=config.checkpoint, pred_file=pred_file)
 
     def set_offset_learning_rate(self, epoch, step):
@@ -384,19 +429,24 @@ class Experiment(BaseExperiment):
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict) -> dict:
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
-        det_maps_gt = batch["keypoint_map"]
         transform_mat = batch["img_transform"]
         img_flipped = batch["img_flipped"]
         img_ori_size = batch["img_ori_size"]
-        keypoint = batch["keypoint"]
+        det_roi = batch["roi"]
+        det_roi_score = batch["roi_score"]
         is_train = progress["train"]
+        is_fulleval = not is_train and config.get("eval_on_detector")
+        if not is_fulleval:
+            keypoint = batch["keypoint"]
+            det_maps_gt = batch["keypoint_map"]
+            det_map_gt_cuda = [dm.cuda() for dm in det_maps_gt]
+
         batch_size = img.size(0)
         globalvars.progress = progress
 
         if not hparams["model"]["detail"]["disable_displace"] and progress["step"] == hparams["learnable_offset"]["train_min_step"] and progress["train"]:
             self.save_offsets(progress["step"])
 
-        det_map_gt_cuda = [dm.cuda() for dm in det_maps_gt]
         # dirty trick for debug
         if config.vis:
             globalvars.cur_img = img
@@ -405,29 +455,30 @@ class Experiment(BaseExperiment):
         if config.vis:
             globalvars.cur_img = None
 
-        loss = 0.
-        for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
-            # if ilabel < len(det_map_gt_cuda) - 1:
-            #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
-            if ilabel < len(det_map_gt_cuda) - 1 and not hparams["model"]["detail"]["loss_invisible"]:
-                loss = loss + ((outv - gtv).pow(2) * \
-                    (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
-            else:
-                loss = loss + (outv - gtv).pow(2).mean().sqrt()
-
-        if hparams["model"]["detail"]["early_predictor"]:
-            assert len(early_predictor_outputs) == len(hparams["model"]["detail"]["early_predictor_label_index"])
-            for ilabel, outv in enumerate(early_predictor_outputs):
-                if not hparams["model"]["detail"]["loss_invisible"]:
-                    loss = loss + ((outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2) * \
+        if not is_fulleval:
+            loss = 0.
+            for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
+                # if ilabel < len(det_map_gt_cuda) - 1:
+                #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
+                if ilabel < len(det_map_gt_cuda) - 1 and not hparams["model"]["detail"]["loss_invisible"]:
+                    loss = loss + ((outv - gtv).pow(2) * \
                         (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
                 else:
-                    loss = loss + (outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2).mean().sqrt()
+                    loss = loss + (outv - gtv).pow(2).mean().sqrt()
 
-        epoch_ctx.add_scalar("loss", loss.item())
+            if hparams["model"]["detail"]["early_predictor"]:
+                assert len(early_predictor_outputs) == len(hparams["model"]["detail"]["early_predictor_label_index"])
+                for ilabel, outv in enumerate(early_predictor_outputs):
+                    if not hparams["model"]["detail"]["loss_invisible"]:
+                        loss = loss + ((outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2) * \
+                            (keypoint[:, :, 2] != 1).float().view(-1, self.num_parts, 1, 1).cuda()).mean().sqrt()
+                    else:
+                        loss = loss + (outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2).mean().sqrt()
 
-        if (loss.data != loss.data).any():
-            import ipdb; ipdb.set_trace()
+            epoch_ctx.add_scalar("loss", loss.item())
+
+            if (loss.data != loss.data).any():
+                import ipdb; ipdb.set_trace()
 
         if not is_train or config.vis:
             kp_pred, score = parse_map(output_maps[-1], thres=hparams["model"]["parse_threshold"])
@@ -436,21 +487,21 @@ class Experiment(BaseExperiment):
                 kp_pred_affined[samp_i, :, :2] = kpt_affine(kp_pred_affined[samp_i, :, :2] * FACTOR, np.linalg.pinv(transform_mat[samp_i])[:2])
                 if img_flipped[samp_i]:
                     kp_pred_affined[samp_i] = fliplr_pts(kp_pred_affined[samp_i], datasets.mscoco.FLIP_INDEX, width=img_ori_size[samp_i, 0].item())
-            ans = generate_ans(image_ids, kp_pred_affined, score)
-            epoch_ctx.add_store("annotates", {"image_index": image_ids, "annotate": ans})
+            ans = generate_ans(image_ids, kp_pred_affined, score, det_roi_scores=det_roi_score.numpy() if is_fulleval else None)
+            epoch_ctx.add_store("annotates", {"image_index": image_ids, "annotate": ans, "pred_affined": kp_pred_affined, "pred_score": score, "roi": det_roi.numpy(), "roi_score": det_roi_score.numpy()})
 
-            if config.store and hparams["config"]["store_map"] and is_train:
+            if False and config.store and hparams["config"]["store_map"] and is_train:
                 if not hasattr(epoch_ctx, "store_counter"):
                     epoch_ctx.store_counter = 0
                 if epoch_ctx.store_counter < 30:
                     epoch_ctx.add_store("pred", {"image_index": image_ids, "img": img, "gt": det_maps_gt, "pred": output_maps})
                 epoch_ctx.store_counter += 1
 
-        if config.vis and False:
+        if config.vis and True:
             import matplotlib.pyplot as plt
             img_restored = np.ascontiguousarray(self.train_dataset.restore_image(img.data.cpu().numpy())[..., ::-1])
 
-            if False:
+            if True:
                 nrows = int(np.sqrt(float(batch_size)))
                 ncols = (batch_size + nrows - 1) // nrows
                 fig, axes = plt.subplots(nrows, ncols, squeeze=False)
@@ -459,10 +510,11 @@ class Experiment(BaseExperiment):
                 for i in range(batch_size):
                     draw_img = img_restored[i].copy()
                     for j in range(self.num_parts):
-                        pt = kp_pred_affined[i, j]
+                        pt = kp_pred[i, j]
                         if pt[2] > 0:
                             cv2.circle(draw_img, (int(pt[0] * FACTOR), int(pt[1] * FACTOR)), radius=2, color=(0, 0, 255), thickness=-1)
                     axes.flat[i].imshow(draw_img[..., ::-1])
+                plt.show()
 
             if False:
                 for i in range(min(1, batch_size)):
@@ -482,7 +534,7 @@ class Experiment(BaseExperiment):
                     plt.show()
 
         result = {
-            "loss": loss,
+            "loss": loss if not is_fulleval else None,
             "index": batch["index"]
         }
 
@@ -1024,31 +1076,57 @@ def parse_map(det_map, thres=0.1):
     height = det_map.shape[2]
     width = det_map.shape[3]
 
+    BORDER = 10
+
+    # det_map_border = np.zeros((num_batch, num_part, height + 2*BORDER, width + 2*BORDER))
+    # det_map_border[:, :, BORDER:-BORDER, BORDER:-BORDER] = det_map
+
+    det_map_border = det_map
+
     pred = np.zeros((num_batch, num_part, 3), dtype=np.float32)
     score = np.zeros((num_batch, num_part), dtype=np.float32)
     for sample_i in range(num_batch):
         for part_i in range(num_part):
-            loc = det_map[sample_i, part_i].argmax().item()
-            y = loc // width
-            x = loc % width
-            score_sp = det_map[sample_i, part_i, y, x]
-            # TODO: test always 1 and always store score
-            if score_sp > thres:
-                pred[sample_i, part_i, 2] = 1
-                score[sample_i, part_i] = score_sp
-            if det_map[sample_i, part_i, y, max(0, x-1)] < det_map[sample_i, part_i, y, min(width-1, x+1)]:
+            # det_map_border[sample_i, part_i] = cv2.GaussianBlur(det_map_border[sample_i, part_i], (21, 21), 0)
+            loc = det_map_border[sample_i, part_i].argmax()
+            y, x = np.unravel_index(loc, det_map_border.shape[-2:])
+            score_sp = det_map_border[sample_i, part_i, y, x]
+
+            # det_map_border[sample_i, part_i, y, x] = 0
+            # loc2 = det_map_border[sample_i, part_i].argmax()
+            # y2, x2 = np.unravel_index(loc2, det_map_border.shape[-2:])
+
+            # y2 -= y
+            # x2 -= x
+            # ln = (x2 ** 2 + y2 ** 2) ** 0.5
+            # delta = 0.25
+            # if ln > 1e-3:
+            #     x += delta * x2 / ln
+            #     y += delta * y2 / ln
+
+            if det_map_border[sample_i, part_i, y, max(0, x-1)] < det_map_border[sample_i, part_i, y, min(width-1, x+1)]:
                 off_x = 0.25
             else:
                 off_x = -0.25
-            if det_map[sample_i, part_i, max(0, y-1), x] < det_map[sample_i, part_i, min(height-1, y+1), x]:
+            if det_map_border[sample_i, part_i, max(0, y-1), x] < det_map_border[sample_i, part_i, min(height-1, y+1), x]:
                 off_y = 0.25
             else:
                 off_y = -0.25
+
+            # y -= BORDER
+            # x -= BORDER
+            x = max(0, min(x, det_map.shape[3] - 1))
+            y = max(0, min(y, det_map.shape[2] - 1))
+
             pred[sample_i, part_i, 0] = x + 0.5 + off_x
             pred[sample_i, part_i, 1] = y + 0.5 + off_y
+            pred[sample_i, part_i, 2] = 1
+            score[sample_i, part_i] = score_sp
+
     return pred, score
 
-def generate_ans(image_ids, preds, scores):
+def generate_ans(image_ids, preds, scores, det_roi_scores=None):
+    ROI_SCORE_COF = 0.2
     ans = []
     for sample_i in range(len(preds)):
         image_id = image_ids[sample_i]

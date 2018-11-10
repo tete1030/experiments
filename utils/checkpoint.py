@@ -78,7 +78,7 @@ def save_pred(preds, checkpoint_folder, pred_file, force_replace=False):
                 log_w("Skip saving {}".format(preds_filepath))
                 return
             shutil.rmtree(preds_filepath)
-    np.save(preds_filepath, preds)
+    torch.save(preds, preds_filepath)
     return preds_filepath
 
 class RejectLoadError(Exception):

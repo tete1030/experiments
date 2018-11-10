@@ -396,6 +396,9 @@ def validate(exp:BaseExperiment, epoch:int, cur_step:int, call_store:bool) -> No
 
             end = time.time()
 
+    if globalvars.sigint_triggered:
+        return
+
     exp.summary_scalar_avg(epoch_ctx, epoch, cur_step, phase="valid")
     exp.evaluate(epoch_ctx, epoch, cur_step)
     if call_store:
