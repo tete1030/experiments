@@ -336,7 +336,7 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 90
+    id: 93
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
@@ -348,7 +348,7 @@ fulloffset:
         lr: 1.e-3
         lr_regressor: 1.e-3
         lr_gamma: 0.3
-        lr_decay_step: 100000 # 15 * 6543
+        lr_decay_step: 30000 # 15 * 6543
         bn_momentum: 0.1
         momentum: 0.0
         interpolate_kernel_type: bilinear
