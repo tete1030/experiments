@@ -336,20 +336,20 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 94
+    id: 95
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
     schedule: []
-    train_batch: 16
-    test_batch: 16
+    train_batch: 12
+    test_batch: 12
     learnable_offset:
         train_min_step: 6543
         lr: 1.e-3
         lr_regressor: 1.e-3
         lr_gamma: 0.3
-        lr_decay_step: 100000 # 15 * 6543
-        bn_momentum: 0.2
+        lr_decay_step: 30000 # 15 * 6543
+        bn_momentum: 0.13
         momentum: 0.0
         interpolate_kernel_type: bilinear
         interpolate_gaussian_sigma: 0.5
@@ -387,7 +387,7 @@ fulloffset:
             loss_final: labeled
             enable_offset_block: true
     dataset:
-        data: coco
+        data: mpii
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
         scale_factor: 0.25
