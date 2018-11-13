@@ -336,20 +336,20 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 95
+    id: 96
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
     schedule: []
-    train_batch: 12
-    test_batch: 12
+    train_batch: 16
+    test_batch: 16
     learnable_offset:
         train_min_step: 6543
         lr: 1.e-3
         lr_regressor: 1.e-3
         lr_gamma: 0.3
-        lr_decay_step: 30000 # 15 * 6543
-        bn_momentum: 0.13
+        lr_decay_step: 100000 # 15 * 6543
+        bn_momentum: 0.1
         momentum: 0.0
         interpolate_kernel_type: bilinear
         interpolate_gaussian_sigma: 0.5
@@ -372,9 +372,9 @@ fulloffset:
     model:
         use_gn: true
         resnet_pretrained: pretrained/resnet50_gn.pth
-        inp_shape: [288, 384] # W, H
-        out_shape: [72, 96] # W, H
-        gaussian_kernels: [3.8, 2.9, 2.3, 1.7] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
+        inp_shape: [192, 256] # W, H
+        out_shape: [48, 64] # W, H
+        gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
         parse_threshold: 0.1
         resnet: 50
         detail:
@@ -382,12 +382,12 @@ fulloffset:
             disable_displace: false
             displace_learnable_offset: true
             random_offset_init: 0
-            early_predictor: true
+            early_predictor: false
             loss_early: labeled
             loss_final: labeled
-            enable_offset_block: true
+            enable_offset_block: false
     dataset:
-        data: mpii
+        data: coco
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
         scale_factor: 0.25
