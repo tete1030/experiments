@@ -356,7 +356,8 @@ class Experiment(BaseExperiment):
     def epoch_start(self, epoch, step, evaluate_only):
         if not evaluate_only:
             self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
-            adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
+            if self.early_predictor_optimizer is not None:
+                adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
             if not hparams["model"]["detail"]["disable_displace"]:
                 self.set_offset_learning_rate(epoch, step)
         if not hparams["model"]["detail"]["disable_displace"]:
