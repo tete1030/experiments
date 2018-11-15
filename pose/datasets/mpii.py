@@ -167,32 +167,33 @@ class MPII(data.Dataset):
         # =====
         # Keypoint Map
 
-        keypoints = np.zeros((NUM_PARTS, 3), dtype=np.float32)
+        if "annopoints" in ann:
+            keypoints = np.zeros((NUM_PARTS, 3), dtype=np.float32)
 
-        if len(ann["annopoints"]) > 0:
-            for ijoint, point in ann["annopoints"].items():
-                keypoints[int(ijoint)] = np.array([point[0], point[1], 2 if point[2] is None else (point[2]+1)])
+            if len(ann["annopoints"]) > 0:
+                for ijoint, point in ann["annopoints"].items():
+                    keypoints[int(ijoint)] = np.array([point[0], point[1], 2 if point[2] is None else (point[2]+1)])
 
-        if flip:
-            keypoints_tf = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
-        else:
-            keypoints_tf = keypoints.copy()
+            if flip:
+                keypoints_tf = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
+            else:
+                keypoints_tf = keypoints.copy()
 
-        # keypoints: #person * #joints * 3
-        keypoints_tf = np.c_[
-                transform(keypoints_tf[..., :2], center, None, (self.kpmap_res[0], self.kpmap_res[1]), rot=rotate, scale=float(self.kpmap_res[0]) / scale),
-                keypoints_tf[:, [2]]
-            ]
+            # keypoints: #person * #joints * 3
+            keypoints_tf = np.c_[
+                    transform(keypoints_tf[..., :2], center, None, (self.kpmap_res[0], self.kpmap_res[1]), rot=rotate, scale=float(self.kpmap_res[0]) / scale),
+                    keypoints_tf[:, [2]]
+                ]
 
-        if not isinstance(self.kpmap_sigma, list):
-            kp_map = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
-            self._draw_label(keypoints_tf, kp_map, sigma=self.kpmap_sigma)
-        else:
-            kp_map = list()
-            for kpmsigma in self.kpmap_sigma:
-                kpm = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
-                self._draw_label(keypoints_tf, kpm, sigma=kpmsigma)
-                kp_map.append(kpm)
+            if not isinstance(self.kpmap_sigma, list):
+                kp_map = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
+                self._draw_label(keypoints_tf, kp_map, sigma=self.kpmap_sigma)
+            else:
+                kp_map = list()
+                for kpmsigma in self.kpmap_sigma:
+                    kpm = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
+                    self._draw_label(keypoints_tf, kpm, sigma=kpmsigma)
+                    kp_map.append(kpm)
 
         result = {
             'index': index,
@@ -201,14 +202,16 @@ class MPII(data.Dataset):
             'img': torch.from_numpy(img),
             'center': torch.from_numpy(center),
             'scale': scale,
-            'keypoint_ori': torch.from_numpy(keypoints),
-            'keypoint': torch.from_numpy(keypoints_tf),
             'img_transform': torch.from_numpy(img_transform_mat),
             'img_flipped': flip,
             'img_ori_size': torch.from_numpy(img_size.astype(np.int32)),
-            'keypoint_map': [torch.from_numpy(kpm) for kpm in kp_map] if isinstance(kp_map, list) else torch.from_numpy(kp_map),
             'head_box': torch.tensor(ann["head_rect"], dtype=torch.float)
         }
+
+        if "annopoints" in ann:
+            result['keypoint_map'] = [torch.from_numpy(kpm) for kpm in kp_map] if isinstance(kp_map, list) else torch.from_numpy(kp_map)
+            result['keypoint_ori'] = torch.from_numpy(keypoints)
+            result['keypoint'] = torch.from_numpy(keypoints_tf)
 
         return result
 
