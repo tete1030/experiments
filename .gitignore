@@ -4,14 +4,19 @@ dev
 *.pth.tar
 data/mpii/images
 *.idea/*
-data/mscoco/images
+data/mscoco/images*
+data/mscoco/valimages*
+data/mscoco/testimages*
 data/mscoco/person_keypoints_*.json
+data/mscoco/image_info_test-dev2017.json
 runs
 runs_archived
 .vscode
 sftp-config.json
 pose/models/ae_loss/lib
 rsync.sh
+
+lab/
 
 # Pretrained models
 pretrained/*.pth
