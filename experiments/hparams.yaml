@@ -336,11 +336,11 @@ baycrf:
 fulloffset:
     <<: *DEFAULT
     name: offset
-    id: 97
+    id: 98
     learning_rate: 5.e-4
     lr_gamma: 0.5
     epochs: 100
-    schedule: [35, 38, 41]
+    schedule: []
     train_batch: 16
     test_batch: 16
     learnable_offset:
@@ -357,7 +357,7 @@ fulloffset:
         interpolate_gaussian_sigma_decay_step: 330000
         interpolate_gaussian_sigma_decay_rate: 0.66
         offset_save_interval: 1000
-        expand_chan_ratio: [4, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 0.5]
+        expand_chan_ratio: [4, 4, 4, 2, 2, 2, 0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.25]
         bind_chan: 1
         reuse_offset: false
         half_reversed_offset: false
@@ -385,7 +385,7 @@ fulloffset:
             early_predictor: true
             loss_early: labeled
             loss_final: labeled
-            enable_offset_block: false
+            enable_offset_block: true
     dataset:
         data: coco
         mean_std_file: mean_std.pth
