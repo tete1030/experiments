@@ -85,6 +85,11 @@ def override_hparams(_hparams, override):
     for var_name, var_value in override:
         set_hierarchic_attr(_hparams, var_name.split("."), eval(var_value))
 
+def get_hparams(exp_name):
+    hp_file="experiments/{exp_name}/hparams.yaml".format(exp_name=exp_name)
+    with open(hp_file, "r") as f:
+        return YAML().load(f)
+
 def check_future_checkpoint(checkpoint_folder, epoch_future_start):
     # Check if checkpoints of following epochs exist
     CP_RE = re.compile(r"^checkpoint_(\d+)\.pth\.tar$")
@@ -107,23 +112,28 @@ def check_future_checkpoint(checkpoint_folder, epoch_future_start):
                 os.remove(os.path.join(checkpoint_folder, fcp))
     return True
 
+def init_config(conf_name, exp_name, exp_id, config_override):
+    with open("experiments/config.yaml", "r") as f:
+        conf = YAML(typ="safe").load(f)
+    conf_data = conf[conf_name]
+    config.update(conf_data.items())
+    # Substitude var in configs
+    config.checkpoint_dir = config.checkpoint_dir.format(**{"exp_name": exp_name, "exp_id": hparams.EXP.ID})
+    if config_override:
+        config.update(dict(map(lambda x: (x[0], eval(str(x[1]))), config_override)))
 
-def main(args, unknown_args):
-    init_config(args.CONF, args.config)
-    exp_module_name = args.EXP
-    loaded_hparams = get_hparams(exp_module_name)
+def init(args, unknown_args):
+    exp_name = args.EXP
+    loaded_hparams = get_hparams(exp_name)
     # Override config from command line
     if args.override is not None:
         override_hparams(loaded_hparams, args.override)
-
     hparams.update(safe_yaml_convert(loaded_hparams))
 
-    exp_name = hparams.EXP.NAME
-    before_epoch = config.before_epoch
-    globalvars.exp_name = exp_name
+    init_config(args.CONF, hparams.EXP.NAME, hparams.EXP.ID, args.config)
 
-    # Substitude var in configs
-    config.checkpoint_dir = config.checkpoint_dir.format(**{"exp_name": exp_name, "exp_id": hparams.EXP.ID})
+    assert exp_name == hparams.EXP.NAME
+    before_epoch = config.before_epoch
 
     # Check if checkpoint existed
     if config.resume and detect_checkpoint(checkpoint_folder=config.checkpoint_dir):
@@ -142,9 +152,14 @@ def main(args, unknown_args):
     # Create experiment
     log_progress("Creating model")
 
-    exp_module = importlib.import_module("experiments." + exp_module_name)
-    assert issubclass(exp_module.Experiment, BaseExperiment), exp_module_name + ".Experiment is not a subclass of BaseExperiment"
+    exp_module = importlib.import_module("experiments." + exp_name)
+    assert issubclass(exp_module.Experiment, BaseExperiment), exp_name + ".Experiment is not a subclass of BaseExperiment"
     exp = exp_module.Experiment()
+
+    return exp
+
+def main(args, unknown_args):
+    exp = init(args, unknown_args)
 
     if config.resume:
         hparams_cp_file = os.path.join(config.checkpoint_dir, "hparams.yaml")
@@ -405,18 +420,6 @@ def get_args():
     argp.add_argument("--override", nargs=2, metavar=("var", "value"), action="append")
     argp.add_argument("--config", nargs=2, metavar=("var", "value"), action="append")
     return argp.parse_known_args()
-
-def init_config(conf_name, config_override):
-    with open("experiments/config.yaml", "r") as f:
-        conf = YAML(typ="safe").load(f)
-    conf_data = conf[conf_name]
-    config.update(conf_data.items())
-    if config_override:
-        config.update(dict(map(lambda x: (x[0], eval(str(x[1]))), config_override)))
-
-def get_hparams(exp_name, hp_file="experiments/hparams.yaml"):
-    with open(hp_file, "r") as f:
-        return YAML().load(f)[exp_name]
 
 if __name__ == "__main__":
     _args, _unknown_args = get_args()

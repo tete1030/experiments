@@ -21,6 +21,6 @@ class AttrDict(dict):
     def set(self, k, v):
         self.__setitem__(k, v)
 
-hparams = OrderedDict()
+hparams = AttrDict()
 config = AttrDict()
 globalvars = AttrDict()
