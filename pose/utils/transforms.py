@@ -3,15 +3,6 @@ import torch
 
 from .imutils import *
 
-
-def color_normalize(x, mean, std):
-    if x.size(0) == 1:
-        x = x.repeat(3, 1, 1)
-
-    for t, m, s in zip(x, mean, std):
-        t.sub_(m)
-    return x
-
 def fliplr_map(x, flipIndex):
     """
     flip output map
@@ -46,7 +37,7 @@ def fliplr_chwimg(x):
     assert x.ndim in [2, 3, 4]
     return x[..., ::-1].copy()
 
-# python3-fized
+# python3-fixed
 def get_transform(center, ori_size, new_size, rot=0, scale=None):
     """
     General image processing functions

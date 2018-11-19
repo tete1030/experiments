@@ -9,27 +9,6 @@ import torch
 from .transforms import transform, transform_preds
 import munkres
 
-__all__ = ['accuracy', 'AverageMeter']
-
-def get_preds(scores):
-    ''' get predictions from score maps in torch Tensor
-        return type: torch.LongTensor
-    '''
-    assert scores.dim() == 4, 'Score maps should be 4-dim'
-    maxval, idx = torch.max(scores.view(scores.size(0), scores.size(1), -1), 2)
-
-    maxval = maxval.view(scores.size(0), scores.size(1), 1)
-    idx = idx.view(scores.size(0), scores.size(1), 1)
-
-    preds = idx.repeat(1, 1, 2).float()
-
-    preds[:,:,0] = preds[:,:,0] % scores.size(3)
-    preds[:,:,1] = torch.floor(preds[:,:,1] / scores.size(3))
-
-    pred_mask = maxval.gt(0).repeat(1, 1, 2).float()
-    preds = (preds + 1) * pred_mask - 1
-    return preds
-
 def calc_dists(preds, target, normalize):
     preds = preds.float()
     target = target.float()
@@ -89,7 +68,6 @@ def part_accuracy(output, target, score_thr=0.5, IoU_thr=0.5):
     
     return torch.cat([torch.FloatTensor([avg_acc]), chn_acc])
 
-    
 class AverageMeter(object):
     """Computes and stores the average and current value"""
     def __init__(self):

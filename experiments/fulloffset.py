@@ -1236,12 +1236,3 @@ def kpt_affine(kpt, mat):
     shape = kpt.shape
     kpt = kpt.reshape(-1, 2)
     return np.dot( np.concatenate((kpt, kpt[:, 0:1]*0+1), axis = 1), mat.T ).reshape(shape)
-
-def batch_resize(im, new_shape):
-    assert isinstance(new_shape, tuple) and len(new_shape) == 2 and isinstance(new_shape[0], int) and isinstance(new_shape[1], int)
-    im_pre_shape = im.shape[:-2]
-    im_post_shape = im.shape[-2:]
-    if im_post_shape == new_shape:
-        return im
-    im = im.reshape((-1,) + im_post_shape)
-    return np.array([cv2.resize(im[i], (new_shape[1], new_shape[0])) for i in range(im.shape[0])]).reshape(im_pre_shape + new_shape)
