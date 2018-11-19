@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
-import pose.datasets as datasets
-from pose.models import PoseMapGenerator
+import lib.datasets as datasets
+from lib.models import PoseMapGenerator
 import numpy as np
 import cv2
 import torch

@@ -15,27 +15,26 @@ __all__ = ["save_checkpoint", "detect_checkpoint", "save_pred", "load_pretrained
 
 RE_TYPE = type(re.compile(""))
 
-def save_checkpoint(state, checkpoint_folder, checkpoint_file, force_replace=False):
-    filepath = os.path.join(checkpoint_folder, checkpoint_file)
-    if os.path.exists(filepath):
-        if os.path.isfile(filepath):
-            log_w("Checkpoint file {} exists".format(filepath))
+def save_checkpoint(state, checkpoint_full, force_replace=False):
+    if os.path.exists(checkpoint_full):
+        if os.path.isfile(checkpoint_full):
+            log_w("Checkpoint file {} exists".format(checkpoint_full))
             if force_replace:
                 log_i("Force replacing")
             elif not ask("Replace it?"):
-                log_w("Skip saving {}".format(filepath))
+                log_w("Skip saving {}".format(checkpoint_full))
                 return
-            os.remove(filepath)
+            os.remove(checkpoint_full)
         else:
-            log_w("Checkpoint file {} exists as a folder".format(filepath))
+            log_w("Checkpoint file {} exists as a folder".format(checkpoint_full))
             if force_replace:
                 log_i("Force replacing")
             elif not ask("Delete it?"):
-                log_w("Skip saving {}".format(filepath))
+                log_w("Skip saving {}".format(checkpoint_full))
                 return
-            shutil.rmtree(filepath)
-    torch.save(state, filepath)
-    return filepath
+            shutil.rmtree(checkpoint_full)
+    torch.save(state, checkpoint_full)
+    return checkpoint_full
 
 def detect_checkpoint(checkpoint_folder, checkpoint_file=None, return_files=False):
     folder_exist = os.path.exists(checkpoint_folder)

@@ -7,8 +7,8 @@ from utils.log import log_i
 import torch.nn.functional as F
 import numpy as np
 from .displace import Displace, DisplaceCUDA, CustomizedGradDepthwiseConv2d
-from pose.models.common import StrictNaNReLU
-from utils.lambdalayer import Lambda
+from lib.models.common import StrictNaNReLU
+from lib.utils.lambdalayer import Lambda
 
 class Weighted(nn.Module):
     def __init__(self, num_channels, init=0.):

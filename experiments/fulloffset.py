@@ -13,21 +13,18 @@ import torch.nn.functional as F
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
-import pose.models as models
-import pose.datasets as datasets
-from pose.models.common import StrictNaNReLU
-from pose.models.displacechan import DisplaceChannel
-from pose.utils.transforms import fliplr_pts
-from pose.utils.evaluation import AverageMeter, CycleAverageMeter, accuracy
+import lib.models as models
+import lib.datasets as datasets
+from lib.models.common import StrictNaNReLU
+from lib.models.displacechan import DisplaceChannel
+from lib.utils.transforms import fliplr_pts
+from lib.utils.evaluation import AverageMeter, CycleAverageMeter, accuracy
 from utils.globals import config, hparams, globalvars
 from utils.log import log_i, log_w, log_progress
 from utils.train import adjust_learning_rate, TrainContext, ValidContext
-from utils.checkpoint import save_pred
-from utils.sync_batchnorm import SynchronizedBatchNorm2d, DataParallelWithCallback
-from utils.checkpoint import load_pretrained_loose, save_checkpoint, RejectLoadError
-from utils.lambdalayer import Lambda
+from utils.checkpoint import save_pred, load_pretrained_loose, save_checkpoint, RejectLoadError
+from lib.utils.lambdalayer import Lambda
 from experiments.baseexperiment import BaseExperiment, EpochContext
-from utils.lambdalayer import Lambda
 
 FACTOR = 4
 
@@ -46,11 +43,11 @@ class Experiment(BaseExperiment):
         Experiment.exp = self
         self.early_predictor_size = list()
         self.displace_mods = list()
-        if hparams["model"]["detail"]["early_predictor"]:
+        if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             self.early_predictors = list()
             self.pre_early_predictor_outs = dict()
 
-        self.data_source = hparams["dataset"]["data"]
+        self.data_source = hparams.DATASET.DATA
         if self.data_source == "coco":
             self.num_parts = datasets.mscoco.NUM_PARTS
             self.flip_index = datasets.mscoco.FLIP_INDEX
@@ -60,27 +57,27 @@ class Experiment(BaseExperiment):
         else:
             assert False
 
-        pretrained = hparams["model"]["resnet_pretrained"]
-        if config.resume is not None:
+        pretrained = hparams.MODEL.RESNET_PRETRAINED
+        if config.resume:
             pretrained = None
 
         global BatchNorm2dImpl
-        if hparams["model"]["use_gn"]:
+        if hparams.MODEL.USE_GN:
             BatchNorm2dImpl = GroupNormWrapper
         else:
             BatchNorm2dImpl = nn.BatchNorm2d
 
-        self.model = nn.DataParallel(Controller(MainModel(hparams["model"]["out_shape"][::-1], self.num_parts, pretrained=pretrained)).cuda())
-        assert OffsetBlock._counter == len(hparams["learnable_offset"]["expand_chan_ratio"]) or not hparams["model"]["detail"]["enable_offset_block"]
+        self.model = nn.DataParallel(Controller(MainModel(hparams.MODEL.OUT_SHAPE[::-1], self.num_parts, pretrained=pretrained)).cuda())
+        assert OffsetBlock._counter == len(hparams.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO) or not hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK
 
-        if not hparams["model"]["detail"]["disable_displace"]:
+        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods if hasattr(dm, "offset")]))
             self.offset_regressor_parameters = list(filter(lambda x: x.requires_grad, list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in self.displace_mods if hasattr(dm, "offset_regressor")]))))
         else:
             self.offset_parameters = []
             self.offset_regressor_parameters = []
 
-        if hparams["model"]["detail"]["early_predictor"]:
+        if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             self.early_predictor_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([ep.parameters() for ep in self.early_predictors])))
         else:
             self.early_predictor_parameters = []
@@ -90,62 +87,62 @@ class Experiment(BaseExperiment):
 
         self.optimizer = torch.optim.Adam(
             self.normal_parameters,
-            lr=hparams["learning_rate"],
-            weight_decay=hparams['weight_decay'])
+            lr=hparams.LEARNING_RATE,
+            weight_decay=hparams.WEIGHT_DECAY)
 
         offset_optimizer_args = []
         if len(self.offset_parameters) > 0:
             offset_optimizer_args.append(
-                {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams["learnable_offset"]["lr"], "init_lr": hparams["learnable_offset"]["lr"]})
+                {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams.LEARNABLE_OFFSET.LR, "init_lr": hparams.LEARNABLE_OFFSET.LR})
         if len(self.offset_regressor_parameters) > 0:
             offset_optimizer_args.append(
-                {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams["learnable_offset"]["lr_regressor"], "init_lr": hparams["learnable_offset"]["lr_regressor"]})
+                {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams.LEARNABLE_OFFSET.LR_REGRESSOR, "init_lr": hparams.LEARNABLE_OFFSET.LR_REGRESSOR})
         if len(offset_optimizer_args) > 0:
             self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
         else:
             self.offset_optimizer = None
 
-        if hparams["model"]["detail"]["early_predictor"]:
+        if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             self.early_predictor_optimizer = torch.optim.Adam(
                 self.early_predictor_parameters,
-                lr=hparams["learning_rate"],
-                weight_decay=hparams['weight_decay'])
+                lr=hparams.LEARNING_RATE,
+                weight_decay=hparams.WEIGHT_DECAY)
         else:
             self.early_predictor_optimizer = None
 
         self.criterion = nn.MSELoss()
         
-        self.cur_lr = hparams["learning_rate"]
+        self.cur_lr = hparams.LEARNING_RATE
 
         if self.data_source == "coco":
             self.coco = COCO("data/mscoco/person_keypoints_train2017.json")
             self.train_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
                                                 self.coco,
                                                 "data/mscoco/sp_split_2017.pth",
-                                                "data/mscoco/" + hparams["dataset"]["mean_std_file"],
+                                                "data/mscoco/" + hparams.DATASET.MEAN_STD_FILE,
                                                 True,
-                                                img_res=hparams["model"]["inp_shape"],
-                                                ext_border=hparams["dataset"]["ext_border"],
-                                                kpmap_res=hparams["model"]["out_shape"],
-                                                keypoint_res=hparams["model"]["out_shape"],
-                                                kpmap_sigma=hparams["model"]["gaussian_kernels"],
-                                                scale_factor=hparams["dataset"]["scale_factor"],
-                                                rot_factor=hparams["dataset"]["rotate_factor"],
-                                                trans_factor=hparams["dataset"]["translation_factor"])
+                                                img_res=hparams.MODEL.INP_SHAPE,
+                                                ext_border=hparams.DATASET.EXT_BORDER,
+                                                kpmap_res=hparams.MODEL.OUT_SHAPE,
+                                                keypoint_res=hparams.MODEL.OUT_SHAPE,
+                                                kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
+                                                scale_factor=hparams.DATASET.SCALE_FACTOR,
+                                                rot_factor=hparams.DATASET.ROTATE_FACTOR,
+                                                trans_factor=hparams.DATASET.TRANSLATION_FACTOR)
 
             self.val_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
                                                 self.coco,
                                                 "data/mscoco/sp_split_2017.pth",
-                                                "data/mscoco/" + hparams["dataset"]["mean_std_file"],
+                                                "data/mscoco/" + hparams.DATASET.MEAN_STD_FILE,
                                                 False,
-                                                img_res=hparams["model"]["inp_shape"],
-                                                ext_border=hparams["dataset"]["ext_border"],
-                                                kpmap_res=hparams["model"]["out_shape"],
-                                                keypoint_res=hparams["model"]["out_shape"],
-                                                kpmap_sigma=hparams["model"]["gaussian_kernels"],
-                                                scale_factor=hparams["dataset"]["scale_factor"],
-                                                rot_factor=hparams["dataset"]["rotate_factor"],
-                                                trans_factor=hparams["dataset"]["translation_factor"])
+                                                img_res=hparams.MODEL.INP_SHAPE,
+                                                ext_border=hparams.DATASET.EXT_BORDER,
+                                                kpmap_res=hparams.MODEL.OUT_SHAPE,
+                                                keypoint_res=hparams.MODEL.OUT_SHAPE,
+                                                kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
+                                                scale_factor=hparams.DATASET.SCALE_FACTOR,
+                                                rot_factor=hparams.DATASET.ROTATE_FACTOR,
+                                                trans_factor=hparams.DATASET.TRANSLATION_FACTOR)
             self.train_collate_fn = datasets.COCOSinglePose.collate_function
             self.valid_collate_fn = datasets.COCOSinglePose.collate_function
         elif self.data_source == "mpii":
@@ -155,12 +152,12 @@ class Experiment(BaseExperiment):
                 "data/mpii/mean_std.pth",
                 True,
                 True,
-                img_res=hparams["model"]["inp_shape"],
-                kpmap_res=hparams["model"]["out_shape"],
-                kpmap_sigma=hparams["model"]["gaussian_kernels"],
-                scale_factor=hparams["dataset"]["scale_factor"],
-                rot_factor=hparams["dataset"]["rotate_factor"],
-                trans_factor=hparams["dataset"]['mpii']["translation_factor"])
+                img_res=hparams.MODEL.INP_SHAPE,
+                kpmap_res=hparams.MODEL.OUT_SHAPE,
+                kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
+                scale_factor=hparams.DATASET.SCALE_FACTOR,
+                rot_factor=hparams.DATASET.ROTATE_FACTOR,
+                trans_factor=hparams.DATASET.MPII.TRANSLATION_FACTOR)
 
             self.val_dataset = datasets.MPII("data/mpii/images",
                 "data/mpii/mpii_human_pose.json",
@@ -168,12 +165,12 @@ class Experiment(BaseExperiment):
                 "data/mpii/mean_std.pth",
                 False,
                 True,
-                img_res=hparams["model"]["inp_shape"],
-                kpmap_res=hparams["model"]["out_shape"],
-                kpmap_sigma=hparams["model"]["gaussian_kernels"],
-                scale_factor=hparams["dataset"]["scale_factor"],
-                rot_factor=hparams["dataset"]["rotate_factor"],
-                trans_factor=hparams["dataset"]['mpii']["translation_factor"])
+                img_res=hparams.MODEL.INP_SHAPE,
+                kpmap_res=hparams.MODEL.OUT_SHAPE,
+                kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
+                scale_factor=hparams.DATASET.SCALE_FACTOR,
+                rot_factor=hparams.DATASET.ROTATE_FACTOR,
+                trans_factor=hparams.DATASET.MPII.TRANSLATION_FACTOR)
             self.train_collate_fn = datasets.MPII.collate_function
             self.valid_collate_fn = datasets.MPII.collate_function
 
@@ -185,17 +182,16 @@ class Experiment(BaseExperiment):
             for dm in self.displace_mods:
                 if dm.offset.size(0) == 0:
                     continue
-                self.move_dis_avgmeter.append(Experiment.OffsetCycleAverageMeter(hparams["learnable_offset"]["move_average_cycle"], (dm.offset.data * dm.scale).cpu()))
+                self.move_dis_avgmeter.append(Experiment.OffsetCycleAverageMeter(hparams.LEARNABLE_OFFSET.MOVE_AVERAGE_CYCLE, (dm.offset.data * dm.scale).cpu()))
         else:
             self.move_dis_avgmeter = None
 
-    def load_checkpoint(self, checkpoint_folder, checkpoint_file,
+    def load_checkpoint(self, checkpoint_full,
                         no_strict_model_load=False,
                         no_criterion_load=False,
                         no_optimizer_load=False):
 
         # Load checkpoint data
-        checkpoint_full = os.path.join(checkpoint_folder, checkpoint_file)
         checkpoint = torch.load(checkpoint_full)
         if no_strict_model_load:
             model_state_dict = self.model.state_dict()
@@ -218,7 +214,7 @@ class Experiment(BaseExperiment):
             self.move_dis_avgmeter = checkpoint["move_dis_avgmeter"]
         return checkpoint["epoch"]
 
-    def save_checkpoint(self, checkpoint_folder, checkpoint_file, epoch):
+    def save_checkpoint(self, checkpoint_full, epoch):
         checkpoint_dict = {
             "epoch": epoch,
             "state_dict": self.model.state_dict(),
@@ -226,9 +222,9 @@ class Experiment(BaseExperiment):
             "criterion": self.criterion.state_dict(),
             "offset_optimizer": self.offset_optimizer.state_dict() if self.offset_optimizer else None,
             "early_predictor_optimizer": self.early_predictor_optimizer.state_dict() if self.early_predictor_optimizer else None,
-            "move_dis_avgmeter": self.move_dis_avgmeter if not hparams["model"]["detail"]["disable_displace"] else None
+            "move_dis_avgmeter": self.move_dis_avgmeter if not hparams.MODEL.DETAIL.DISABLE_DISPLACE else None
         }
-        save_checkpoint(checkpoint_dict, checkpoint_folder=checkpoint_folder, checkpoint_file=checkpoint_file, force_replace=True)
+        save_checkpoint(checkpoint_dict, checkpoint_full=checkpoint_full, force_replace=True)
 
     @staticmethod
     def _summarize_tensorboard(eval_result, params, step):
@@ -260,7 +256,7 @@ class Experiment(BaseExperiment):
                 mean_s = -1
             else:
                 mean_s = np.mean(s[s>-1])
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, type_str), {title: mean_s}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, type_str), {title: mean_s}, step)
             return mean_s
 
         _summarize(1, title="avg", max_dets=20)
@@ -292,26 +288,26 @@ class Experiment(BaseExperiment):
                 self._summarize_tensorboard(coco_eval.eval, coco_eval.params, step)
                 coco_eval.summarize()
             else:
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"avg": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"i50": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"i75": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"med": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AP"), {"lar": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"avg": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"i50": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"i75": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"med": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "AR"), {"lar": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AP"), {"avg": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AP"), {"i50": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AP"), {"i75": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AP"), {"med": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AP"), {"lar": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AR"), {"avg": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AR"), {"i50": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AR"), {"i75": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AR"), {"med": 0}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AR"), {"lar": 0}, step)
 
                 print("No points")
         elif self.data_source == "mpii":
             annotates = epoch_ctx.stored["annotates"]
             acc = accuracy(annotates["pred"], annotates["gt"], annotates["head_box"])
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "PCKh"), {"avg": float(acc[0])}, step)
+            globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh"), {"avg": float(acc[0])}, step)
             results = list()
             results.append("avg: {:2.2f}".format(float(acc[0]) * 100))
             for i in range(0, acc.size(0)-1):
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "PCKh"), {datasets.mpii.PART_LABELS[i]: float(acc[i+1])}, step)
+                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh"), {datasets.mpii.PART_LABELS[i]: float(acc[i+1])}, step)
                 results.append("{}: {:2.2f}".format(datasets.mpii.PART_LABELS[i], float(acc[i+1]) * 100))
             print(" | ".join(results) + "\n")
 
@@ -322,20 +318,20 @@ class Experiment(BaseExperiment):
                     pred_file = "{}_evaluate.npy".format(store_key)
                 else:
                     pred_file = "{}_{}.npy".format(store_key, epoch)
-                save_pred(epoch_ctx.stored[store_key], checkpoint_folder=config.checkpoint, pred_file=pred_file)
+                save_pred(epoch_ctx.stored[store_key], checkpoint_folder=config.checkpoint_dir, pred_file=pred_file)
 
     def set_offset_learning_rate(self, epoch, step):
         if self.offset_optimizer is None:
             return
 
-        if step >= hparams["learnable_offset"]["train_min_step"] and hparams["learnable_offset"]["lr_decay_step"] > 0 and hparams["learnable_offset"]["lr_gamma"] > 0:
-            step_offset = max(0, step - hparams["learnable_offset"]["train_min_step"])
+        if step >= hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP and hparams.LEARNABLE_OFFSET.LR_DECAY_STEP > 0 and hparams.LEARNABLE_OFFSET.LR_GAMMA > 0:
+            step_offset = max(0, step - hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP)
         else:
             step_offset = -1
 
         for param_group in self.offset_optimizer.param_groups:
             if step_offset >= 0:
-                cur_lr_offset = param_group["init_lr"] * (hparams["learnable_offset"]["lr_gamma"] ** (float(step_offset) / hparams["learnable_offset"]["lr_decay_step"]))
+                cur_lr_offset = param_group["init_lr"] * (hparams.LEARNABLE_OFFSET.LR_GAMMA ** (float(step_offset) / hparams.LEARNABLE_OFFSET.LR_DECAY_STEP))
                 log_i("Set {} to {:.5f}".format(param_group["para_name"], cur_lr_offset))
             else:
                 cur_lr_offset = param_group["init_lr"]
@@ -344,9 +340,9 @@ class Experiment(BaseExperiment):
     def set_offset_learning_para(self, epoch, step):
         for dm in self.displace_mods:
             if dm.LO_interpolate_kernel_type == "gaussian" and dm.learnable_offset and dm.LO_active:
-                if step >= hparams["learnable_offset"]["train_min_step"] and hparams["learnable_offset"]["interpolate_gaussian_sigma_decay_step"] > 0 and hparams["learnable_offset"]["interpolate_gaussian_sigma_decay_rate"] > 0:
-                    step_offset = max(0, step - hparams["learnable_offset"]["train_min_step"])
-                    LO_sigma_new = float(dm.LO_sigma_init) * (hparams["learnable_offset"]["interpolate_gaussian_sigma_decay_rate"] ** (float(step_offset) / hparams["learnable_offset"]["interpolate_gaussian_sigma_decay_step"]))
+                if step >= hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP and hparams.LEARNABLE_OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_STEP > 0 and hparams.LEARNABLE_OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_RATE > 0:
+                    step_offset = max(0, step - hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP)
+                    LO_sigma_new = float(dm.LO_sigma_init) * (hparams.LEARNABLE_OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_RATE ** (float(step_offset) / hparams.LEARNABLE_OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_STEP))
                     LO_kernel_size_new = int(LO_sigma_new * 3) * 2 + 1
                     dm.set_learnable_offset_para(LO_kernel_size_new, LO_sigma_new)
 
@@ -355,11 +351,11 @@ class Experiment(BaseExperiment):
 
     def epoch_start(self, epoch, step, evaluate_only):
         if not evaluate_only:
-            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
-            adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams["learning_rate"], hparams["schedule"], hparams["lr_gamma"])
-            if not hparams["model"]["detail"]["disable_displace"]:
+            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.LEARNING_RATE, hparams.SCHEDULE, hparams.LR_GAMMA)
+            adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams.LEARNING_RATE, hparams.SCHEDULE, hparams.LR_GAMMA)
+            if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
                 self.set_offset_learning_rate(epoch, step)
-        if not hparams["model"]["detail"]["disable_displace"]:
+        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self.set_offset_learning_para(epoch, step)
 
     class OffsetCycleAverageMeter(object):
@@ -405,15 +401,15 @@ class Experiment(BaseExperiment):
             if dm.LO_active:
                 offset_disabled = False
         if not offset_disabled:
-            torch.save([(dm.get_all_offsets(detach=True) * dm.scale).cpu() for dm in self.displace_mods], os.path.join(config.checkpoint, "offset_{}.pth".format(step)))
+            torch.save([(dm.get_all_offsets(detach=True) * dm.scale).cpu() for dm in self.displace_mods], os.path.join(config.checkpoint_dir, "offset_{}.pth".format(step)))
 
     def epoch_end(self, epoch, step, evaluate_only):
-        if not evaluate_only and not hparams["model"]["detail"]["disable_displace"]:
+        if not evaluate_only and not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self.save_offsets(step)
 
     def iter_step(self, epoch_ctx:EpochContext, loss:torch.Tensor, progress:dict):
         optimize_offset = False
-        if not hparams["model"]["detail"]["disable_displace"] and self.offset_optimizer is not None and progress["step"] >= hparams["learnable_offset"]["train_min_step"]:
+        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and progress["step"] >= hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP:
             optimize_offset = True
 
         self.optimizer.zero_grad()
@@ -438,9 +434,9 @@ class Experiment(BaseExperiment):
                 self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.scale).cpu())
                 move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
                 move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
-            globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, "move_dis"), {"mod": np.mean(move_dis_avg), "mod_cur": np.mean(move_dis)}, progress["step"] + 1)
+            globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis"), {"mod": np.mean(move_dis_avg), "mod_cur": np.mean(move_dis)}, progress["step"] + 1)
 
-        if not hparams["model"]["detail"]["disable_displace"] and self.offset_optimizer is not None and (progress["step"] + 1) % hparams["learnable_offset"]["offset_save_interval"] == 0:
+        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and (progress["step"] + 1) % hparams.LEARNABLE_OFFSET.OFFSET_SAVE_INTERVAL == 0:
             self.save_offsets(progress["step"] + 1)
 
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict) -> dict:
@@ -455,7 +451,7 @@ class Experiment(BaseExperiment):
         batch_size = img.size(0)
         globalvars.progress = progress
 
-        if not hparams["model"]["detail"]["disable_displace"] and self.offset_optimizer and progress["step"] == hparams["learnable_offset"]["train_min_step"] and progress["train"]:
+        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and progress["step"] == hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP and progress["train"]:
             self.save_offsets(progress["step"])
 
         det_map_gt_cuda = [dm.cuda() for dm in det_maps_gt]
@@ -474,20 +470,20 @@ class Experiment(BaseExperiment):
         mask_visible = (keypoint[:, :, 2] > 1.1).cuda()
         mask_notvisible = (mask_labeled & (~mask_visible))
 
-        if hparams["model"]["detail"]["loss_early"] == "all":
+        if hparams.MODEL.DETAIL.LOSS_EARLY == "all":
             masking_early = 1.
-        elif hparams["model"]["detail"]["loss_early"] == "labeled":
+        elif hparams.MODEL.DETAIL.LOSS_EARLY == "labeled":
             masking_early = mask_labeled.float().view(-1, self.num_parts, 1, 1)
-        elif hparams["model"]["detail"]["loss_early"] == "visible":
+        elif hparams.MODEL.DETAIL.LOSS_EARLY == "visible":
             masking_early = mask_visible.float().view(-1, self.num_parts, 1, 1)
         else:
             assert False
 
-        if hparams["model"]["detail"]["loss_final"] == "all":
+        if hparams.MODEL.DETAIL.LOSS_FINAL == "all":
             masking_final = 1.
-        elif hparams["model"]["detail"]["loss_final"] == "labeled":
+        elif hparams.MODEL.DETAIL.LOSS_FINAL == "labeled":
             masking_final = mask_labeled.float().view(-1, self.num_parts, 1, 1)
-        elif hparams["model"]["detail"]["loss_final"] == "visible":
+        elif hparams.MODEL.DETAIL.LOSS_FINAL == "visible":
             masking_final = mask_visible.float().view(-1, self.num_parts, 1, 1)
         else:
             assert False
@@ -500,10 +496,10 @@ class Experiment(BaseExperiment):
             else:
                 loss = loss + ((outv - gtv).pow(2) * masking_final).mean().sqrt()
 
-        if hparams["model"]["detail"]["early_predictor"]:
-            assert len(early_predictor_outputs) == len(hparams["model"]["detail"]["early_predictor_label_index"])
+        if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
+            assert len(early_predictor_outputs) == len(hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX)
             for ilabel, outv in enumerate(early_predictor_outputs):
-                loss = loss + ((outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2) * \
+                loss = loss + ((outv - det_map_gt_cuda[hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX[ilabel]]).pow(2) * \
                     masking_early).mean().sqrt()
 
         epoch_ctx.add_scalar("loss", loss.item())
@@ -512,7 +508,7 @@ class Experiment(BaseExperiment):
             import ipdb; ipdb.set_trace()
 
         if not is_train or config.vis:
-            kp_pred, score = parse_map(output_maps[-1], thres=hparams["model"]["parse_threshold"])
+            kp_pred, score = parse_map(output_maps[-1], thres=hparams.MODEL.PARSE_THRESHOLD)
             kp_pred_affined = kp_pred.copy()
             for samp_i in range(batch_size):
                 kp_pred_affined[samp_i, :, :2] = kpt_affine(kp_pred_affined[samp_i, :, :2] * FACTOR, np.linalg.pinv(transform_mat[samp_i])[:2])
@@ -525,7 +521,7 @@ class Experiment(BaseExperiment):
                 ans = generate_mpii_ans(image_ids, batch["person_index"], kp_pred_affined)
                 epoch_ctx.add_store("annotates", {"image_index": image_ids, "annotate": ans, "pred": torch.from_numpy(kp_pred_affined), "gt": batch["keypoint_ori"], "head_box": batch["head_box"]})
 
-            if config.store and hparams["config"]["store_map"] and is_train:
+            if config.store and hparams.CONFIG.STORE_MAP and is_train:
                 if not hasattr(epoch_ctx, "store_counter"):
                     epoch_ctx.store_counter = 0
                 if epoch_ctx.store_counter < 30:
@@ -583,15 +579,15 @@ class Controller(nn.Module):
     def __init__(self, main_model):
         super(Controller, self).__init__()
         self.main_model = main_model
-        if hparams["model"]["detail"]["early_predictor"]:
+        if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             early_predictor = list()
             assert len(Experiment.exp.early_predictor_size) > 0
             for inplanes, inshape_factor in Experiment.exp.early_predictor_size:
                 early_predictor.append(
                     Predictor(
                         inplanes, 
-                        (hparams["model"]["inp_shape"][1] // inshape_factor, hparams["model"]["inp_shape"][0] // inshape_factor),
-                        hparams["model"]["out_shape"][::-1],
+                        (hparams.MODEL.INP_SHAPE[1] // inshape_factor, hparams.MODEL.INP_SHAPE[0] // inshape_factor),
+                        hparams.MODEL.OUT_SHAPE[::-1],
                         Experiment.exp.num_parts))
             self.early_predictor = nn.ModuleList(early_predictor)
         else:
@@ -614,13 +610,13 @@ class Controller(nn.Module):
 class MainModel(nn.Module):
     def __init__(self, output_shape, num_points, pretrained=None):
         super(MainModel, self).__init__()
-        if hparams["model"]["resnet"] == 18:
+        if hparams.MODEL.RESNET == 18:
             self.resnet = resnet18(pretrained=pretrained)
             self.global_net = GlobalNet([512, 256, 128, 64], output_shape, num_points)
-        elif hparams["model"]["resnet"] == 50:
+        elif hparams.MODEL.RESNET == 50:
             self.resnet = resnet50(pretrained=pretrained)
             self.global_net = GlobalNet([2048, 1024, 512, 256], output_shape, num_points)
-        elif hparams["model"]["resnet"] == 101:
+        elif hparams.MODEL.RESNET == 101:
             self.resnet = resnet101(pretrained=pretrained)
             self.global_net = GlobalNet([2048, 1024, 512, 256], output_shape, num_points)
         else:
@@ -656,7 +652,7 @@ class Predictor(nn.Module):
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
         layers.append(nn.Conv2d(num_class, num_class,
             kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
-        if hparams["learnable_offset"]["use_in_predictor"]:
+        if hparams.LEARNABLE_OFFSET.USE_IN_PREDICTOR:
             layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256))
 
         return nn.Sequential(*layers)
@@ -709,13 +705,13 @@ class Attention(nn.Module):
         if space_norm:
             self.atten = nn.Sequential(
                 nn.Conv2d(self.total_inplanes, outplanes, 1, stride=stride),
-                nn.BatchNorm2d(outplanes, momentum=hparams["learnable_offset"]["bn_momentum"]),
+                nn.BatchNorm2d(outplanes, momentum=hparams.LEARNABLE_OFFSET.BN_MOMENTUM),
                 nn.Softplus(),
                 SpaceNormalization())
         else:
             self.atten = nn.Sequential(
                 nn.Conv2d(self.total_inplanes, outplanes, 1, stride=stride),
-                nn.BatchNorm2d(outplanes, momentum=hparams["learnable_offset"]["bn_momentum"]),
+                nn.BatchNorm2d(outplanes, momentum=hparams.LEARNABLE_OFFSET.BN_MOMENTUM),
                 nn.Sigmoid())
 
     def forward(self, x):
@@ -732,9 +728,9 @@ class OffsetBlock(nn.Module):
     _counter = 0
     def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1):
         super(OffsetBlock, self).__init__()
-        LO_interpolate_kernel_type = hparams["learnable_offset"]["interpolate_kernel_type"]
+        LO_interpolate_kernel_type = hparams.LEARNABLE_OFFSET.INTERPOLATE_KERNEL_TYPE
         if LO_interpolate_kernel_type == "gaussian":
-            LO_sigma = hparams["learnable_offset"]["interpolate_gaussian_sigma"]
+            LO_sigma = hparams.LEARNABLE_OFFSET.INTERPOLATE_GAUSSIAN_SIGMA
             LO_kernel_size = int(LO_sigma * 3) * 2 + 1
         else:
             LO_sigma = 0.
@@ -751,9 +747,9 @@ class OffsetBlock(nn.Module):
             self.out_height, self.out_width,
             1,
             self.displace_planes,
-            learnable_offset=hparams["model"]["detail"]["displace_learnable_offset"],
-            disable_displace=hparams["model"]["detail"]["disable_displace"],
-            random_offset_init=hparams["model"]["detail"]["random_offset_init"],
+            learnable_offset=hparams.MODEL.DETAIL.DISPLACE_LEARNABLE_OFFSET,
+            disable_displace=hparams.MODEL.DETAIL.DISABLE_DISPLACE,
+            random_offset_init=hparams.MODEL.DETAIL.RANDOM_OFFSET_INIT,
             use_origin=True,
             actual_stride=1,
             displace_size=(1, 1),
@@ -761,23 +757,23 @@ class OffsetBlock(nn.Module):
             LO_kernel_size=LO_kernel_size,
             LO_sigma=LO_sigma,
             LO_balance_grad=False,
-            free_offset_per_init_pos=int(self.displace_planes // hparams["learnable_offset"]["bind_chan"]),
-            dconv_for_LO_stride=hparams["learnable_offset"]["dconv_for_LO_stride"],
-            regress_offset=hparams["learnable_offset"]["regress_offset"],
-            LO_half_reversed_offset=hparams["learnable_offset"]["half_reversed_offset"],
-            previous_dischan=Experiment.exp.displace_mods[-1] if hparams["learnable_offset"]["reuse_offset"] and len(Experiment.exp.displace_mods) > 0 else None)
+            free_offset_per_init_pos=int(self.displace_planes // hparams.LEARNABLE_OFFSET.BIND_CHAN),
+            dconv_for_LO_stride=hparams.LEARNABLE_OFFSET.DCONV_FOR_LO_STRIDE,
+            regress_offset=hparams.LEARNABLE_OFFSET.REGRESS_OFFSET,
+            LO_half_reversed_offset=hparams.LEARNABLE_OFFSET.HALF_REVERSED_OFFSET,
+            previous_dischan=Experiment.exp.displace_mods[-1] if hparams.LEARNABLE_OFFSET.REUSE_OFFSET and len(Experiment.exp.displace_mods) > 0 else None)
         Experiment.exp.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
         self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
-        if hparams["learnable_offset"]["enable_atten"]:
+        if hparams.LEARNABLE_OFFSET.ENABLE_ATTEN:
             self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=True, stride=stride)
         else:
             self.atten_displace = None
-        if hparams["learnable_offset"]["enable_mask"]:
+        if hparams.LEARNABLE_OFFSET.ENABLE_MASK:
             self.atten_post = Attention(0, self.outplanes, input_shape=(self.out_height, self.out_width), bias_planes=inplanes // 4, bias_factor=2, space_norm=False)
         else:
             self.atten_post = None
-        self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams["learnable_offset"]["bn_momentum"])
+        self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.LEARNABLE_OFFSET.BN_MOMENTUM)
         self.relu = nn.ReLU(inplace=True)
         if stride > 1 or inplanes != outplanes:
             self.downsample = nn.Conv2d(self.inplanes, self.outplanes,
@@ -789,7 +785,7 @@ class OffsetBlock(nn.Module):
         if config.check:
             assert x.size(2) == self.height and x.size(3) == self.width
 
-        if globalvars.progress["step"] < hparams["learnable_offset"]["train_min_step"]:
+        if globalvars.progress["step"] < hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP:
             return x
 
         out_pre = self.pre_offset(x)
@@ -844,7 +840,7 @@ class ConvBlockWithAtten(nn.Module):
         self.post_poffset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
         self.atten_pdisplace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=True, stride=stride)
         self.pdisplace = nn.Conv2d(self.displace_planes, self.displace_planes, (3, 3), padding=(1, 1))
-        self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams["learnable_offset"]["bn_momentum"])
+        self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.LEARNABLE_OFFSET.BN_MOMENTUM)
         self.relu = nn.ReLU(inplace=True)
         if stride > 1 or inplanes != outplanes:
             self.downsample = nn.Conv2d(self.inplanes, self.outplanes,
@@ -878,13 +874,13 @@ class Bottleneck(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams["model"]["detail"]["enable_offset_block"]:
+        if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK:
             self.offset_block = OffsetBlock(
-                hparams["model"]["inp_shape"][1] // self.inshape_factor,
-                hparams["model"]["inp_shape"][0] // self.inshape_factor,
+                hparams.MODEL.INP_SHAPE[1] // self.inshape_factor,
+                hparams.MODEL.INP_SHAPE[0] // self.inshape_factor,
                 self.inplanes,
                 self.inplanes,
-                int(self.inplanes * hparams["learnable_offset"]["expand_chan_ratio"][OffsetBlock._counter]))
+                int(self.inplanes * hparams.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter]))
             OffsetBlock._counter += 1
         else:
             self.offset_block = None
@@ -937,13 +933,13 @@ class BasicBlock(nn.Module):
         self.res_index = res_index
         self.block_index = block_index
 
-        if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams["model"]["detail"]["enable_offset_block"]:
+        if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK:
             self.offset_block = OffsetBlock(
-                hparams["model"]["inp_shape"][1] // self.inshape_factor,
-                hparams["model"]["inp_shape"][0] // self.inshape_factor,
+                hparams.MODEL.INP_SHAPE[1] // self.inshape_factor,
+                hparams.MODEL.INP_SHAPE[0] // self.inshape_factor,
                 self.inplanes,
                 self.inplanes,
-                int(self.inplanes * hparams["learnable_offset"]["expand_chan_ratio"][OffsetBlock._counter]))
+                int(self.inplanes * hparams.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter]))
             OffsetBlock._counter += 1
         else:
             self.offset_block = None
@@ -1041,15 +1037,15 @@ class ResNet(nn.Module):
 
         # TODO:
         x1 = self.layer1(x)
-        if hparams["model"]["detail"]["early_predictor"]:
+        if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             Experiment.exp.pre_early_predictor_outs[x.device].append(x1)
         if x1 is not None:
             x2 = self.layer2(x1)
-            if hparams["model"]["detail"]["early_predictor"]:
+            if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
                 Experiment.exp.pre_early_predictor_outs[x.device].append(x2)
         if x2 is not None:
             x3 = self.layer3(x2)
-            if hparams["model"]["detail"]["early_predictor"]:
+            if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
                 Experiment.exp.pre_early_predictor_outs[x.device].append(x3)
         if x3 is not None:
             x4 = self.layer4(x3)
@@ -1151,7 +1147,7 @@ class GlobalNet(nn.Module):
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
         layers.append(nn.Conv2d(num_class, num_class,
             kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
-        if hparams["learnable_offset"]["use_in_predictor"]:
+        if hparams.LEARNABLE_OFFSET.USE_IN_PREDICTOR:
             layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256))
 
         return nn.Sequential(*layers)

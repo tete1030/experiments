@@ -9,8 +9,8 @@ from scipy.stats import truncnorm
 import torch
 import torch.utils.data as data
 
-from pose.utils.imutils import HeatmapGenerator
-from pose.utils.transforms import get_transform, transform, fliplr_pts
+from lib.utils.imutils import HeatmapGenerator
+from lib.utils.transforms import get_transform, transform, fliplr_pts
 
 FLIP_INDEX = [5, 4, 3, 2, 1, 0, 6, 7, 8, 9, 15, 14, 13, 12, 11, 10]
 

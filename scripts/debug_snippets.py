@@ -1,9 +1,9 @@
 %run -d start.py resume stretch -r checkpoint_14.pth.tar
 break experiments/stretch.py:153
 
-import pose.utils.imutils
-reload(pose.utils.imutils)
-from pose.utils.imutils import show_heatmap, batch_resize
+import lib.utils.imutils
+reload(lib.utils.imutils)
+from lib.utils.imutils import show_heatmap, batch_resize
 
 fig, axes = show_heatmap(img, n_rows=3, n_cols=4, transpose=(0,2,3,1), mean=self.train_dataset.mean, show=False)
 fig, axes = show_heatmap(batch_resize(mask, (256, 256)).reshape(-1, 256, 256), fig=fig, axes=axes, v_min=0, v_max=1, alpha=0.5, show=True)

@@ -3,7 +3,7 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from pose.models.lacorr2d import LocalAutoCorr2DCUDA, LocalAutoCorr2D, PadInfo
+from lib.models.lacorr2d import LocalAutoCorr2DCUDA, LocalAutoCorr2D, PadInfo
 import argparse
 import datetime
 

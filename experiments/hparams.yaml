@@ -2,15 +2,14 @@ exp:
     name: offset
     id: 98
 
-train:
+iter:
     learning_rate: 5.e-4
     lr_gamma: 0.5
-    epochs: 100
+    num_epoch: 100
     schedule: []
     train_batch: 16
     test_batch: 16
     weight_decay: 0
-    before_epoch: 0
     offset:
         train_min_step: 6543
         lr: 1.e-3

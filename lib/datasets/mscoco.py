@@ -11,8 +11,8 @@ import torch.utils.data as data
 
 import matplotlib.pyplot as plt
 
-from pose.utils.imutils import HeatmapGenerator
-from pose.utils.transforms import fliplr_chwimg, fliplr_pts, get_transform, transform
+from lib.utils.imutils import HeatmapGenerator
+from lib.utils.transforms import fliplr_chwimg, fliplr_pts, get_transform, transform
 from pycocotools.coco import COCO
 
 # FLIP_INDEX is an involution map
