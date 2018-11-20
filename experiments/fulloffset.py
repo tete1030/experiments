@@ -467,8 +467,6 @@ class Experiment(BaseExperiment):
         if config.vis:
             globalvars.cur_img = None
 
-        loss = 0.
-
         mask_notlabeled = (keypoint[:, :, 2] <= 0.1).cuda()
         mask_labeled = (~mask_notlabeled)
         mask_visible = (keypoint[:, :, 2] > 1.1).cuda()
@@ -492,18 +490,7 @@ class Experiment(BaseExperiment):
         else:
             assert False
 
-        for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
-            # if ilabel < len(det_map_gt_cuda) - 1:
-            #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
-            if ilabel < len(det_map_gt_cuda) - 1:
-                loss = loss + ((outv - gtv).pow(2) * masking_early).mean().sqrt()
-            else:
-                loss = loss + ((outv - gtv).pow(2) * masking_final).mean().sqrt()
-
-        if hparams["model"]["detail"]["early_predictor"]:
-            assert len(early_predictor_outputs) == len(hparams["model"]["detail"]["early_predictor_label_index"])
-            for ilabel, outv in enumerate(early_predictor_outputs):
-                loss = loss + ((outv - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][ilabel]]).pow(2) * \
+        loss = ((early_predictor_outputs[0] - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][0]]).pow(2) * \
                     masking_early).mean().sqrt()
 
         epoch_ctx.add_scalar("loss", loss.item())
@@ -512,7 +499,7 @@ class Experiment(BaseExperiment):
             import ipdb; ipdb.set_trace()
 
         if not is_train or config.vis:
-            kp_pred, score = parse_map(output_maps[-1], thres=hparams["model"]["parse_threshold"])
+            kp_pred, score = parse_map(early_predictor_outputs[0], thres=hparams["model"]["parse_threshold"])
             kp_pred_affined = kp_pred.copy()
             for samp_i in range(batch_size):
                 kp_pred_affined[samp_i, :, :2] = kpt_affine(kp_pred_affined[samp_i, :, :2] * FACTOR, np.linalg.pinv(transform_mat[samp_i])[:2])
@@ -606,7 +593,7 @@ class Controller(nn.Module):
         if self.early_predictor:
             pre_early_predictor_outs = Experiment.exp.pre_early_predictor_outs[x.device]
             Experiment.exp.pre_early_predictor_outs[x.device] = list()
-            assert len(pre_early_predictor_outs) == len(self.early_predictor)
+            # assert len(pre_early_predictor_outs) == len(self.early_predictor)
             return out, [self.early_predictor[i](pre_early_predictor_outs[i]) for i in range(len(pre_early_predictor_outs))]
         else:
             return out, None
@@ -628,6 +615,8 @@ class MainModel(nn.Module):
 
     def forward(self, x):
         res_out = self.resnet(x)
+        return None
+
         global_re, global_out = self.global_net(res_out)
         return global_out
 
@@ -1043,6 +1032,7 @@ class ResNet(nn.Module):
         x1 = self.layer1(x)
         if hparams["model"]["detail"]["early_predictor"]:
             Experiment.exp.pre_early_predictor_outs[x.device].append(x1)
+            return None
         if x1 is not None:
             x2 = self.layer2(x1)
             if hparams["model"]["detail"]["early_predictor"]:
