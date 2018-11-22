@@ -1,5 +1,4 @@
 default: &DEFAULT
-    before_epoch: 0
     workers: 16
     debug: false
     profile: false
@@ -7,7 +6,8 @@ default: &DEFAULT
     fast_pass_valid: 0
     handle_sig: true
     evaluate: false
-    checkpoint_dir: 'checkpoint/{exp_name}/{exp_id}'
+    checkpoint_dir_template: 'checkpoint/{exp_name}_{exp_id}/{run_id}'
+    run_dir_template: 'runs/{exp_name}_{exp_id}/{run_id}'
     resume: false
     vis: false
     debug_nan: false
@@ -17,6 +17,9 @@ default: &DEFAULT
     no_optimizer_load: false
     store: false
     check: false
+    ignore_hparams_mismatch: false
+    save_checkpoint: true
+    use_tensorboard: true
 
 profile: &PROFILE
     <<: *DEFAULT

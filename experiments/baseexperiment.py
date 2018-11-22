@@ -142,20 +142,28 @@ class BaseExperiment(object):
         save_checkpoint(checkpoint_dict, checkpoint_full=checkpoint_full, force_replace=True)
 
     def summary_scalar_avg(self, epoch_ctx:EpochContext, epoch:int, step:int, phase=None):
+        try:
+            tb_writer = globalvars.main_context.tb_writer
+        except KeyError:
+            return
         for scalar_name, scalar_value in epoch_ctx.scalar.items():
             if not epoch_ctx.stat_avg[scalar_name]:
                 continue
             if phase is not None:
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), {phase: scalar_value.avg}, step)
+                tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), {phase: scalar_value.avg}, step)
             else:
-                globalvars.tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), scalar_value.avg, step)
+                tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), scalar_value.avg, step)
 
     def summary_scalar(self, epoch_ctx:EpochContext, epoch:int, step:int, phase=None):
+        try:
+            tb_writer = globalvars.main_context.tb_writer
+        except KeyError:
+            return
         for scalar_name, scalar_value in epoch_ctx.scalar.items():
             if phase is not None:
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), {phase: scalar_value.val}, step)
+                tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), {phase: scalar_value.val}, step)
             else:
-                globalvars.tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), scalar_value.val, step)
+                tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), scalar_value.val, step)
             
     def print_iter(self, epoch_ctx:EpochContext, epoch:int, step:int):
         val_list = list()

@@ -9,7 +9,10 @@ import datetime
 import signal
 import re
 import shutil
+import unittest
 from io import StringIO
+from deepdiff import DeepDiff
+from pprint import pprint
 
 def init_matplotlib_backend():
     from utils.log import log_w
@@ -39,42 +42,41 @@ from tensorboardX import SummaryWriter
 from lib.utils.evaluation import AverageMeter
 from utils.miscs import mkdir_p
 from utils.globals import config, hparams, globalvars
-from utils.miscs import ask, is_main_process, wait_key
+from utils.miscs import ask, is_main_process, wait_key, safe_yaml_convert
 from utils.checkpoint import detect_checkpoint
 from utils.log import log_w, log_e, log_q, log_i, log_suc, log_progress
 from utils.train import TrainContext, ValidContext
 from experiments.baseexperiment import BaseExperiment, EpochContext
 
-globalvars.sigint_triggered = False
+globalvars.main_context.sigint_triggered = False
 def enable_sigint_handler():
     ori_sigint_handler = signal.getsignal(signal.SIGINT)
     def sigint_handler(sig, frame):
-        if globalvars.sigint_triggered:
+        if globalvars.main_context.sigint_triggered:
             ori_sigint_handler(sig, frame)
-        globalvars.sigint_triggered = True
+        globalvars.main_context.sigint_triggered = True
         if is_main_process():
             log_i("SIGINT DETECTED")
     signal.signal(signal.SIGINT, sigint_handler)
 
-def safe_yaml_convert(rt_yaml):
-    sio = StringIO()
-    YAML().dump(rt_yaml, sio)
-    return YAML(typ="safe").load(sio.getvalue())
-
-def check_hparams_consistency(old_hparams, new_hparams, ignore_hparams_mismatch=False):
-    if safe_yaml_convert(old_hparams) != safe_yaml_convert(new_hparams):
-        log_w("hparams from config and from checkpoint are not equal")
-        if not ignore_hparams_mismatch:
-            print("In current:")
-            YAML().dump(new_hparams, sys.stdout)
-            print("<<<<\n>>>>\nIn checkpoint:")
-            YAML().dump(old_hparams, sys.stdout)
-            if not ask("Continue?"):
-                return False
-        else:
-            log_i("hparams mismatch ignored")
-
-    return True
+def check_hparams_consistency(checkpoint_dir, new_hparams):
+    # Check hparams consistency
+    old_hparams_file = os.path.join(checkpoint_dir, "hparams.yaml")
+    if os.path.isfile(old_hparams_file):
+        with open(old_hparams_file, "r") as f:
+            old_hparams = YAML().load(f)
+        ddiff = DeepDiff(safe_yaml_convert(old_hparams), safe_yaml_convert(new_hparams))
+        if ddiff:
+            log_w("hparams are different:")
+            if not config.ignore_hparams_mismatch:
+                pprint(ddiff)
+                if not ask("Continue loading?"):
+                    log_q("Exit due to mismatched hparams")
+                    sys.exit(0)
+            else:
+                log_i("hparams mismatch ignored")
+    else:
+        log_w("No hparams detected in checkpoint folder {}".format(checkpoint_dir))
 
 def override_hparams(_hparams, override):
     def set_hierarchic_attr(var, var_name_hierarchic, var_value):
@@ -84,11 +86,6 @@ def override_hparams(_hparams, override):
             var[var_name_hierarchic[0]] = var_value
     for var_name, var_value in override:
         set_hierarchic_attr(_hparams, var_name.split("."), eval(var_value))
-
-def get_hparams(exp_name):
-    hp_file="experiments/{exp_name}/hparams.yaml".format(exp_name=exp_name)
-    with open(hp_file, "r") as f:
-        return YAML().load(f)
 
 def check_future_checkpoint(checkpoint_folder, epoch_future_start):
     # Check if checkpoints of following epochs exist
@@ -112,120 +109,150 @@ def check_future_checkpoint(checkpoint_folder, epoch_future_start):
                 os.remove(os.path.join(checkpoint_folder, fcp))
     return True
 
-def init_config(conf_name, exp_name, exp_id, config_override):
+def init_hparams(exp_module_name, hparams_override):
+    hp_file="experiments/{}/hparams.yaml".format(exp_module_name)
+    with open(hp_file, "r") as f:
+        loaded_hparams = YAML().load(f)
+    # Override config from command line
+    if hparams_override is not None:
+        override_hparams(loaded_hparams, hparams_override)
+    globalvars.main_context.loaded_hparams = loaded_hparams
+    hparams.update(safe_yaml_convert(loaded_hparams))
+    return loaded_hparams
+
+def init_config(conf_name, config_override):
     with open("experiments/config.yaml", "r") as f:
         conf = YAML(typ="safe").load(f)
     conf_data = conf[conf_name]
     config.update(conf_data.items())
-    # Substitude var in configs
-    config.checkpoint_dir = config.checkpoint_dir.format(**{"exp_name": exp_name, "exp_id": hparams.EXP.ID})
+
     if config_override:
         config.update(dict(map(lambda x: (x[0], eval(str(x[1]))), config_override)))
 
-def init(args, unknown_args):
-    exp_name = args.EXP
-    loaded_hparams = get_hparams(exp_name)
-    # Override config from command line
-    if args.override is not None:
-        override_hparams(loaded_hparams, args.override)
-    hparams.update(safe_yaml_convert(loaded_hparams))
+def init_run(exp_name, exp_id, run_id):
+    if run_id is None:
+        run_id = datetime.datetime.now().strftime("%b%d_%H%M%S")
+    else:
+        run_id = run_id
 
-    init_config(args.CONF, hparams.EXP.NAME, hparams.EXP.ID, args.config)
+    checkpoint_dir = config.checkpoint_dir_template.format(
+        exp_name=exp_name,
+        exp_id=exp_id,
+        run_id=run_id)
+    run_dir = config.run_dir_template.format(
+        exp_name=exp_name,
+        exp_id=exp_id,
+        run_id=run_id)
 
-    assert exp_name == hparams.EXP.NAME
-    before_epoch = config.before_epoch
+    globalvars.main_context.run_id = run_id
+    globalvars.main_context.checkpoint_dir = checkpoint_dir
+    globalvars.main_context.run_dir = run_dir       
+    return run_id, checkpoint_dir, run_dir
 
+def prepare_checkpoint_dir(checkpoint_dir):
     # Check if checkpoint existed
-    if config.resume and detect_checkpoint(checkpoint_folder=config.checkpoint_dir):
-        log_w("Exist files in {}".format(config.checkpoint_dir))
-        if not ask("Do you want to delete ALL files in {}?".format(config.checkpoint_dir),
+    if not config.resume and detect_checkpoint(checkpoint_folder=checkpoint_dir):
+        log_w("Exist files in {}".format(checkpoint_dir))
+        if not ask("Do you want to delete ALL files in {}?".format(checkpoint_dir),
                    posstr="yes", negstr="n"):
             log_q("Will not delete")
             sys.exit(0)
         else:
-            log_i("Deleting " + config.checkpoint_dir)
-            shutil.rmtree(config.checkpoint_dir)
+            log_i("Deleting " + checkpoint_dir)
+            shutil.rmtree(checkpoint_dir)
 
-    if not os.path.isdir(config.checkpoint_dir):
-        mkdir_p(config.checkpoint_dir)
+    if not os.path.isdir(checkpoint_dir):
+        mkdir_p(checkpoint_dir)
 
+def init_exp(exp_module_name):
     # Create experiment
     log_progress("Creating model")
-
-    exp_module = importlib.import_module("experiments." + exp_name)
-    assert issubclass(exp_module.Experiment, BaseExperiment), exp_name + ".Experiment is not a subclass of BaseExperiment"
+    exp_module = importlib.import_module("experiments." + exp_module_name)
+    assert issubclass(exp_module.Experiment, BaseExperiment), exp_module_name + ".Experiment is not a subclass of BaseExperiment"
     exp = exp_module.Experiment()
+    globalvars.main_context.exp = exp
+    globalvars.main_context.num_train_iters = len(exp.train_loader)
+    return exp
+
+def init_tensorboard(run_dir, purge_step=None):
+    log_i("Run dir: {}".format(run_dir))
+    if purge_step is not None:
+        if not os.path.isdir(run_dir):
+            log_e("Run not found")
+            sys.exit(1)
+        log_w("Will purge current run from step {}".format(purge_step))
+        if not ask("Confirm?", posstr="yes", negstr="n"):
+            log_q("No purging")
+            sys.exit(0)
+        globalvars.main_context.tb_writer = SummaryWriter(log_dir=run_dir, purge_step=purge_step)
+    else:
+        globalvars.main_context.tb_writer = SummaryWriter(log_dir=run_dir)
+        wait_key()
+    return globalvars.main_context.tb_writer
+
+def init(args, unknown_args):
+    exp_module_name = args.EXP
+    
+    init_hparams(exp_module_name, args.override)
+    init_config(args.CONF, args.config)
+    _, checkpoint_dir, _ = init_run(exp_name=hparams.EXP.NAME, exp_id=hparams.EXP.ID, run_id=args.run_id)
+
+    exp = init_exp(exp_module_name=exp_module_name)
 
     return exp
+
+def resume_checkpoint(exp, checkpoint_dir, resume_file):
+    # Load checkpoint
+    if resume_file is None:
+        log_e("Please specify resume_file in the argumen")
+        sys.exit(1)
+
+    resume_full = os.path.join(checkpoint_dir, resume_file)
+    if not os.path.isfile(resume_full):
+        log_e("No checkpoint found at '{}'".format(checkpoint_dir))
+        sys.exit(1)
+
+    log_progress("Loading checkpoint '{}'".format(resume_full))
+    before_epoch = exp.load_checkpoint(resume_full,
+        no_strict_model_load=config.no_strict_model_load,
+        no_criterion_load=config.no_criterion_load,
+        no_optimizer_load=config.no_optimizer_load)
+
+    if before_epoch is None:
+        log_q("Failed loading checkpoint")
+        sys.exit(1)
+
+    log_progress("Loaded checkpoint (epoch {})".format(before_epoch))
+
+    if not config.evaluate:
+        check_future_checkpoint(checkpoint_dir, before_epoch + 1)
+    
+    return before_epoch
+
+def dump_hparams(checkpoint_dir, loaded_hparams):
+    hparams_cp_file = os.path.join(checkpoint_dir, "hparams.yaml")
+    with open(hparams_cp_file, "w") as f:
+        YAML().dump(loaded_hparams, f)
 
 def main(args, unknown_args):
     exp = init(args, unknown_args)
 
-    if config.resume:
-        hparams_cp_file = os.path.join(config.checkpoint_dir, "hparams.yaml")
-        with open(hparams_cp_file, "w") as f:
-            YAML().dump(loaded_hparams, f)
+    prepare_checkpoint_dir(checkpoint_dir=globalvars.main_context.checkpoint_dir)
+
+    if not config.resume:
+        dump_hparams(globalvars.main_context.checkpoint_dir, globalvars.main_context.loaded_hparams)
+        before_epoch = 0
     else:
-        # Load checkpoint
-        if args.resume_file is None:
-            log_e("Please specify resume_file in the argumen")
-            sys.exit(1)
+        check_hparams_consistency(globalvars.main_context.checkpoint_dir, globalvars.main_context.loaded_hparams)
+        before_epoch = resume_checkpoint(exp, globalvars.main_context.checkpoint_dir, args.resume_file)
 
-        resume_full = os.path.join(config.checkpoint_dir, args.resume_file)
-        if not os.path.isfile(resume_full):
-            log_e("No checkpoint found at '{}'".format(config.checkpoint_dir))
-            sys.exit(1)
-
-        # Check hparams consistency
-        old_hparams_file = os.path.join(config.checkpoint_dir, "hparams.yaml")
-        if os.path.isfile(old_hparams_file):
-            with open(old_hparams_file, "r") as f:
-                old_hparams = YAML().load(f)
-            if not check_hparams_consistency(old_hparams, loaded_hparams, ignore_hparams_mismatch=args.ignore_hparams_mismatch):
-                log_q("hparams mismatch")
-                sys.exit(0)
+    assert not (config.evaluate and args.run_id)
+    if config.use_tensorboard:
+        if args.run_id:
+            purge_step = before_epoch * globalvars.main_context.num_train_iters
         else:
-            log_w("No hparams detected in resume folder {}".format(config.checkpoint_dir))
-
-        log_progress("Loading checkpoint '{}'".format(resume_full))
-        before_epoch = exp.load_checkpoint(resume_full,
-                                           no_strict_model_load=config.no_strict_model_load,
-                                           no_criterion_load=config.no_criterion_load,
-                                           no_optimizer_load=config.no_optimizer_load)
-        if before_epoch is None:
-            log_q("Failed loading checkpoint")
-            sys.exit(1)
-
-        log_progress("Loaded checkpoint (epoch {})".format(before_epoch))
-
-        if not config.evaluate:
-            check_future_checkpoint(config.checkpoint_dir, before_epoch + 1)
-
-    assert not (config.evaluate and args.run)
-
-    if args.run is not None:
-        run_name = args.run
-        run_path = os.path.join("runs", run_name)
-        if not os.path.isdir(run_path):
-            log_e("Run not found")
-            sys.exit(1)
-        purge_step = before_epoch * len(exp.train_loader)
-        log_w("Will purge run {} step from {}".format(run_name, purge_step))
-        if not ask("Confirm?", posstr="yes", negstr="n"):
-            log_q("No purging")
-            sys.exit(0)
-        globalvars.tb_writer = SummaryWriter(log_dir=run_path, purge_step=purge_step)
-    else:
-        run_name = "{exp_name}_{exp_id}/{datetime}".format(
-            exp_name=exp_name,
-            exp_id=hparams.EXP.ID,
-            datetime=datetime.datetime.now().strftime("%b%d_%H-%M-%S"))
-        run_path = "runs/" + run_name
-        globalvars.tb_writer = SummaryWriter(log_dir=run_path)
-
-    log_i("Run name: {}".format(run_name))
-    if not config.evaluate:
-        wait_key()
+            purge_step = None
+        init_tensorboard(run_dir=globalvars.main_context.run_dir, purge_step=purge_step)
 
     if config.handle_sig:
         enable_sigint_handler()
@@ -234,8 +261,8 @@ def main(args, unknown_args):
         print()
         log_i("Evaluation-only mode")
         # Set current state to the last iteration of the last epoch
-        exp.epoch_start(before_epoch, len(exp.train_loader) * (before_epoch - 1), True)
-        cur_step = len(exp.train_loader) * before_epoch - 1
+        exp.epoch_start(before_epoch, globalvars.main_context.num_train_iters * (before_epoch - 1), True)
+        cur_step = globalvars.main_context.num_train_iters * before_epoch - 1
         validate(exp, before_epoch, cur_step, call_store=True)
         exp.epoch_end(before_epoch, cur_step, True)
     else:
@@ -245,24 +272,24 @@ def main(args, unknown_args):
     if not config.evaluate:
         if args.run is None and \
                 not ask("Save this run?", posstr="y", negstr="delete", ansretry=False, ansdefault=True, timeout_sec=60) and \
-                input("Input this run name {} to delete: ".format(run_name)) == run_name:
+                input("Input this run name {} to delete: ".format(globalvars.main_context.run_name)) == globalvars.main_context.run_name:
             log_i("Deleting this run")
-            shutil.rmtree(run_path)
+            shutil.rmtree(globalvars.main_context.run_path)
         else:
             log_i("Run saved")
     else:
         log_i("Deleting this run in evaluate-only mode")
-        shutil.rmtree(run_path)
+        shutil.rmtree(globalvars.main_context.run_path)
 
 def train_eval_loop(exp, start_epoch, stop_epoch):
-    cur_step = len(exp.train_loader) * (start_epoch - 1)
+    cur_step = globalvars.main_context.num_train_iters * (start_epoch - 1)
     for epoch in range(start_epoch, stop_epoch):
         exp.epoch_start(epoch, cur_step, False)
         print()
         log_progress("Epoch: %d | LR: %.8f" % (epoch, exp.cur_lr))
         log_progress("Training:")
 
-        if globalvars.sigint_triggered:
+        if globalvars.main_context.sigint_triggered:
             return False
 
         # train for one epoch
@@ -270,25 +297,26 @@ def train_eval_loop(exp, start_epoch, stop_epoch):
             print()
             log_progress("Validation:")
             validate(exp, epoch, cur_pause_step, call_store=is_final)
-            if globalvars.sigint_triggered:
+            if globalvars.main_context.sigint_triggered:
                 break
             if not is_final:
                 print()
                 log_progress("Training:")
 
-        if globalvars.sigint_triggered:
+        if globalvars.main_context.sigint_triggered:
             return False
 
-        cur_step += len(exp.train_loader)
+        cur_step += globalvars.main_context.num_train_iters
         exp.epoch_end(epoch, cur_step, False)
 
-        if globalvars.sigint_triggered:
+        if globalvars.main_context.sigint_triggered:
             return False
 
         cp_filename = "checkpoint_{}.pth.tar".format(epoch)
-        exp.save_checkpoint(os.path.join(config.checkpoint_dir, cp_filename), epoch)
+        if config.save_checkpoint:
+            exp.save_checkpoint(os.path.join(globalvars.main_context.checkpoint_dir, cp_filename), epoch)
 
-        if globalvars.sigint_triggered:
+        if globalvars.main_context.sigint_triggered:
             return False
 
     return True
@@ -301,7 +329,7 @@ def train(exp:BaseExperiment, epoch:int, cur_step:int, pause_interval:int=0):
     end = time.time()
     start_time = time.time()
 
-    iter_length = len(exp.train_loader)
+    iter_length = globalvars.main_context.num_train_iters
 
     with torch.autograd.enable_grad(), TrainContext(exp.model):
         for i, batch in enumerate(exp.train_loader):
@@ -340,7 +368,7 @@ def train(exp:BaseExperiment, epoch:int, cur_step:int, pause_interval:int=0):
             print(loginfo, end="")
             exp.print_iter(epoch_ctx, epoch, cur_step)
 
-            if globalvars.sigint_triggered:
+            if globalvars.main_context.sigint_triggered:
                 break
 
             if config.fast_pass_train > 0 and (i+1) >= config.fast_pass_train:
@@ -395,7 +423,7 @@ def validate(exp:BaseExperiment, epoch:int, cur_step:int, call_store:bool) -> No
             print(loginfo, end="")
             exp.print_iter(epoch_ctx, epoch, cur_step)
 
-            if globalvars.sigint_triggered:
+            if globalvars.main_context.sigint_triggered:
                 break
 
             if config.fast_pass_valid > 0 and (i+1) >= config.fast_pass_valid:
@@ -404,8 +432,11 @@ def validate(exp:BaseExperiment, epoch:int, cur_step:int, call_store:bool) -> No
 
             end = time.time()
 
-    exp.summary_scalar_avg(epoch_ctx, epoch, cur_step, phase="valid")
+    if config.use_tensorboard:
+        exp.summary_scalar_avg(epoch_ctx, epoch, cur_step, phase="valid")
+
     exp.evaluate(epoch_ctx, epoch, cur_step)
+
     if call_store:
         exp.process_stored(epoch_ctx, epoch, cur_step)
 
@@ -413,10 +444,9 @@ def get_args():
     argp = argparse.ArgumentParser()
     argp.add_argument("CONF", type=str)
     argp.add_argument("EXP", type=str)
-    argp.add_argument("-r", dest="resume_file", type=str)
+    argp.add_argument("-c", "--resume-file", type=str)
+    argp.add_argument("-r", "--run-id", type=str)
     argp.add_argument("--ptvsd", action="store_true")
-    argp.add_argument("--ignore-hparams-mismatch", action="store_true")
-    argp.add_argument("--run", type=str)
     argp.add_argument("--override", nargs=2, metavar=("var", "value"), action="append")
     argp.add_argument("--config", nargs=2, metavar=("var", "value"), action="append")
     return argp.parse_known_args()
@@ -427,10 +457,9 @@ if __name__ == "__main__":
         import ptvsd
         import platform
         ptvsd.enable_attach("mydebug", address = ("0.0.0.0", 23456))
-        if platform.node() == "lhtserver-2":
-            print("Waiting for debugger...")
-            ptvsd.wait_for_attach()
-            print("Debugger attached!")
+        print("Waiting for debugger...")
+        ptvsd.wait_for_attach()
+        print("Debugger attached!")
 
     # For now we do not need extra args
     assert len(_unknown_args) == 0, "Unknown args: " + str(_unknown_args)

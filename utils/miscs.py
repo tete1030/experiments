@@ -103,3 +103,7 @@ def mkdir_p(dir_path):
         if e.errno != errno.EEXIST:
             raise
 
+def safe_yaml_convert(rt_yaml):
+    sio = StringIO()
+    YAML().dump(rt_yaml, sio)
+    return YAML(typ="safe").load(sio.getvalue())

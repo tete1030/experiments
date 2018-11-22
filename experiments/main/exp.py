@@ -19,11 +19,12 @@ from lib.models.common import StrictNaNReLU
 from lib.models.displacechan import DisplaceChannel
 from lib.utils.transforms import fliplr_pts
 from lib.utils.evaluation import AverageMeter, CycleAverageMeter, accuracy
+from lib.utils.lambdalayer import Lambda
+from lib.utils.imutils import batch_resize
 from utils.globals import config, hparams, globalvars
 from utils.log import log_i, log_w, log_progress
 from utils.train import adjust_learning_rate, TrainContext, ValidContext
 from utils.checkpoint import save_pred, load_pretrained_loose, save_checkpoint, RejectLoadError
-from lib.utils.lambdalayer import Lambda
 from experiments.baseexperiment import BaseExperiment, EpochContext
 
 FACTOR = 4
@@ -226,53 +227,15 @@ class Experiment(BaseExperiment):
         }
         save_checkpoint(checkpoint_dict, checkpoint_full=checkpoint_full, force_replace=True)
 
-    @staticmethod
-    def _summarize_tensorboard(eval_result, params, step):
-        def _summarize(ap, iou_thr=None, area_rng="all", max_dets=100, title=None):
-            type_str = "AP" if ap==1 else "AR"
-            if title is None:
-                iou_str = "{:0.2f}-{:0.2f}".format(params.iouThrs[0], params.iouThrs[-1]) \
-                    if iou_thr is None else "{:0.2f}".format(iou_thr)
-                title = "{:<9}_{:>6s}_{:>3d}".format(iou_str, area_rng, max_dets)
-
-            aind = [i for i, aRng in enumerate(params.areaRngLbl) if aRng == area_rng]
-            mind = [i for i, mDet in enumerate(params.maxDets) if mDet == max_dets]
-            if ap == 1:
-                # dimension of precision: [TxRxKxAxM]
-                s = eval_result["precision"]
-                # IoU
-                if iou_thr is not None:
-                    t = np.where(iou_thr == params.iouThrs)[0]
-                    s = s[t]
-                s = s[:,:,:,aind,mind]
-            else:
-                # dimension of recall: [TxKxAxM]
-                s = eval_result["recall"]
-                if iou_thr is not None:
-                    t = np.where(iou_thr == params.iouThrs)[0]
-                    s = s[t]
-                s = s[:,:,aind,mind]
-            if len(s[s>-1])==0:
-                mean_s = -1
-            else:
-                mean_s = np.mean(s[s>-1])
-            globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, type_str), {title: mean_s}, step)
-            return mean_s
-
-        _summarize(1, title="avg", max_dets=20)
-        _summarize(1, title="i50", max_dets=20, iou_thr=.5)
-        _summarize(1, title="i75", max_dets=20, iou_thr=.75)
-        _summarize(1, title="med", max_dets=20, area_rng="medium")
-        _summarize(1, title="lar", max_dets=20, area_rng="large")
-        _summarize(0, title="avg", max_dets=20)
-        _summarize(0, title="i50", max_dets=20, iou_thr=.5)
-        _summarize(0, title="i75", max_dets=20, iou_thr=.75)
-        _summarize(0, title="med", max_dets=20, area_rng="medium")
-        _summarize(0, title="lar", max_dets=20, area_rng="large")
-
     def evaluate(self, epoch_ctx:EpochContext, epoch, step):
         if "annotates" not in epoch_ctx.stored:
             return
+
+        try:
+            tb_writer = globalvars.main_context.tb_writer
+        except KeyError:
+            tb_writer = None
+
         if self.data_source == "coco":
             annotates = epoch_ctx.stored["annotates"]
             image_ids = annotates["image_index"]
@@ -285,29 +248,38 @@ class Experiment(BaseExperiment):
                 coco_eval.evaluate()
                 coco_eval.accumulate()
 
-                self._summarize_tensorboard(coco_eval.eval, coco_eval.params, step)
                 coco_eval.summarize()
+                stats = coco_eval.stats
             else:
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AP"), {"avg": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AP"), {"i50": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AP"), {"i75": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AP"), {"med": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AP"), {"lar": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AR"), {"avg": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AR"), {"i50": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AR"), {"i75": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AR"), {"med": 0}, step)
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "AR"), {"lar": 0}, step)
-
                 print("No points")
+                stats = np.zeros((10,))
+
+            if tb_writer:
+                stat_typenames = [
+                    ("AP", "avg"),
+                    ("AP", "i50"),
+                    ("AP", "i75"),
+                    ("AP", "med"),
+                    ("AP", "lar"),
+                    ("AR", "avg"),
+                    ("AR", "i50"),
+                    ("AR", "i75"),
+                    ("AR", "med"),
+                    ("AR", "lar")
+                ]
+                for istat, (stat_type, stat_name) in enumerate(stat_typenames):
+                    tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, stat_type), {stat_name: stats[istat]}, step)
+
         elif self.data_source == "mpii":
             annotates = epoch_ctx.stored["annotates"]
             acc = accuracy(annotates["pred"], annotates["gt"], annotates["head_box"])
-            globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh"), {"avg": float(acc[0])}, step)
+            if tb_writer:
+                tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh"), {"avg": float(acc[0])}, step)
             results = list()
             results.append("avg: {:2.2f}".format(float(acc[0]) * 100))
             for i in range(0, acc.size(0)-1):
-                globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh"), {datasets.mpii.PART_LABELS[i]: float(acc[i+1])}, step)
+                if tb_writer:
+                    tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh"), {datasets.mpii.PART_LABELS[i]: float(acc[i+1])}, step)
                 results.append("{}: {:2.2f}".format(datasets.mpii.PART_LABELS[i], float(acc[i+1]) * 100))
             print(" | ".join(results) + "\n")
 
@@ -318,7 +290,7 @@ class Experiment(BaseExperiment):
                     pred_file = "{}_evaluate.npy".format(store_key)
                 else:
                     pred_file = "{}_{}.npy".format(store_key, epoch)
-                save_pred(epoch_ctx.stored[store_key], checkpoint_folder=config.checkpoint_dir, pred_file=pred_file)
+                save_pred(epoch_ctx.stored[store_key], checkpoint_folder=globalvars.main_context.checkpoint_dir, pred_file=pred_file)
 
     def set_offset_learning_rate(self, epoch, step):
         if self.offset_optimizer is None:
@@ -401,7 +373,7 @@ class Experiment(BaseExperiment):
             if dm.LO_active:
                 offset_disabled = False
         if not offset_disabled:
-            torch.save([(dm.get_all_offsets(detach=True) * dm.scale).cpu() for dm in self.displace_mods], os.path.join(config.checkpoint_dir, "offset_{}.pth".format(step)))
+            torch.save([(dm.get_all_offsets(detach=True) * dm.scale).cpu() for dm in self.displace_mods], os.path.join(globalvars.main_context.checkpoint_dir, "offset_{}.pth".format(step)))
 
     def epoch_end(self, epoch, step, evaluate_only):
         if not evaluate_only and not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
@@ -434,7 +406,7 @@ class Experiment(BaseExperiment):
                 self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.scale).cpu())
                 move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
                 move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
-            globalvars.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis"), {"mod": np.mean(move_dis_avg), "mod_cur": np.mean(move_dis)}, progress["step"] + 1)
+            globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis"), {"mod": np.mean(move_dis_avg), "mod_cur": np.mean(move_dis)}, progress["step"] + 1)
 
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and (progress["step"] + 1) % hparams.LEARNABLE_OFFSET.OFFSET_SAVE_INTERVAL == 0:
             self.save_offsets(progress["step"] + 1)
@@ -653,7 +625,7 @@ class Predictor(nn.Module):
         layers.append(nn.Conv2d(num_class, num_class,
             kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
         if hparams.LEARNABLE_OFFSET.USE_IN_PREDICTOR:
-            layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256))
+            layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, num_class, 256))
 
         return nn.Sequential(*layers)
 

@@ -24,3 +24,4 @@ class AttrDict(dict):
 hparams = AttrDict()
 config = AttrDict()
 globalvars = AttrDict()
+globalvars.main_context = AttrDict()
