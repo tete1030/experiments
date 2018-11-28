@@ -4,3 +4,4 @@ munkres>=1.0.12
 ipdb>=0.11
 termcolor>=1.1.0
 cython>=0.29
+deepdiff>=3.3.0

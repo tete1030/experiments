@@ -3,6 +3,11 @@ import sys
 import multiprocessing
 import errno
 import signal
+import copy
+from io import StringIO
+from ruamel.yaml import YAML
+from collections import OrderedDict
+
 if os.name == 'nt':
     import msvcrt
 else:
@@ -103,7 +108,59 @@ def mkdir_p(dir_path):
         if e.errno != errno.EEXIST:
             raise
 
+def dump_yaml(yaml, typ=None, file_stream=None):
+    if file_stream is None:
+        file_stream = StringIO()
+    YAML(typ=typ).dump(yaml, file_stream)
+    return file_stream
+
 def safe_yaml_convert(rt_yaml):
-    sio = StringIO()
-    YAML().dump(rt_yaml, sio)
-    return YAML(typ="safe").load(sio.getvalue())
+    return YAML(typ="safe").load(dump_yaml(rt_yaml).getvalue())
+
+def dict_toupper(olddict):
+    newdict = dict()
+    assert isinstance(olddict, dict)
+    for key, value in olddict.items():
+        assert isinstance(key, str)
+        if isinstance(value, dict):
+            newdict[key.upper()] = dict_toupper(value)
+        else:
+            newdict[key.upper()] = value
+    return newdict
+
+class YAMLScopeError(Exception):
+    pass
+
+class YAMLPathError(YAMLScopeError):
+    pass
+
+class YAMLLeafError(YAMLScopeError):
+    pass
+
+def set_yaml_scope(settings, override_key, override_value, allow_nonexist_leaf=False):
+    def _set_hierarchic_attr(var, var_name_array, var_value):
+        assert isinstance(var, (dict, list)), "Illegal non-leaf YAML object"
+        var_name = var_name_array[0]
+        is_index = False
+        try:
+            var_name = int(var_name)
+            is_index = True
+            assert isinstance(var, list), "Integer key can only be used on list object"
+        except ValueError:
+            pass
+        exist_var_name = bool(var_name in var) if isinstance(var, dict) else bool(-len(var) <= var_name < len(var))
+        if len(var_name_array) > 1:
+            if not exist_var_name:
+                raise YAMLPathError()
+            return _set_hierarchic_attr(var[var_name], var_name_array[1:], var_value)
+        else:
+            if exist_var_name:
+                ori_value = copy.deepcopy(var[var_name])
+            elif is_index or not allow_nonexist_leaf:
+                raise YAMLLeafError()
+            else:
+                ori_value = None
+            var[var_name] = var_value
+            return ori_value
+
+    return _set_hierarchic_attr(settings, override_key.split("."), YAML(typ="safe").load(override_value))

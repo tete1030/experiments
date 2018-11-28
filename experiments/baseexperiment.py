@@ -74,7 +74,7 @@ class BaseExperiment(object):
         self.train_loader = torch.utils.data.DataLoader(
             self.train_dataset,
             collate_fn=self.train_collate_fn,
-            batch_size=hparams.ITER.TRAIN_BATCH,
+            batch_size=hparams.TRAIN.TRAIN_BATCH,
             num_workers=config.workers,
             shuffle=True,
             pin_memory=True,
@@ -84,7 +84,7 @@ class BaseExperiment(object):
         self.val_loader = torch.utils.data.DataLoader(
             self.val_dataset,
             collate_fn=self.valid_collate_fn,
-            batch_size=hparams.ITER.TEST_BATCH,
+            batch_size=hparams.TRAIN.TEST_BATCH,
             num_workers=config.workers,
             shuffle=False,
             pin_memory=True,

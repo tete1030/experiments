@@ -37,6 +37,8 @@ evaluate: &EVALUATE
     <<: *DEFAULT
     resume: true
     evaluate: true
+    use_tensorboard: false
+    save_checkpoint: false
 
 fast: &FAST
     <<: *DEFAULT
@@ -60,9 +62,8 @@ looseresume:
     no_optimizer_load: true
 
 fasteval:
-    <<: *DEFAULT
+    <<: *EVALUATE
+    workers: 0
     fast_pass_train: 3
     fast_pass_valid: 3
-    resume: true
-    evaluate: true
     check: true

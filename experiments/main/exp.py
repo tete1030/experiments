@@ -48,7 +48,7 @@ class Experiment(BaseExperiment):
             self.early_predictors = list()
             self.pre_early_predictor_outs = dict()
 
-        self.data_source = hparams.DATASET.DATA
+        self.data_source = hparams.DATASET.PROFILE
         if self.data_source == "coco":
             self.num_parts = datasets.mscoco.NUM_PARTS
             self.flip_index = datasets.mscoco.FLIP_INDEX
@@ -69,7 +69,7 @@ class Experiment(BaseExperiment):
             BatchNorm2dImpl = nn.BatchNorm2d
 
         self.model = nn.DataParallel(Controller(MainModel(hparams.MODEL.OUT_SHAPE[::-1], self.num_parts, pretrained=pretrained)).cuda())
-        assert OffsetBlock._counter == len(hparams.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO) or not hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK
+        assert OffsetBlock._counter == len(hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO) or not hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK
 
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in self.displace_mods if hasattr(dm, "offset")]))
@@ -88,16 +88,16 @@ class Experiment(BaseExperiment):
 
         self.optimizer = torch.optim.Adam(
             self.normal_parameters,
-            lr=hparams.LEARNING_RATE,
-            weight_decay=hparams.WEIGHT_DECAY)
+            lr=hparams.TRAIN.LEARNING_RATE,
+            weight_decay=hparams.TRAIN.WEIGHT_DECAY)
 
         offset_optimizer_args = []
         if len(self.offset_parameters) > 0:
             offset_optimizer_args.append(
-                {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams.LEARNABLE_OFFSET.LR, "init_lr": hparams.LEARNABLE_OFFSET.LR})
+                {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams.TRAIN.OFFSET.LR, "init_lr": hparams.TRAIN.OFFSET.LR})
         if len(self.offset_regressor_parameters) > 0:
             offset_optimizer_args.append(
-                {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams.LEARNABLE_OFFSET.LR_REGRESSOR, "init_lr": hparams.LEARNABLE_OFFSET.LR_REGRESSOR})
+                {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams.TRAIN.OFFSET.LR_REGRESSOR, "init_lr": hparams.TRAIN.OFFSET.LR_REGRESSOR})
         if len(offset_optimizer_args) > 0:
             self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
         else:
@@ -106,44 +106,44 @@ class Experiment(BaseExperiment):
         if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             self.early_predictor_optimizer = torch.optim.Adam(
                 self.early_predictor_parameters,
-                lr=hparams.LEARNING_RATE,
-                weight_decay=hparams.WEIGHT_DECAY)
+                lr=hparams.TRAIN.LEARNING_RATE,
+                weight_decay=hparams.TRAIN.WEIGHT_DECAY)
         else:
             self.early_predictor_optimizer = None
 
         self.criterion = nn.MSELoss()
         
-        self.cur_lr = hparams.LEARNING_RATE
+        self.cur_lr = hparams.TRAIN.LEARNING_RATE
 
         if self.data_source == "coco":
             self.coco = COCO("data/mscoco/person_keypoints_train2017.json")
             self.train_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
                                                 self.coco,
                                                 "data/mscoco/sp_split_2017.pth",
-                                                "data/mscoco/" + hparams.DATASET.MEAN_STD_FILE,
+                                                "data/mscoco/" + hparams.DATASET["COCO"].MEAN_STD_FILE,
                                                 True,
                                                 img_res=hparams.MODEL.INP_SHAPE,
-                                                ext_border=hparams.DATASET.EXT_BORDER,
+                                                ext_border=hparams.DATASET["COCO"].EXT_BORDER,
                                                 kpmap_res=hparams.MODEL.OUT_SHAPE,
                                                 keypoint_res=hparams.MODEL.OUT_SHAPE,
                                                 kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
-                                                scale_factor=hparams.DATASET.SCALE_FACTOR,
-                                                rot_factor=hparams.DATASET.ROTATE_FACTOR,
-                                                trans_factor=hparams.DATASET.TRANSLATION_FACTOR)
+                                                scale_factor=hparams.DATASET["COCO"].SCALE_FACTOR,
+                                                rot_factor=hparams.DATASET["COCO"].ROTATE_FACTOR,
+                                                trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR)
 
             self.val_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
                                                 self.coco,
                                                 "data/mscoco/sp_split_2017.pth",
-                                                "data/mscoco/" + hparams.DATASET.MEAN_STD_FILE,
+                                                "data/mscoco/" + hparams.DATASET["COCO"].MEAN_STD_FILE,
                                                 False,
                                                 img_res=hparams.MODEL.INP_SHAPE,
-                                                ext_border=hparams.DATASET.EXT_BORDER,
+                                                ext_border=hparams.DATASET["COCO"].EXT_BORDER,
                                                 kpmap_res=hparams.MODEL.OUT_SHAPE,
                                                 keypoint_res=hparams.MODEL.OUT_SHAPE,
                                                 kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
-                                                scale_factor=hparams.DATASET.SCALE_FACTOR,
-                                                rot_factor=hparams.DATASET.ROTATE_FACTOR,
-                                                trans_factor=hparams.DATASET.TRANSLATION_FACTOR)
+                                                scale_factor=hparams.DATASET["COCO"].SCALE_FACTOR,
+                                                rot_factor=hparams.DATASET["COCO"].ROTATE_FACTOR,
+                                                trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR)
             self.train_collate_fn = datasets.COCOSinglePose.collate_function
             self.valid_collate_fn = datasets.COCOSinglePose.collate_function
         elif self.data_source == "mpii":
@@ -156,9 +156,9 @@ class Experiment(BaseExperiment):
                 img_res=hparams.MODEL.INP_SHAPE,
                 kpmap_res=hparams.MODEL.OUT_SHAPE,
                 kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
-                scale_factor=hparams.DATASET.SCALE_FACTOR,
-                rot_factor=hparams.DATASET.ROTATE_FACTOR,
-                trans_factor=hparams.DATASET.MPII.TRANSLATION_FACTOR)
+                scale_factor=hparams.DATASET["MPII"].SCALE_FACTOR,
+                rot_factor=hparams.DATASET["MPII"].ROTATE_FACTOR,
+                trans_factor=hparams.DATASET["MPII"].TRANSLATION_FACTOR)
 
             self.val_dataset = datasets.MPII("data/mpii/images",
                 "data/mpii/mpii_human_pose.json",
@@ -169,9 +169,9 @@ class Experiment(BaseExperiment):
                 img_res=hparams.MODEL.INP_SHAPE,
                 kpmap_res=hparams.MODEL.OUT_SHAPE,
                 kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
-                scale_factor=hparams.DATASET.SCALE_FACTOR,
-                rot_factor=hparams.DATASET.ROTATE_FACTOR,
-                trans_factor=hparams.DATASET.MPII.TRANSLATION_FACTOR)
+                scale_factor=hparams.DATASET["MPII"].SCALE_FACTOR,
+                rot_factor=hparams.DATASET["MPII"].ROTATE_FACTOR,
+                trans_factor=hparams.DATASET["MPII"].TRANSLATION_FACTOR)
             self.train_collate_fn = datasets.MPII.collate_function
             self.valid_collate_fn = datasets.MPII.collate_function
 
@@ -183,7 +183,7 @@ class Experiment(BaseExperiment):
             for dm in self.displace_mods:
                 if dm.offset.size(0) == 0:
                     continue
-                self.move_dis_avgmeter.append(Experiment.OffsetCycleAverageMeter(hparams.LEARNABLE_OFFSET.MOVE_AVERAGE_CYCLE, (dm.offset.data * dm.scale).cpu()))
+                self.move_dis_avgmeter.append(Experiment.OffsetCycleAverageMeter(hparams.LOG.MOVE_AVERAGE_CYCLE, (dm.offset.data * dm.scale).cpu()))
         else:
             self.move_dis_avgmeter = None
 
@@ -296,14 +296,14 @@ class Experiment(BaseExperiment):
         if self.offset_optimizer is None:
             return
 
-        if step >= hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP and hparams.LEARNABLE_OFFSET.LR_DECAY_STEP > 0 and hparams.LEARNABLE_OFFSET.LR_GAMMA > 0:
-            step_offset = max(0, step - hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP)
+        if step >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and hparams.TRAIN.OFFSET.LR_DECAY_STEP > 0 and hparams.TRAIN.OFFSET.LR_GAMMA > 0:
+            step_offset = max(0, step - hparams.TRAIN.OFFSET.TRAIN_MIN_STEP)
         else:
             step_offset = -1
 
         for param_group in self.offset_optimizer.param_groups:
             if step_offset >= 0:
-                cur_lr_offset = param_group["init_lr"] * (hparams.LEARNABLE_OFFSET.LR_GAMMA ** (float(step_offset) / hparams.LEARNABLE_OFFSET.LR_DECAY_STEP))
+                cur_lr_offset = param_group["init_lr"] * (hparams.TRAIN.OFFSET.LR_GAMMA ** (float(step_offset) / hparams.TRAIN.OFFSET.LR_DECAY_STEP))
                 log_i("Set {} to {:.5f}".format(param_group["para_name"], cur_lr_offset))
             else:
                 cur_lr_offset = param_group["init_lr"]
@@ -312,9 +312,9 @@ class Experiment(BaseExperiment):
     def set_offset_learning_para(self, epoch, step):
         for dm in self.displace_mods:
             if dm.LO_interpolate_kernel_type == "gaussian" and dm.learnable_offset and dm.LO_active:
-                if step >= hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP and hparams.LEARNABLE_OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_STEP > 0 and hparams.LEARNABLE_OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_RATE > 0:
-                    step_offset = max(0, step - hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP)
-                    LO_sigma_new = float(dm.LO_sigma_init) * (hparams.LEARNABLE_OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_RATE ** (float(step_offset) / hparams.LEARNABLE_OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_STEP))
+                if step >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and hparams.TRAIN.OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_STEP > 0 and hparams.TRAIN.OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_RATE > 0:
+                    step_offset = max(0, step - hparams.TRAIN.OFFSET.TRAIN_MIN_STEP)
+                    LO_sigma_new = float(dm.LO_sigma_init) * (hparams.TRAIN.OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_RATE ** (float(step_offset) / hparams.TRAIN.OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_STEP))
                     LO_kernel_size_new = int(LO_sigma_new * 3) * 2 + 1
                     dm.set_learnable_offset_para(LO_kernel_size_new, LO_sigma_new)
 
@@ -323,8 +323,8 @@ class Experiment(BaseExperiment):
 
     def epoch_start(self, epoch, step, evaluate_only):
         if not evaluate_only:
-            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.LEARNING_RATE, hparams.SCHEDULE, hparams.LR_GAMMA)
-            adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams.LEARNING_RATE, hparams.SCHEDULE, hparams.LR_GAMMA)
+            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.LR_GAMMA)
+            adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.LR_GAMMA)
             if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
                 self.set_offset_learning_rate(epoch, step)
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
@@ -381,7 +381,7 @@ class Experiment(BaseExperiment):
 
     def iter_step(self, epoch_ctx:EpochContext, loss:torch.Tensor, progress:dict):
         optimize_offset = False
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and progress["step"] >= hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP:
+        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and progress["step"] >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             optimize_offset = True
 
         self.optimizer.zero_grad()
@@ -408,7 +408,7 @@ class Experiment(BaseExperiment):
                 move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
             globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis"), {"mod": np.mean(move_dis_avg), "mod_cur": np.mean(move_dis)}, progress["step"] + 1)
 
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and (progress["step"] + 1) % hparams.LEARNABLE_OFFSET.OFFSET_SAVE_INTERVAL == 0:
+        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
             self.save_offsets(progress["step"] + 1)
 
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict) -> dict:
@@ -423,7 +423,7 @@ class Experiment(BaseExperiment):
         batch_size = img.size(0)
         globalvars.progress = progress
 
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and progress["step"] == hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP and progress["train"]:
+        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and progress["step"] == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and progress["train"]:
             self.save_offsets(progress["step"])
 
         det_map_gt_cuda = [dm.cuda() for dm in det_maps_gt]
@@ -480,7 +480,7 @@ class Experiment(BaseExperiment):
             import ipdb; ipdb.set_trace()
 
         if not is_train or config.vis:
-            kp_pred, score = parse_map(output_maps[-1], thres=hparams.MODEL.PARSE_THRESHOLD)
+            kp_pred, score = parse_map(output_maps[-1], thres=hparams.EVAL.PARSE_THRESHOLD)
             kp_pred_affined = kp_pred.copy()
             for samp_i in range(batch_size):
                 kp_pred_affined[samp_i, :, :2] = kpt_affine(kp_pred_affined[samp_i, :, :2] * FACTOR, np.linalg.pinv(transform_mat[samp_i])[:2])
@@ -624,7 +624,7 @@ class Predictor(nn.Module):
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
         layers.append(nn.Conv2d(num_class, num_class,
             kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
-        if hparams.LEARNABLE_OFFSET.USE_IN_PREDICTOR:
+        if hparams.MODEL.LEARNABLE_OFFSET.USE_IN_PREDICTOR:
             layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, num_class, 256))
 
         return nn.Sequential(*layers)
@@ -677,13 +677,13 @@ class Attention(nn.Module):
         if space_norm:
             self.atten = nn.Sequential(
                 nn.Conv2d(self.total_inplanes, outplanes, 1, stride=stride),
-                nn.BatchNorm2d(outplanes, momentum=hparams.LEARNABLE_OFFSET.BN_MOMENTUM),
+                nn.BatchNorm2d(outplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM),
                 nn.Softplus(),
                 SpaceNormalization())
         else:
             self.atten = nn.Sequential(
                 nn.Conv2d(self.total_inplanes, outplanes, 1, stride=stride),
-                nn.BatchNorm2d(outplanes, momentum=hparams.LEARNABLE_OFFSET.BN_MOMENTUM),
+                nn.BatchNorm2d(outplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM),
                 nn.Sigmoid())
 
     def forward(self, x):
@@ -700,9 +700,9 @@ class OffsetBlock(nn.Module):
     _counter = 0
     def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1):
         super(OffsetBlock, self).__init__()
-        LO_interpolate_kernel_type = hparams.LEARNABLE_OFFSET.INTERPOLATE_KERNEL_TYPE
+        LO_interpolate_kernel_type = hparams.MODEL.LEARNABLE_OFFSET.INTERPOLATE_KERNEL_TYPE
         if LO_interpolate_kernel_type == "gaussian":
-            LO_sigma = hparams.LEARNABLE_OFFSET.INTERPOLATE_GAUSSIAN_SIGMA
+            LO_sigma = hparams.MODEL.LEARNABLE_OFFSET.INTERPOLATE_GAUSSIAN_SIGMA
             LO_kernel_size = int(LO_sigma * 3) * 2 + 1
         else:
             LO_sigma = 0.
@@ -729,23 +729,23 @@ class OffsetBlock(nn.Module):
             LO_kernel_size=LO_kernel_size,
             LO_sigma=LO_sigma,
             LO_balance_grad=False,
-            free_offset_per_init_pos=int(self.displace_planes // hparams.LEARNABLE_OFFSET.BIND_CHAN),
-            dconv_for_LO_stride=hparams.LEARNABLE_OFFSET.DCONV_FOR_LO_STRIDE,
-            regress_offset=hparams.LEARNABLE_OFFSET.REGRESS_OFFSET,
-            LO_half_reversed_offset=hparams.LEARNABLE_OFFSET.HALF_REVERSED_OFFSET,
-            previous_dischan=Experiment.exp.displace_mods[-1] if hparams.LEARNABLE_OFFSET.REUSE_OFFSET and len(Experiment.exp.displace_mods) > 0 else None)
+            free_offset_per_init_pos=int(self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN),
+            dconv_for_LO_stride=hparams.MODEL.LEARNABLE_OFFSET.DCONV_FOR_LO_STRIDE,
+            regress_offset=hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET,
+            LO_half_reversed_offset=hparams.MODEL.LEARNABLE_OFFSET.HALF_REVERSED_OFFSET,
+            previous_dischan=Experiment.exp.displace_mods[-1] if hparams.MODEL.LEARNABLE_OFFSET.REUSE_OFFSET and len(Experiment.exp.displace_mods) > 0 else None)
         Experiment.exp.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
         self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
-        if hparams.LEARNABLE_OFFSET.ENABLE_ATTEN:
+        if hparams.MODEL.LEARNABLE_OFFSET.ENABLE_ATTEN:
             self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=True, stride=stride)
         else:
             self.atten_displace = None
-        if hparams.LEARNABLE_OFFSET.ENABLE_MASK:
+        if hparams.MODEL.LEARNABLE_OFFSET.ENABLE_MASK:
             self.atten_post = Attention(0, self.outplanes, input_shape=(self.out_height, self.out_width), bias_planes=inplanes // 4, bias_factor=2, space_norm=False)
         else:
             self.atten_post = None
-        self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.LEARNABLE_OFFSET.BN_MOMENTUM)
+        self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM)
         self.relu = nn.ReLU(inplace=True)
         if stride > 1 or inplanes != outplanes:
             self.downsample = nn.Conv2d(self.inplanes, self.outplanes,
@@ -757,7 +757,7 @@ class OffsetBlock(nn.Module):
         if config.check:
             assert x.size(2) == self.height and x.size(3) == self.width
 
-        if globalvars.progress["step"] < hparams.LEARNABLE_OFFSET.TRAIN_MIN_STEP:
+        if globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             return x
 
         out_pre = self.pre_offset(x)
@@ -812,7 +812,7 @@ class ConvBlockWithAtten(nn.Module):
         self.post_poffset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
         self.atten_pdisplace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=True, stride=stride)
         self.pdisplace = nn.Conv2d(self.displace_planes, self.displace_planes, (3, 3), padding=(1, 1))
-        self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.LEARNABLE_OFFSET.BN_MOMENTUM)
+        self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM)
         self.relu = nn.ReLU(inplace=True)
         if stride > 1 or inplanes != outplanes:
             self.downsample = nn.Conv2d(self.inplanes, self.outplanes,
@@ -852,7 +852,7 @@ class Bottleneck(nn.Module):
                 hparams.MODEL.INP_SHAPE[0] // self.inshape_factor,
                 self.inplanes,
                 self.inplanes,
-                int(self.inplanes * hparams.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter]))
+                int(self.inplanes * hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter]))
             OffsetBlock._counter += 1
         else:
             self.offset_block = None
@@ -911,7 +911,7 @@ class BasicBlock(nn.Module):
                 hparams.MODEL.INP_SHAPE[0] // self.inshape_factor,
                 self.inplanes,
                 self.inplanes,
-                int(self.inplanes * hparams.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter]))
+                int(self.inplanes * hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter]))
             OffsetBlock._counter += 1
         else:
             self.offset_block = None
@@ -1119,7 +1119,7 @@ class GlobalNet(nn.Module):
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
         layers.append(nn.Conv2d(num_class, num_class,
             kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
-        if hparams.LEARNABLE_OFFSET.USE_IN_PREDICTOR:
+        if hparams.MODEL.LEARNABLE_OFFSET.USE_IN_PREDICTOR:
             layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256))
 
         return nn.Sequential(*layers)
@@ -1139,7 +1139,7 @@ class GlobalNet(nn.Module):
 
         return global_fms, global_outs
 
-
+# TODO: replace with updated one
 def parse_map(det_map, thres=0.1):
     det_map = det_map.detach()
     if det_map.is_cuda:

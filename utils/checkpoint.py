@@ -38,12 +38,14 @@ def save_checkpoint(state, checkpoint_full, force_replace=False):
 
 def detect_checkpoint(checkpoint_folder, checkpoint_file=None, return_files=False):
     folder_exist = os.path.exists(checkpoint_folder)
-    if checkpoint_file is None:
-        return checkpoint_folder if return_files else folder_exist
+    if not folder_exist:
+        return [] if return_files else False
 
-    if isinstance(checkpoint_file, str):
+    if checkpoint_file is None:
+        return [checkpoint_folder] if return_files else True
+    elif isinstance(checkpoint_file, str):
         filepath = os.path.join(checkpoint_folder, checkpoint_file)
-        return filepath if return_files else os.path.exists(filepath)
+        return [filepath] if return_files else os.path.exists(filepath)
     elif isinstance(checkpoint_file, RE_TYPE) or callable(checkpoint_file):
         if isinstance(checkpoint_file, RE_TYPE):
             fn = checkpoint_file.match
@@ -55,6 +57,8 @@ def detect_checkpoint(checkpoint_folder, checkpoint_file=None, return_files=Fals
                 return list(map(lambda x: x.name, filteriter))
             else:
                 return any(filteriter)
+    elif checkpoint_file is True:
+        return os.listdir(checkpoint_folder) if return_files else bool(os.listdir(checkpoint_folder))
     else:
         assert False
 
