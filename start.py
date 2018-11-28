@@ -109,8 +109,10 @@ def init_hparams(exp_module_name, hparams_override_list):
             log_i("Overriding hparams item '{}' from '{}' to '{}'".format(override_key, original_value, override_value))
 
     globalvars.main_context.loaded_hparams = loaded_hparams
-    hparams.update(dict_toupper(safe_yaml_convert(loaded_hparams)))
-    return loaded_hparams
+    _hparams = safe_yaml_convert(loaded_hparams)
+    if "config" in _hparams:
+        del _hparams["config"]
+    hparams.update(dict_toupper(_hparams))
 
 def init_config(conf_name, config_override_list):
     with open("experiments/config.yaml", "r") as f:
@@ -145,8 +147,7 @@ def init_run(run_id):
 
     globalvars.main_context.run_id = run_id
     globalvars.main_context.checkpoint_dir = checkpoint_dir
-    globalvars.main_context.run_dir = run_dir       
-    return checkpoint_dir, run_id, run_dir
+    globalvars.main_context.run_dir = run_dir
 
 def prepare_checkpoint_dir(resume_run_id):
     checkpoint_dir = globalvars.main_context.checkpoint_dir
