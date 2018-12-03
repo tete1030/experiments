@@ -1,13 +1,13 @@
 import math
 import queue
+import munkres
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from random import randint
 from sklearn.linear_model import LinearRegression
-import torch
 
 from .transforms import transform, transform_preds
-import munkres
 
 def calc_dists(preds, target, normalize):
     preds = preds.float()
@@ -111,6 +111,38 @@ class CycleAverageMeter(object):
 
         self.val = val
         self.avg = float(sum(self._pool)) / self.count
+
+class OffsetCycleAverageMeter(object):
+    """Computes and stores the cycled average of offset"""
+    def __init__(self, size, first):
+        self.size = size
+        self.reset()
+        self.update(first)
+
+    def reset(self):
+        self._pool = list()
+        self._pointer = 0
+        self.count = 0
+        # self.val = None
+        self.avg = None
+        self.lastdiff = None
+
+    def update(self, val, n=1):
+        for i in range(n):
+            if self.count >= self.size:
+                self._pool[self._pointer] = val
+                self._pointer = (self._pointer + 1) % self.size
+            else:
+                self._pool.append(val)
+                self._pointer = (self._pointer + 1) % self.size
+                self.count += 1
+
+        if self.count > 1:
+            self.lastdiff = (val - self._pool[(self._pointer + self.count - 2) % self.count]).abs().mean().item()
+            self.avg = ((val - self._pool[self._pointer % self.count]) / (self.count - 1)).abs().mean().item()
+        else:
+            self.lastdiff = None
+            self.avg = None
 
 def match_locate(pred, gt, threshold_abandon=3):
     """Match locate map result with ground truth keypoints
@@ -252,3 +284,93 @@ def PR_multi(pred, gt, person_norm, num_parts, threshold):
     final_precision = counter_TP.sum() / counter_P.sum()
     final_recall = counter_TP.sum() / counter_GT.sum()
     return final_precision, final_recall, precision, recall, indices_TP
+
+def parse_map(det_map, thres=0.1):
+    det_map = det_map.detach()
+    if det_map.is_cuda:
+        det_map = det_map.cpu()
+    det_map = det_map.numpy()
+    num_batch = det_map.shape[0]
+    num_part = det_map.shape[1]
+    height = det_map.shape[2]
+    width = det_map.shape[3]
+
+    BORDER = 10
+
+    # det_map_border = np.zeros((num_batch, num_part, height + 2*BORDER, width + 2*BORDER))
+    # det_map_border[:, :, BORDER:-BORDER, BORDER:-BORDER] = det_map
+
+    det_map_border = det_map
+
+    pred = np.zeros((num_batch, num_part, 3), dtype=np.float32)
+    score = np.zeros((num_batch, num_part), dtype=np.float32)
+    for sample_i in range(num_batch):
+        for part_i in range(num_part):
+            # det_map_border[sample_i, part_i] = cv2.GaussianBlur(det_map_border[sample_i, part_i], (21, 21), 0)
+            loc = det_map_border[sample_i, part_i].argmax()
+            y, x = np.unravel_index(loc, det_map_border.shape[-2:])
+            score_sp = det_map_border[sample_i, part_i, y, x]
+
+            # det_map_border[sample_i, part_i, y, x] = 0
+            # loc2 = det_map_border[sample_i, part_i].argmax()
+            # y2, x2 = np.unravel_index(loc2, det_map_border.shape[-2:])
+
+            # y2 -= y
+            # x2 -= x
+            # ln = (x2 ** 2 + y2 ** 2) ** 0.5
+            # delta = 0.25
+            # if ln > 1e-3:
+            #     x += delta * x2 / ln
+            #     y += delta * y2 / ln
+
+            if det_map_border[sample_i, part_i, y, max(0, x-1)] < det_map_border[sample_i, part_i, y, min(width-1, x+1)]:
+                off_x = 0.25
+            else:
+                off_x = -0.25
+            if det_map_border[sample_i, part_i, max(0, y-1), x] < det_map_border[sample_i, part_i, min(height-1, y+1), x]:
+                off_y = 0.25
+            else:
+                off_y = -0.25
+
+            # y -= BORDER
+            # x -= BORDER
+            x = max(0, min(x, det_map.shape[3] - 1))
+            y = max(0, min(y, det_map.shape[2] - 1))
+
+            pred[sample_i, part_i, 0] = x + 0.5 + off_x
+            pred[sample_i, part_i, 1] = y + 0.5 + off_y
+            pred[sample_i, part_i, 2] = 1
+            score[sample_i, part_i] = score_sp
+
+    return pred, score
+
+def generate_ans(image_ids, preds, scores, det_roi_scores=None, det_roi_use="no"):
+    ans = []
+    for sample_i in range(len(preds)):
+        image_id = image_ids[sample_i]
+
+        val = preds[sample_i]
+        if det_roi_use == "no":
+            score = scores[sample_i].mean()
+        elif det_roi_use == "avg":
+            score = (scores[sample_i].sum() + det_roi_scores[sample_i]) / (scores.shape[1] + 1)
+        elif det_roi_use == "mul":
+            score = scores[sample_i].mean() * det_roi_scores[sample_i]
+        else:
+            raise ValueError()
+        tmp = {'image_id':int(image_id), "category_id": 1, "keypoints": [], "score":float(score)}
+        # # p: average detected locations
+        # p = val[val[:, 2] > 0][:, :2].mean(axis = 0)
+        # for j in val:
+        #     if j[2]>0.:
+        #         tmp["keypoints"] += [float(j[0]), float(j[1]), 1]
+        #     else:
+        #         # TRICK: for not detected points, place them at the average point
+        #         tmp["keypoints"] += [float(p[0]), float(p[1]), 0]
+        tmp["keypoints"] = val.ravel().tolist()
+        ans.append(tmp)
+    return ans
+
+def generate_mpii_ans(image_ids, person_ids, preds):
+    assert len(image_ids) == len(person_ids) and len(person_ids) == len(preds)
+    return {"image_ids": image_ids, "person_ids": person_ids, "preds": preds}

@@ -117,3 +117,9 @@ def transform_preds(coords, center, ori_size, new_size):
     for p in range(coords.size(0)):
         coords[p, 0:2] = torch.from_numpy(transform(coords[p, 0:2].numpy(), center, ori_size, new_size))
     return coords
+
+def kpt_affine(kpt, mat):
+    kpt = np.array(kpt)
+    shape = kpt.shape
+    kpt = kpt.reshape(-1, 2)
+    return np.dot( np.concatenate((kpt, kpt[:, 0:1]*0+1), axis = 1), mat.T ).reshape(shape)

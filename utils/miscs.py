@@ -163,4 +163,4 @@ def set_yaml_scope(settings, override_key, override_value, allow_nonexist_leaf=F
             var[var_name] = var_value
             return ori_value
 
-    return _set_hierarchic_attr(settings, override_key.split("."), YAML(typ="safe").load(override_value))
+    return _set_hierarchic_attr(settings, override_key.split("."), override_value)

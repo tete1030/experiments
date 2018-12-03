@@ -7,6 +7,7 @@ import math
 import numpy as np
 import scipy.io
 import matplotlib.pyplot as plt
+import pprint
 from utils.miscs import ask, wait_key
 from utils.log import log_w, log_i, log_q
 from copy import deepcopy
@@ -94,9 +95,11 @@ def load_pretrained_loose(model_state_dict, pretrained_state_dict, pause_model_m
     model_missing_keys = set(list(pretrained_state_dict.keys())) - set(list(model_state_dict.keys()))
     model_extra_keys = set(list(model_state_dict.keys())) - set(list(pretrained_state_dict.keys()))
     if len(model_missing_keys) > 0:
-        log_w("Model missing keys: " + str(model_missing_keys))
+        log_w("Model missing keys: ")
+        pprint.pprint(model_missing_keys, indent=2)
     if len(model_extra_keys) > 0:
-        log_w("Model extra keys: " + str(model_extra_keys))
+        log_w("Model extra keys: ")
+        pprint.pprint(model_extra_keys, indent=2)
     if pause_model_mismatch and (len(model_missing_keys) > 0 or len(model_extra_keys) > 0):
         wait_key()
 
