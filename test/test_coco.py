@@ -1,5 +1,5 @@
 import matplotlib.pyplot as plt
-import pose.datasets as datasets
+import lib.datasets as datasets
 import numpy as np
 import cv2
 

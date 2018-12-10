@@ -7,6 +7,7 @@ import math
 import numpy as np
 import scipy.io
 import matplotlib.pyplot as plt
+import pprint
 from utils.miscs import ask, wait_key
 from utils.log import log_w, log_i, log_q
 from copy import deepcopy
@@ -15,36 +16,37 @@ __all__ = ["save_checkpoint", "detect_checkpoint", "save_pred", "load_pretrained
 
 RE_TYPE = type(re.compile(""))
 
-def save_checkpoint(state, checkpoint_folder, checkpoint_file, force_replace=False):
-    filepath = os.path.join(checkpoint_folder, checkpoint_file)
-    if os.path.exists(filepath):
-        if os.path.isfile(filepath):
-            log_w("Checkpoint file {} exists".format(filepath))
+def save_checkpoint(state, checkpoint_full, force_replace=False):
+    if os.path.exists(checkpoint_full):
+        if os.path.isfile(checkpoint_full):
+            log_w("Checkpoint file {} exists".format(checkpoint_full))
             if force_replace:
                 log_i("Force replacing")
             elif not ask("Replace it?"):
-                log_w("Skip saving {}".format(filepath))
+                log_w("Skip saving {}".format(checkpoint_full))
                 return
-            os.remove(filepath)
+            os.remove(checkpoint_full)
         else:
-            log_w("Checkpoint file {} exists as a folder".format(filepath))
+            log_w("Checkpoint file {} exists as a folder".format(checkpoint_full))
             if force_replace:
                 log_i("Force replacing")
             elif not ask("Delete it?"):
-                log_w("Skip saving {}".format(filepath))
+                log_w("Skip saving {}".format(checkpoint_full))
                 return
-            shutil.rmtree(filepath)
-    torch.save(state, filepath)
-    return filepath
+            shutil.rmtree(checkpoint_full)
+    torch.save(state, checkpoint_full)
+    return checkpoint_full
 
 def detect_checkpoint(checkpoint_folder, checkpoint_file=None, return_files=False):
     folder_exist = os.path.exists(checkpoint_folder)
-    if checkpoint_file is None:
-        return checkpoint_folder if return_files else folder_exist
+    if not folder_exist:
+        return [] if return_files else False
 
-    if isinstance(checkpoint_file, str):
+    if checkpoint_file is None:
+        return [checkpoint_folder] if return_files else True
+    elif isinstance(checkpoint_file, str):
         filepath = os.path.join(checkpoint_folder, checkpoint_file)
-        return filepath if return_files else os.path.exists(filepath)
+        return [filepath] if return_files else os.path.exists(filepath)
     elif isinstance(checkpoint_file, RE_TYPE) or callable(checkpoint_file):
         if isinstance(checkpoint_file, RE_TYPE):
             fn = checkpoint_file.match
@@ -56,6 +58,8 @@ def detect_checkpoint(checkpoint_folder, checkpoint_file=None, return_files=Fals
                 return list(map(lambda x: x.name, filteriter))
             else:
                 return any(filteriter)
+    elif checkpoint_file is True:
+        return os.listdir(checkpoint_folder) if return_files else bool(os.listdir(checkpoint_folder))
     else:
         assert False
 
@@ -91,9 +95,11 @@ def load_pretrained_loose(model_state_dict, pretrained_state_dict, pause_model_m
     model_missing_keys = set(list(pretrained_state_dict.keys())) - set(list(model_state_dict.keys()))
     model_extra_keys = set(list(model_state_dict.keys())) - set(list(pretrained_state_dict.keys()))
     if len(model_missing_keys) > 0:
-        log_w("Model missing keys: " + str(model_missing_keys))
+        log_w("Model missing keys: ")
+        pprint.pprint(model_missing_keys, indent=2)
     if len(model_extra_keys) > 0:
-        log_w("Model extra keys: " + str(model_extra_keys))
+        log_w("Model extra keys: ")
+        pprint.pprint(model_extra_keys, indent=2)
     if pause_model_mismatch and (len(model_missing_keys) > 0 or len(model_extra_keys) > 0):
         wait_key()
 

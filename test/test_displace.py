@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import os
 import sys
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
-from pose.models.displace import Displace, DisplaceCUDA
+from lib.models.displace import Displace, DisplaceCUDA
 import argparse
 import datetime
 

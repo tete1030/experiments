@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torch.utils.data.dataloader import default_collate
 
-from pose.utils.evaluation import AverageMeter, CycleAverageMeter
+from lib.utils.evaluation import AverageMeter, CycleAverageMeter
 from utils.globals import globalvars, hparams, config
 from utils.checkpoint import load_pretrained_loose, save_checkpoint, RejectLoadError
 
@@ -74,7 +74,7 @@ class BaseExperiment(object):
         self.train_loader = torch.utils.data.DataLoader(
             self.train_dataset,
             collate_fn=self.train_collate_fn,
-            batch_size=hparams["train_batch"],
+            batch_size=hparams.TRAIN.TRAIN_BATCH,
             num_workers=config.workers,
             shuffle=True,
             pin_memory=True,
@@ -84,7 +84,7 @@ class BaseExperiment(object):
         self.val_loader = torch.utils.data.DataLoader(
             self.val_dataset,
             collate_fn=self.valid_collate_fn,
-            batch_size=hparams["test_batch"],
+            batch_size=hparams.TRAIN.TEST_BATCH,
             num_workers=config.workers,
             shuffle=False,
             pin_memory=True,
@@ -110,13 +110,12 @@ class BaseExperiment(object):
     def process_stored(self, epoch_ctx:EpochContext, epoch:int, step:int):
         pass
 
-    def load_checkpoint(self, checkpoint_folder, checkpoint_file,
+    def load_checkpoint(self, checkpoint_full,
                         no_strict_model_load=False,
                         no_criterion_load=False,
                         no_optimizer_load=False):
 
         # Load checkpoint data
-        checkpoint_full = os.path.join(checkpoint_folder, checkpoint_file)
         checkpoint = torch.load(checkpoint_full)
         if no_strict_model_load:
             model_state_dict = self.model.state_dict()
@@ -133,30 +132,38 @@ class BaseExperiment(object):
             self.optimizer.load_state_dict(checkpoint["optimizer"])
         return checkpoint["epoch"]
 
-    def save_checkpoint(self, checkpoint_folder, checkpoint_file, epoch):
+    def save_checkpoint(self, checkpoint_full, epoch):
         checkpoint_dict = {
             "epoch": epoch,
             "state_dict": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "criterion": self.criterion.state_dict()
         }
-        save_checkpoint(checkpoint_dict, checkpoint_folder=checkpoint_folder, checkpoint_file=checkpoint_file, force_replace=True)
+        save_checkpoint(checkpoint_dict, checkpoint_full=checkpoint_full, force_replace=True)
 
     def summary_scalar_avg(self, epoch_ctx:EpochContext, epoch:int, step:int, phase=None):
+        try:
+            tb_writer = globalvars.main_context.tb_writer
+        except KeyError:
+            return
         for scalar_name, scalar_value in epoch_ctx.scalar.items():
             if not epoch_ctx.stat_avg[scalar_name]:
                 continue
             if phase is not None:
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, scalar_name), {phase: scalar_value.avg}, step)
+                tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), {phase: scalar_value.avg}, step)
             else:
-                globalvars.tb_writer.add_scalar("{}/{}".format(globalvars.exp_name, scalar_name), scalar_value.avg, step)
+                tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), scalar_value.avg, step)
 
     def summary_scalar(self, epoch_ctx:EpochContext, epoch:int, step:int, phase=None):
+        try:
+            tb_writer = globalvars.main_context.tb_writer
+        except KeyError:
+            return
         for scalar_name, scalar_value in epoch_ctx.scalar.items():
             if phase is not None:
-                globalvars.tb_writer.add_scalars("{}/{}".format(globalvars.exp_name, scalar_name), {phase: scalar_value.val}, step)
+                tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), {phase: scalar_value.val}, step)
             else:
-                globalvars.tb_writer.add_scalar("{}/{}".format(globalvars.exp_name, scalar_name), scalar_value.val, step)
+                tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), scalar_value.val, step)
             
     def print_iter(self, epoch_ctx:EpochContext, epoch:int, step:int):
         val_list = list()

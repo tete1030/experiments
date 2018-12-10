@@ -6,8 +6,9 @@ default: &DEFAULT
     fast_pass_valid: 0
     handle_sig: true
     evaluate: false
-    checkpoint: 'checkpoint/{exp}/{id}'
-    resume: null
+    checkpoint_dir_template: 'checkpoint/{exp_name}_{exp_id}/{run_id}'
+    run_dir_template: 'runs/{exp_name}_{exp_id}/{run_id}'
+    resume: false
     vis: false
     debug_nan: false
     valid_interval: 0
@@ -16,6 +17,9 @@ default: &DEFAULT
     no_optimizer_load: false
     store: false
     check: false
+    ignore_hparams_mismatch: false
+    save_checkpoint: true
+    use_tensorboard: true
 
 profile: &PROFILE
     <<: *DEFAULT
@@ -31,8 +35,10 @@ debug: &DEBUG
 
 evaluate: &EVALUATE
     <<: *DEFAULT
-    resume: 'checkpoint/{exp}/{id}'
+    resume: true
     evaluate: true
+    use_tensorboard: false
+    save_checkpoint: false
 
 fast: &FAST
     <<: *DEFAULT
@@ -43,11 +49,11 @@ fast: &FAST
 
 fastresume:
     <<: *FAST
-    resume: 'checkpoint/{exp}/{id}'
+    resume: true
 
 resume: &RESUME
     <<: *DEFAULT
-    resume: 'checkpoint/{exp}/{id}'
+    resume: true
 
 looseresume:
     <<: *RESUME
@@ -56,9 +62,8 @@ looseresume:
     no_optimizer_load: true
 
 fasteval:
-    <<: *DEFAULT
+    <<: *EVALUATE
+    workers: 0
     fast_pass_train: 3
     fast_pass_valid: 3
-    resume: 'checkpoint/{exp}/{id}'
-    evaluate: true
     check: true
