@@ -28,9 +28,6 @@ PART_CONNECT = [(0, 1), (0, 2), (1, 3), (2, 4),
 
 NUM_PARTS = 17
 
-def worker_init(worker_id):
-    np.random.seed(np.random.randint(0, np.iinfo(np.uint32).max) + worker_id)
-
 class COCOPose(data.Dataset):
     def __init__(self, img_folder, anno, split_file, meanstd_file,
                  train, single_person,

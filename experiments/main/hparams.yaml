@@ -26,6 +26,7 @@ eval:
 
 config:
     store_map: false
+    valid_interval: 1000
 
 log:
     # TODO: Make log configurable
@@ -35,6 +36,8 @@ log:
     tb_domain: offset
     move_average_cycle: 500
     offset_save_interval: 1000
+    tb_vis_interval: 3000
+    tb_gradient_interval: 3000
 
 model:
     use_gn: true
@@ -52,6 +55,7 @@ model:
         loss_early: labeled
         loss_final: labeled
         enable_offset_block: true
+        first_esp_only: true
 
     learnable_offset:
         interpolate_kernel_type: bilinear
@@ -69,6 +73,7 @@ model:
 
 dataset:
     profile: coco
+    subset: 0.3
     coco:
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]

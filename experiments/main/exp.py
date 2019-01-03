@@ -10,6 +10,7 @@ import torch.nn as nn
 from torch.nn import DataParallel
 from torch.nn.modules.utils import _pair
 import torch.nn.functional as F
+from torch.utils.data import Subset
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
@@ -22,6 +23,7 @@ from utils.globals import config, hparams, globalvars
 from utils.log import log_i
 from utils.train import adjust_learning_rate
 from utils.checkpoint import save_pred, load_pretrained_loose, save_checkpoint, RejectLoadError
+from utils.miscs import nprand_init
 from experiments.baseexperiment import BaseExperiment, EpochContext
 from .resnet import resnet18, resnet50, resnet101
 from .offset import OffsetBlock
@@ -59,6 +61,8 @@ class Experiment(BaseExperiment):
             globalvars.BatchNorm2dImpl = GroupNormWrapper
         else:
             globalvars.BatchNorm2dImpl = nn.BatchNorm2d
+
+        assert hparams.MODEL.DETAIL.EARLY_PREDICTOR or not hparams.MODEL.DETAIL.FIRST_ESP_ONLY
 
         self.model = nn.DataParallel(Controller(MainModel(hparams.MODEL.OUT_SHAPE[::-1], self.num_parts, pretrained=pretrained), self.num_parts).cuda())
         assert OffsetBlock._counter == len(hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO) or not hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK
@@ -103,81 +107,90 @@ class Experiment(BaseExperiment):
         else:
             self.early_predictor_optimizer = None
 
-        self.criterion = nn.MSELoss()
-        
         self.cur_lr = hparams.TRAIN.LEARNING_RATE
 
         if self.data_source == "coco":
-            self.coco = COCO("data/mscoco/person_keypoints_train2017.json")
-            self.train_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
-                                                self.coco,
-                                                "data/mscoco/sp_split_2017.pth",
-                                                "data/mscoco/" + hparams.DATASET["COCO"].MEAN_STD_FILE,
-                                                True,
-                                                img_res=hparams.MODEL.INP_SHAPE,
-                                                ext_border=hparams.DATASET["COCO"].EXT_BORDER,
-                                                kpmap_res=hparams.MODEL.OUT_SHAPE,
-                                                keypoint_res=hparams.MODEL.OUT_SHAPE,
-                                                kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
-                                                scale_factor=hparams.DATASET["COCO"].SCALE_FACTOR,
-                                                rot_factor=hparams.DATASET["COCO"].ROTATE_FACTOR,
-                                                trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR)
-
-            self.val_dataset = datasets.COCOSinglePose("data/mscoco/images2017",
-                                                self.coco,
-                                                "data/mscoco/sp_split_2017.pth",
-                                                "data/mscoco/" + hparams.DATASET["COCO"].MEAN_STD_FILE,
-                                                False,
-                                                img_res=hparams.MODEL.INP_SHAPE,
-                                                ext_border=hparams.DATASET["COCO"].EXT_BORDER,
-                                                kpmap_res=hparams.MODEL.OUT_SHAPE,
-                                                keypoint_res=hparams.MODEL.OUT_SHAPE,
-                                                kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
-                                                scale_factor=hparams.DATASET["COCO"].SCALE_FACTOR,
-                                                rot_factor=hparams.DATASET["COCO"].ROTATE_FACTOR,
-                                                trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR)
-            self.train_collate_fn = datasets.COCOSinglePose.collate_function
-            self.valid_collate_fn = datasets.COCOSinglePose.collate_function
+            self.init_mscoco()
         elif self.data_source == "mpii":
-            self.train_dataset = datasets.MPII("data/mpii/images",
-                "data/mpii/mpii_human_pose.json",
-                "data/mpii/split_sig.pth",
-                "data/mpii/mean_std.pth",
-                True,
-                True,
-                img_res=hparams.MODEL.INP_SHAPE,
-                kpmap_res=hparams.MODEL.OUT_SHAPE,
-                kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
-                scale_factor=hparams.DATASET["MPII"].SCALE_FACTOR,
-                rot_factor=hparams.DATASET["MPII"].ROTATE_FACTOR,
-                trans_factor=hparams.DATASET["MPII"].TRANSLATION_FACTOR)
+            self.init_mpii()
 
-            self.val_dataset = datasets.MPII("data/mpii/images",
-                "data/mpii/mpii_human_pose.json",
-                "data/mpii/split_sig.pth",
-                "data/mpii/mean_std.pth",
-                False,
-                True,
-                img_res=hparams.MODEL.INP_SHAPE,
-                kpmap_res=hparams.MODEL.OUT_SHAPE,
-                kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
-                scale_factor=hparams.DATASET["MPII"].SCALE_FACTOR,
-                rot_factor=hparams.DATASET["MPII"].ROTATE_FACTOR,
-                trans_factor=hparams.DATASET["MPII"].TRANSLATION_FACTOR)
-            self.train_collate_fn = datasets.MPII.collate_function
-            self.valid_collate_fn = datasets.MPII.collate_function
+        if hparams.DATASET.SUBSET is not None:
+            if self.train_dataset:
+                self.train_dataset = Subset(self.train_dataset, list(range(int(len(self.train_dataset) * hparams.DATASET.SUBSET))))
 
-        self.worker_init_fn = datasets.mscoco.worker_init
-        self.print_iter_start = " | "
+        self.worker_init_fn = nprand_init
 
         if self.offset_optimizer is not None:
             self.move_dis_avgmeter = []
             for dm in globalvars.displace_mods:
                 if dm.offset.size(0) == 0:
                     continue
-                self.move_dis_avgmeter.append(OffsetCycleAverageMeter(hparams.LOG.MOVE_AVERAGE_CYCLE, (dm.offset.data * dm.scale).cpu()))
+                self.move_dis_avgmeter.append(OffsetCycleAverageMeter(hparams.LOG.MOVE_AVERAGE_CYCLE, (dm.offset.data * dm.offset_scale).cpu()))
         else:
             self.move_dis_avgmeter = None
+
+    def init_mscoco(self):
+        self.coco = COCO("data/mscoco/person_keypoints_train2017.json")
+        self.train_dataset = datasets.COCOSinglePose(
+            "data/mscoco/images2017",
+            self.coco,
+            "data/mscoco/sp_split_2017.pth",
+            "data/mscoco/" + hparams.DATASET["COCO"].MEAN_STD_FILE,
+            True,
+            img_res=hparams.MODEL.INP_SHAPE,
+            ext_border=hparams.DATASET["COCO"].EXT_BORDER,
+            kpmap_res=hparams.MODEL.OUT_SHAPE,
+            keypoint_res=hparams.MODEL.OUT_SHAPE,
+            kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
+            scale_factor=hparams.DATASET["COCO"].SCALE_FACTOR,
+            rot_factor=hparams.DATASET["COCO"].ROTATE_FACTOR,
+            trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR)
+
+        self.val_dataset = datasets.COCOSinglePose(
+            "data/mscoco/images2017",
+            self.coco,
+            "data/mscoco/sp_split_2017.pth",
+            "data/mscoco/" + hparams.DATASET["COCO"].MEAN_STD_FILE,
+            False,
+            img_res=hparams.MODEL.INP_SHAPE,
+            ext_border=hparams.DATASET["COCO"].EXT_BORDER,
+            kpmap_res=hparams.MODEL.OUT_SHAPE,
+            keypoint_res=hparams.MODEL.OUT_SHAPE,
+            kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
+            scale_factor=hparams.DATASET["COCO"].SCALE_FACTOR,
+            rot_factor=hparams.DATASET["COCO"].ROTATE_FACTOR,
+            trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR)
+        self.train_collate_fn = datasets.COCOSinglePose.collate_function
+        self.valid_collate_fn = datasets.COCOSinglePose.collate_function
+
+    def init_mpii(self):
+        self.train_dataset = datasets.MPII("data/mpii/images",
+            "data/mpii/mpii_human_pose.json",
+            "data/mpii/split_sig.pth",
+            "data/mpii/mean_std.pth",
+            True,
+            True,
+            img_res=hparams.MODEL.INP_SHAPE,
+            kpmap_res=hparams.MODEL.OUT_SHAPE,
+            kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
+            scale_factor=hparams.DATASET["MPII"].SCALE_FACTOR,
+            rot_factor=hparams.DATASET["MPII"].ROTATE_FACTOR,
+            trans_factor=hparams.DATASET["MPII"].TRANSLATION_FACTOR)
+
+        self.val_dataset = datasets.MPII("data/mpii/images",
+            "data/mpii/mpii_human_pose.json",
+            "data/mpii/split_sig.pth",
+            "data/mpii/mean_std.pth",
+            False,
+            True,
+            img_res=hparams.MODEL.INP_SHAPE,
+            kpmap_res=hparams.MODEL.OUT_SHAPE,
+            kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
+            scale_factor=hparams.DATASET["MPII"].SCALE_FACTOR,
+            rot_factor=hparams.DATASET["MPII"].ROTATE_FACTOR,
+            trans_factor=hparams.DATASET["MPII"].TRANSLATION_FACTOR)
+        self.train_collate_fn = datasets.MPII.collate_function
+        self.valid_collate_fn = datasets.MPII.collate_function
 
     def load_checkpoint(self, checkpoint_full,
                         no_strict_model_load=False,
@@ -195,8 +208,6 @@ class Experiment(BaseExperiment):
             self.model.load_state_dict(model_state_dict)
         else:
             self.model.load_state_dict(checkpoint["state_dict"])
-        if not no_criterion_load:
-            self.criterion.load_state_dict(checkpoint["criterion"])
         if not no_optimizer_load:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
             if self.offset_optimizer:
@@ -212,7 +223,6 @@ class Experiment(BaseExperiment):
             "epoch": epoch,
             "state_dict": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
-            "criterion": self.criterion.state_dict(),
             "offset_optimizer": self.offset_optimizer.state_dict() if self.offset_optimizer else None,
             "early_predictor_optimizer": self.early_predictor_optimizer.state_dict() if self.early_predictor_optimizer else None,
             "move_dis_avgmeter": self.move_dis_avgmeter if not hparams.MODEL.DETAIL.DISABLE_DISPLACE else None
@@ -322,11 +332,6 @@ class Experiment(BaseExperiment):
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self.set_offset_learning_para(epoch, step)
 
-    @staticmethod
-    def set_para_require_grad(paras, requires_grad):
-        for para in paras:
-            para.requires_grad = requires_grad
-
     def save_offsets(self, step):
         offset_disabled = True
         for dm in globalvars.displace_mods:
@@ -371,6 +376,14 @@ class Experiment(BaseExperiment):
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
             self.save_offsets(progress["step"] + 1)
 
+    def summarize_gradient(self):
+        # TODO: all gradients? offset gradients?
+        pass
+
+    def summarize_parameter(self):
+        # TODO: summarize all parameters
+        pass
+
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict) -> dict:
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
@@ -395,8 +408,6 @@ class Experiment(BaseExperiment):
         if config.vis:
             globalvars.cur_img = None
 
-        loss = 0.
-
         mask_notlabeled = (keypoint[:, :, 2] <= 0.1).cuda()
         mask_labeled = (~mask_notlabeled)
         mask_visible = (keypoint[:, :, 2] > 1.1).cuda()
@@ -420,19 +431,24 @@ class Experiment(BaseExperiment):
         else:
             assert False
 
-        for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
-            # if ilabel < len(det_map_gt_cuda) - 1:
-            #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
-            if ilabel < len(det_map_gt_cuda) - 1:
-                loss = loss + ((outv - gtv).pow(2) * masking_early).mean().sqrt()
-            else:
-                loss = loss + ((outv - gtv).pow(2) * masking_final).mean().sqrt()
+        if not hparams.MODEL.DETAIL.FIRST_ESP_ONLY:
+            loss = 0.
+            for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
+                # if ilabel < len(det_map_gt_cuda) - 1:
+                #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
+                if ilabel < len(det_map_gt_cuda) - 1:
+                    loss = loss + ((outv - gtv).pow(2) * masking_early).mean().sqrt()
+                else:
+                    loss = loss + ((outv - gtv).pow(2) * masking_final).mean().sqrt()
 
-        if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
-            assert len(early_predictor_outputs) == len(hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX)
-            for ilabel, outv in enumerate(early_predictor_outputs):
-                loss = loss + ((outv - det_map_gt_cuda[hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX[ilabel]]).pow(2) * \
-                    masking_early).mean().sqrt()
+            if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
+                assert len(early_predictor_outputs) == len(hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX)
+                for ilabel, outv in enumerate(early_predictor_outputs):
+                    loss = loss + ((outv - det_map_gt_cuda[hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX[ilabel]]).pow(2) * \
+                        masking_early).mean().sqrt()
+        else:
+            loss = ((early_predictor_outputs[0] - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][0]]).pow(2) * \
+                masking_early).mean().sqrt()
 
         epoch_ctx.add_scalar("loss", loss.item())
 
@@ -534,7 +550,7 @@ class Controller(nn.Module):
         if self.early_predictor:
             pre_early_predictor_outs = globalvars.pre_early_predictor_outs[x.device]
             globalvars.pre_early_predictor_outs[x.device] = list()
-            assert len(pre_early_predictor_outs) == len(self.early_predictor)
+            assert hparams.MODEL.DETAIL.FIRST_ESP_ONLY or len(pre_early_predictor_outs) == len(self.early_predictor)
             return out, [self.early_predictor[i](pre_early_predictor_outs[i]) for i in range(len(pre_early_predictor_outs))]
         else:
             return out, None
@@ -544,20 +560,23 @@ class MainModel(nn.Module):
         super(MainModel, self).__init__()
         if hparams.MODEL.RESNET == 18:
             self.resnet = resnet18(pretrained=pretrained)
-            self.global_net = GlobalNet([512, 256, 128, 64], output_shape, num_points)
+            channel_settings = [512, 256, 128, 64]
         elif hparams.MODEL.RESNET == 50:
             self.resnet = resnet50(pretrained=pretrained)
-            self.global_net = GlobalNet([2048, 1024, 512, 256], output_shape, num_points)
+            channel_settings = [2048, 1024, 512, 256]
         elif hparams.MODEL.RESNET == 101:
             self.resnet = resnet101(pretrained=pretrained)
-            self.global_net = GlobalNet([2048, 1024, 512, 256], output_shape, num_points)
+            channel_settings = [2048, 1024, 512, 256]
         else:
             assert False
+        if not hparams.MODEL.DETAIL.FIRST_ESP_ONLY:
+            self.global_net = GlobalNet(channel_settings, output_shape, num_points)
 
     def forward(self, x):
         res_out = self.resnet(x)
-        global_re, global_out = self.global_net(res_out)
-        return global_out
+        if not hparams.MODEL.DETAIL.FIRST_ESP_ONLY:
+            global_re, global_out = self.global_net(res_out)
+            return global_out
 
 class Predictor(nn.Module):
     def __init__(self, inplanes, input_shape, output_shape, num_class):

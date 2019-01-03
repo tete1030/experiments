@@ -59,7 +59,7 @@ class BaseExperiment(object):
         self.valid_collate_fn = default_collate
         self.train_drop_last = False
         self.worker_init_fn = None
-        self.print_iter_start = "\n\t"
+        self.print_iter_start = " | " # "\n\t"
         self.print_iter_sep = " | "
         self.cur_lr = None
         self.init()
@@ -69,26 +69,31 @@ class BaseExperiment(object):
         pass
 
     def init_dataloader(self):
-        assert self.train_dataset is not None and self.val_dataset is not None
         # Data loading code
-        self.train_loader = torch.utils.data.DataLoader(
-            self.train_dataset,
-            collate_fn=self.train_collate_fn,
-            batch_size=hparams.TRAIN.TRAIN_BATCH,
-            num_workers=config.workers,
-            shuffle=True,
-            pin_memory=True,
-            drop_last=self.train_drop_last,
-            worker_init_fn=self.worker_init_fn)
+        if self.train_dataset is not None:
+            self.train_loader = torch.utils.data.DataLoader(
+                self.train_dataset,
+                collate_fn=self.train_collate_fn,
+                batch_size=hparams.TRAIN.TRAIN_BATCH,
+                num_workers=config.workers,
+                shuffle=True,
+                pin_memory=True,
+                drop_last=self.train_drop_last,
+                worker_init_fn=self.worker_init_fn)
+        else:
+            self.train_loader = None
 
-        self.val_loader = torch.utils.data.DataLoader(
-            self.val_dataset,
-            collate_fn=self.valid_collate_fn,
-            batch_size=hparams.TRAIN.TEST_BATCH,
-            num_workers=config.workers,
-            shuffle=False,
-            pin_memory=True,
-            worker_init_fn=self.worker_init_fn)
+        if self.val_dataset is not None:
+            self.val_loader = torch.utils.data.DataLoader(
+                self.val_dataset,
+                collate_fn=self.valid_collate_fn,
+                batch_size=hparams.TRAIN.TEST_BATCH,
+                num_workers=config.workers,
+                shuffle=False,
+                pin_memory=True,
+                worker_init_fn=self.worker_init_fn)
+        else:
+            self.val_loader = None
 
     def evaluate(self, epoch_ctx:EpochContext, epoch:int, step:int):
         pass
@@ -126,7 +131,7 @@ class BaseExperiment(object):
             self.model.load_state_dict(model_state_dict)
         else:
             self.model.load_state_dict(checkpoint["state_dict"])
-        if not no_criterion_load:
+        if self.criterion is not None and not no_criterion_load:
             self.criterion.load_state_dict(checkpoint["criterion"])
         if not no_optimizer_load:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
@@ -136,9 +141,10 @@ class BaseExperiment(object):
         checkpoint_dict = {
             "epoch": epoch,
             "state_dict": self.model.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
-            "criterion": self.criterion.state_dict()
+            "optimizer": self.optimizer.state_dict()
         }
+        if self.criterion is not None:
+            checkpoint_dict["criterion"] = self.criterion.state_dict()
         save_checkpoint(checkpoint_dict, checkpoint_full=checkpoint_full, force_replace=True)
 
     def summary_scalar_avg(self, epoch_ctx:EpochContext, epoch:int, step:int, phase=None):

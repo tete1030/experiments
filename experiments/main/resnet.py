@@ -141,9 +141,10 @@ class ResNet(nn.Module):
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.inshape_factor *= 2
         self.layer1 = self._make_layer(block, 64, layers[0], res_index=0)
-        self.layer2 = self._make_layer(block, 128, layers[1], res_index=1, stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], res_index=2, stride=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], res_index=3, stride=2)
+        if not hparams.MODEL.DETAIL.FIRST_ESP_ONLY:
+            self.layer2 = self._make_layer(block, 128, layers[1], res_index=1, stride=2)
+            self.layer3 = self._make_layer(block, 256, layers[2], res_index=2, stride=2)
+            self.layer4 = self._make_layer(block, 512, layers[3], res_index=3, stride=2)
 
         for mod_name, m in self.named_modules():
             # TODO:
@@ -190,6 +191,9 @@ class ResNet(nn.Module):
         x1 = self.layer1(x)
         if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             globalvars.pre_early_predictor_outs[x.device].append(x1)
+        if hparams.MODEL.DETAIL.FIRST_ESP_ONLY:
+            return None
+
         if x1 is not None:
             x2 = self.layer2(x1)
             if hparams.MODEL.DETAIL.EARLY_PREDICTOR:

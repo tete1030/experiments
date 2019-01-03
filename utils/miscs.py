@@ -4,6 +4,7 @@ import multiprocessing
 import errno
 import signal
 import copy
+import numpy as np
 from io import StringIO
 from ruamel.yaml import YAML
 from collections import OrderedDict
@@ -164,3 +165,6 @@ def set_yaml_scope(settings, override_key, override_value, allow_nonexist_leaf=F
             return ori_value
 
     return _set_hierarchic_attr(settings, override_key.split("."), override_value)
+
+def nprand_init(worker_id):
+    np.random.seed(np.random.randint(0, np.iinfo(np.uint32).max) + worker_id)
