@@ -617,11 +617,16 @@ class Bottleneck(nn.Module):
 class MyPose(nn.Module):
     def __init__(self, num_class):
         super(MyPose, self).__init__()
-        self.transformer = TransformFeature()
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET:
+            self.transformer = TransformFeature()
         self.estimator = SimpleEstimator(num_class)
 
     def forward(self, x):
-        return self.estimator(x, self.transformer(x))
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET:
+            transform_features = self.transformer(x)
+        else:
+            transform_features = None
+        return self.estimator(x, transform_features)
 
 class TransformFeature(nn.Module):
     def __init__(self):
