@@ -50,13 +50,7 @@ class OffsetBlock(nn.Module):
     _counter = 0
     def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1):
         super(OffsetBlock, self).__init__()
-        LO_interpolate_kernel_type = hparams.MODEL.LEARNABLE_OFFSET.INTERPOLATE_KERNEL_TYPE
-        if LO_interpolate_kernel_type == "gaussian":
-            LO_sigma = hparams.MODEL.LEARNABLE_OFFSET.INTERPOLATE_GAUSSIAN_SIGMA
-            LO_kernel_size = int(LO_sigma * 3) * 2 + 1
-        else:
-            LO_sigma = 0.
-            LO_kernel_size = 3
+
         self.height = height
         self.width = width
         self.out_height = (height + stride - 1) // stride
@@ -67,22 +61,11 @@ class OffsetBlock(nn.Module):
         self.stride = stride
         self.displace = DisplaceChannel(
             self.out_height, self.out_width,
-            1,
-            self.displace_planes,
-            learnable_offset=hparams.MODEL.DETAIL.DISPLACE_LEARNABLE_OFFSET,
+            self.displace_planes, self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN,
             disable_displace=hparams.MODEL.DETAIL.DISABLE_DISPLACE,
-            random_offset_init=hparams.MODEL.DETAIL.RANDOM_OFFSET_INIT,
-            use_origin=True,
-            actual_stride=1,
-            displace_size=(1, 1),
-            LO_interpolate_kernel_type=LO_interpolate_kernel_type,
-            LO_kernel_size=LO_kernel_size,
-            LO_sigma=LO_sigma,
-            LO_balance_grad=False,
-            free_offset_per_init_pos=int(self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN),
-            dconv_for_LO_stride=hparams.MODEL.LEARNABLE_OFFSET.DCONV_FOR_LO_STRIDE,
+            learnable_offset=hparams.MODEL.DETAIL.DISPLACE_LEARNABLE_OFFSET,
             regress_offset=hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET,
-            LO_half_reversed_offset=hparams.MODEL.LEARNABLE_OFFSET.HALF_REVERSED_OFFSET,
+            half_reversed_offset=hparams.MODEL.LEARNABLE_OFFSET.HALF_REVERSED_OFFSET,
             previous_dischan=globalvars.displace_mods[-1] if hparams.MODEL.LEARNABLE_OFFSET.REUSE_OFFSET and len(globalvars.displace_mods) > 0 else None)
         globalvars.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
@@ -111,9 +94,8 @@ class OffsetBlock(nn.Module):
             return x
 
         out_pre = self.pre_offset(x)
-        out_dis, out_dis_LO = self.displace(out_pre)
-        if out_dis_LO is not None:
-            out_dis = out_dis_LO
+        out_dis = self.displace(out_pre)
+
         if self.atten_displace is not None:
             out_atten = self.atten_displace(x)
         else:

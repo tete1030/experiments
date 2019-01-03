@@ -311,34 +311,20 @@ class Experiment(BaseExperiment):
                 cur_lr_offset = param_group["init_lr"]
             param_group["lr"] = cur_lr_offset
 
-    def set_offset_learning_para(self, epoch, step):
-        for dm in globalvars.displace_mods:
-            if dm.LO_interpolate_kernel_type == "gaussian" and dm.learnable_offset and dm.LO_active:
-                if step >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and hparams.TRAIN.OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_STEP > 0 and hparams.TRAIN.OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_RATE > 0:
-                    step_offset = max(0, step - hparams.TRAIN.OFFSET.TRAIN_MIN_STEP)
-                    LO_sigma_new = float(dm.LO_sigma_init) * (hparams.TRAIN.OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_RATE ** (float(step_offset) / hparams.TRAIN.OFFSET.INTERPOLATE_GAUSSIAN_SIGMA_DECAY_STEP))
-                    LO_kernel_size_new = int(LO_sigma_new * 3) * 2 + 1
-                    dm.set_learnable_offset_para(LO_kernel_size_new, LO_sigma_new)
-
-                if dm.LO_kernel_size == 1:
-                    dm.switch_LO_state(False)
-
     def epoch_start(self, epoch, step, evaluate_only):
         if not evaluate_only:
             self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.LR_GAMMA)
             adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.LR_GAMMA)
             if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
                 self.set_offset_learning_rate(epoch, step)
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
-            self.set_offset_learning_para(epoch, step)
 
     def save_offsets(self, step):
         offset_disabled = True
         for dm in globalvars.displace_mods:
-            if dm.LO_active:
+            if dm.learnable_offset:
                 offset_disabled = False
         if not offset_disabled:
-            torch.save([(dm.get_all_offsets(detach=True) * dm.scale).cpu() for dm in globalvars.displace_mods], os.path.join(globalvars.main_context.checkpoint_dir, "offset_{}.pth".format(step)))
+            torch.save([(dm.get_all_offsets(detach=True) * dm.offset_scale).cpu() for dm in globalvars.displace_mods], os.path.join(globalvars.main_context.checkpoint_dir, "offset_{}.pth".format(step)))
 
     def epoch_end(self, epoch, step, evaluate_only):
         if not evaluate_only and not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
@@ -368,7 +354,7 @@ class Experiment(BaseExperiment):
                 dm = globalvars.displace_mods[idm]
                 if dm.offset.size(0) == 0:
                     continue
-                self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.scale).cpu())
+                self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.offset_scale).cpu())
                 move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
                 move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
             globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis"), {"mod": np.mean(move_dis_avg), "mod_cur": np.mean(move_dis)}, progress["step"] + 1)

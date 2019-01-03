@@ -6,7 +6,7 @@ from utils.globals import config, globalvars
 from utils.log import log_i
 import torch.nn.functional as F
 import numpy as np
-from .displace import Displace, DisplaceCUDA, CustomizedGradDepthwiseConv2d
+from .displace import DisplaceFracCUDA, PositionalDisplace
 from lib.models.common import StrictNaNReLU
 from lib.utils.lambdalayer import Lambda
 
@@ -43,198 +43,94 @@ class OffsetRegressor(nn.Module):
             self.regressor(torch.cat([pos_inp_x, pos_atten_x], dim=-1)),
             self.regressor(torch.cat([pos_inp_y, pos_atten_y], dim=-1))], dim=2)
 
+class OffsetTransformer(nn.Module):
+    def __init__(self, inplanes):
+        super(OffsetTransformer, self).__init__()
+        self.inplanes = inplanes
+        self.scale_regressor = nn.Sequential(
+            nn.Conv2d(inplanes, 1, kernel_size=3, padding=1, bias=False),
+            nn.Softsign())
+        self.angle_regressor = nn.Sequential(
+            nn.Conv2d(inplanes, 1, kernel_size=3, padding=1, bias=False),
+            nn.Softsign())
+
+    def forward(self, x, offsets):
+        scale = self.scale_regressor(x)
+        angle = self.angle_regressor(x)
+        offset_dim = offsets.dim()
+        offset_size = offsets.size()
+        scale_size = scale.size()
+
+        if offset_dim == 2:
+            offsets_x = offsets[:, 0].view(1, -1, 1, 1).expand(scale_size[0], -1, scale_size[2], scale_size[3])
+            offsets_y = offsets[:, 1].view(1, -1, 1, 1).expand(scale_size[0], -1, scale_size[2], scale_size[3])
+        elif offset_dim == 3:
+            offsets_x = offsets[:, :, 0].view(offset_size[0], offset_size[1], 1, 1).expand(-1, -1, scale_size[2], scale_size[3])
+            offsets_y = offsets[:, :, 1].view(offset_size[0], offset_size[1], 1, 1).expand(-1, -1, scale_size[2], scale_size[3])
+        scale = 1 + scale
+        angle = angle * np.pi
+        angle_ksin = (scale * angle.sin()).expand(-1, offset_size[-2], -1, -1)
+        angle_kcos = (scale * angle.cos()).expand(-1, offset_size[-2], -1, -1)
+
+        new_offsets_x = (angle_kcos * offsets_x) - (angle_ksin * offsets_y)
+        new_offsets_y = (angle_ksin * offsets_x) + (angle_kcos * offsets_y)
+
+        new_offsets = torch.stack([new_offsets_x, new_offsets_y], dim=-1)
+        return new_offsets
+
 class DisplaceChannel(nn.Module):
-    def __init__(self, height, width, init_stride, chan_per_init_pos,
-                 learnable_offset=False, LO_kernel_size=3, LO_sigma=0.5,
-                 disable_displace=False, random_offset_init=None, use_origin=False, actual_stride=None,
-                 displace_size=None, LO_balance_grad=True, free_offset_per_init_pos=1,
-                 dconv_for_LO_stride=1, regress_offset=False,
-                 LO_grad_inside_only=False, LO_half_reversed_offset=False,
-                 LO_interpolate_kernel_type="gaussian",
-                 previous_dischan=None):
+    def __init__(self, height, width, num_channels, num_offsets,
+                 disable_displace=False, learnable_offset=False, offset_scale=None,
+                 regress_offset=False, transform_offset=False, num_transformer_channels=None,
+                 half_reversed_offset=False, previous_dischan=None):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
-        self.scale = float(max(width, height))
-        self.init_stride = init_stride
-        self.chan_per_init_pos = chan_per_init_pos
-        self.learnable_offset = learnable_offset
+        self.num_channels = num_channels
+        self.num_offsets = num_offsets
+        assert num_channels % num_offsets == 0, "num of channels cannot be divided by number of offsets"
+        self.offset_scale = float(max(width, height)) if offset_scale is None else offset_scale
         self.disable_displace = disable_displace
-        self.random_offset_init = random_offset_init
-        self.use_origin = use_origin
-        self.actual_stride = actual_stride
-        self.displace_size = displace_size
-        self.free_offset_per_init_pos = free_offset_per_init_pos
-        self.dconv_for_LO_stride = dconv_for_LO_stride
-        self.LO_grad_inside_only = LO_grad_inside_only
-        self.LO_half_reversed_offset = LO_half_reversed_offset
-        self.num_init_y, self.num_init_x, self.num_init_pos = self.get_num_offset(height, width, displace_size, init_stride, use_origin)
-        self.inplanes = self.num_init_pos * self.chan_per_init_pos
+        self.half_reversed_offset = half_reversed_offset
         self.regress_offset = regress_offset
-        self.LO_interpolate_kernel_type = LO_interpolate_kernel_type
-        assert isinstance(LO_kernel_size, int)
-        assert LO_kernel_size % 2 == 1
-        self.LO_kernel_size_init = LO_kernel_size
-        self.LO_sigma_init = LO_sigma
-        self.LO_balance_grad = LO_balance_grad
-        self.set_learnable_offset_para(LO_kernel_size, LO_sigma)
+        self.transform_offset = transform_offset
 
         if not disable_displace:
             self.previous_dischan = previous_dischan
-            previous_offset_channels = 0
+            num_offsets_prev = 0
             if previous_dischan is not None:
                 assert isinstance(previous_dischan, DisplaceChannel)
                 assert self.random_offset_init is not None
-                previous_offset_channels = self.previous_dischan.get_all_offsets_num()
+                num_offsets_prev = self.previous_dischan.get_all_offsets_num()
 
-            assert self.num_init_pos * self.free_offset_per_init_pos >= previous_offset_channels
-            self.offset = nn.parameter.Parameter(torch.Tensor(self.num_init_pos * self.free_offset_per_init_pos - previous_offset_channels, 2), requires_grad=False)
-            self.init_offset()
-            if learnable_offset:
-                self.switch_LO_state(True)
-                self.offset.requires_grad = True
-            else:
-                self.switch_LO_state(False)
+            assert self.num_offsets >= num_offsets_prev
+            self.offset = nn.parameter.Parameter(torch.zeros(self.num_offsets - num_offsets_prev, 2), requires_grad=True)
+            self.switch_LO_state(learnable_offset)
 
             if regress_offset:
-                self.offset_regressor = OffsetRegressor(self.inplanes)
+                self.offset_regressor = OffsetRegressor(self.num_offsets)
+            if transform_offset:
+                assert num_transformer_channels is not None
+                self.offset_transformer = OffsetTransformer(num_transformer_channels)
         else:
             self.switch_LO_state(False)
-
-    def set_learnable_offset_para(self, kernel_size, sigma):
-        assert not hasattr(self, "LO_kernel_size") or self.LO_interpolate_kernel_type == "gaussian"
-        # TODO: Log
-        log_i("learnable offset para set to kernel_size={}, sigma={}".format(kernel_size, sigma))
-        assert kernel_size % 2 == 1
-        self.LO_kernel_size = kernel_size
-        self.LO_sigma = sigma
-
-        x = torch.arange(kernel_size, dtype=torch.float).view(1, -1, 1).expand(kernel_size, -1, -1) - float(kernel_size // 2)
-        y = torch.arange(kernel_size, dtype=torch.float).view(-1, 1, 1).expand(-1, kernel_size, -1) - float(kernel_size // 2)
-        field = torch.cat([x, y], dim=2).expand(1, -1, -1, -1)\
-            .repeat(self.num_init_pos * self.free_offset_per_init_pos, 1, 1, 1)
-        if self.LO_half_reversed_offset:
-            field = field.repeat(2, 1, 1, 1)
-        self.field = dict()
-        self.field[torch.device("cpu")] = field
-
-    def reset_learnable_offset_para(self):
-        self.set_learnable_offset_para(self.LO_kernel_size_init, self.LO_sigma_init)
 
     def switch_LO_state(self, active):
         if active:
             log_i("Learnable offset is enabled")
         else:
             log_i("Learnable offset is disabled")
-        self.LO_active = active
-
-    def offset_grad_hook(self, grad):
-        if self.LO_balance_grad:
-            area = (self.width - self.scale * self.offset.data[:, 0].round().abs()) * (self.height - self.scale * self.offset.data[:, 1].round().abs())
-            grad = grad / area.view(-1, 1)
-
-        return grad
-
-    @staticmethod
-    def get_num_offset(height, width, displace_size, init_stride, use_origin):
-        if displace_size:
-            num_x = displace_size[0]
-            num_y = displace_size[1]
-        else:
-            assert int(height) - init_stride > init_stride
-            assert int(width) - init_stride > init_stride
-            num_y = (int(height) - init_stride) // init_stride * 2 + 1
-            num_x = (int(width) - init_stride) // init_stride * 2 + 1
-
-        num_pos = num_y * num_x
-        if not use_origin:
-            num_pos -= 1
-        return num_y, num_x, num_pos
-
-    def init_offset(self):
-        nh, nw = self.num_init_y, self.num_init_x
-        if self.random_offset_init is not None:
-            self.offset.data.uniform_(-self.random_offset_init, self.random_offset_init)
-            return
-
-        assert self.offset.size(0) == self.num_init_pos * self.free_offset_per_init_pos
-        count_off = 0
-        for ih in range(-(nh // 2), nh // 2 + 1):
-            for iw in range(-(nw // 2), nw // 2 + 1):
-                if not self.use_origin and ih == 0 and iw == 0:
-                    continue
-                if not self.actual_stride:
-                    self.offset.data[count_off*self.free_offset_per_init_pos:(count_off+1)*self.free_offset_per_init_pos, 0] = iw * self.init_stride / self.scale
-                    self.offset.data[count_off*self.free_offset_per_init_pos:(count_off+1)*self.free_offset_per_init_pos, 1] = ih * self.init_stride / self.scale
-                else:
-                    self.offset.data[count_off*self.free_offset_per_init_pos:(count_off+1)*self.free_offset_per_init_pos, 0] = iw * self.actual_stride / self.scale
-                    self.offset.data[count_off*self.free_offset_per_init_pos:(count_off+1)*self.free_offset_per_init_pos, 1] = ih * self.actual_stride / self.scale
-                count_off += 1
+        self.learnable_offset = active
 
     def reset_outsider(self):
         if self.offset.size(0) == 0:
             return
 
-        self.offset.data[:, 0].clamp_(min=(-self.width + 0.6) / self.scale,
-                                      max=(self.width - 0.6) / self.scale)
-        self.offset.data[:, 1].clamp_(min=(-self.height + 0.6) / self.scale,
-                                      max=(self.height - 0.6) / self.scale)
-
-    def interpolate(self, x, offset_rel):
-        batch_size = x.size(0)
-        num_channels = x.size(1)
-        height = x.size(2)
-        width = x.size(3)
-        free_offsets = offset_rel.size(-2)
-        bind_chan = num_channels // free_offsets
-        field = self.field[x.device]
-        suboffset_rel = offset_rel - offset_rel.detach().round()
-        if offset_rel.dim() == 3:
-            if self.LO_interpolate_kernel_type == "gaussian":
-                # Dynamic offset
-                kernel = torch.exp(- (field[None] + suboffset_rel[:, :, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
-                kernel = kernel / kernel.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
-            elif self.LO_interpolate_kernel_type == "bilinear":
-                kernel = (1 - (field[None] + suboffset_rel[:, :, None, None, :]).abs()).clamp(min=0).prod(dim=-1)
-            # nsamp*npos*bind_chan x kh x kw
-            kernel = kernel.view(batch_size*free_offsets, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, bind_chan, 1, 1).view(batch_size*num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
-            # 1 x nsamp*npos*bind_chan x height x width
-            out = CustomizedGradDepthwiseConv2d.apply(
-                x.view(1, batch_size*num_channels, height, width), kernel, None,
-                (1, 1),
-                (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride),
-                (self.dconv_for_LO_stride, self.dconv_for_LO_stride),
-                batch_size*num_channels,
-                offset_rel.detach().round().int().view(-1, 2) if self.LO_grad_inside_only else None,
-                bind_chan,
-                (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride))
-            out = out.view(batch_size, num_channels, height, width)
-            return out
-        elif offset_rel.dim() == 2:
-            # Static offset
-            if self.LO_interpolate_kernel_type == "gaussian":
-                # The offset means which direction and how long we should move the image,
-                # while for each kernel at each individual place, -offset is the center where it should 'look at',
-                # so the field becomes to force - (-offset.float) -> force + offset.float
-                kernel = torch.exp(- (field + suboffset_rel[:, None, None, :]).pow(2).sum(dim=-1) / 2 / float(self.LO_sigma) ** 2)
-                kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
-            elif self.LO_interpolate_kernel_type == "bilinear":
-                kernel = (1 - (field + suboffset_rel[:, None, None, :]).abs()).clamp(min=0).prod(dim=-1)
-            # npos*bind_chan x kh x kw
-            kernel = kernel.view(free_offsets, 1, self.LO_kernel_size, self.LO_kernel_size).repeat(1, bind_chan, 1, 1).view(num_channels, 1, self.LO_kernel_size, self.LO_kernel_size)
-            # nsamp x npos*bind_chan x height x width
-            out = CustomizedGradDepthwiseConv2d.apply(
-                x, kernel, None,
-                (1, 1),
-                (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride),
-                (self.dconv_for_LO_stride, self.dconv_for_LO_stride),
-                num_channels,
-                offset_rel.detach().round().int() if self.LO_grad_inside_only else None,
-                bind_chan,
-                (self.LO_kernel_size // 2 * self.dconv_for_LO_stride, self.LO_kernel_size // 2 * self.dconv_for_LO_stride))
-            return out
-        else:
-            raise ValueError()
+        # At lease 2x2 pixels for receiving grad
+        self.offset.data[:, 0].clamp_(min=(-self.width + 2.1) / self.offset_scale,
+                                      max=(self.width - 2.1) / self.offset_scale)
+        self.offset.data[:, 1].clamp_(min=(-self.height + 2.1) / self.offset_scale,
+                                      max=(self.height - 2.1) / self.offset_scale)
 
     def get_all_offsets_num(self):
         offsets_num = self.offset.size(0)
@@ -257,27 +153,25 @@ class DisplaceChannel(nn.Module):
 
         return all_offsets
 
-    def forward(self, inp, LO_active=None, offset_plus_rel=None):
+    def forward(self, inp, detach_offset=False, offset_plus_rel=None, transformer_source=None):
         batch_size = inp.size(0)
         num_channels = inp.size(1)
         height = inp.size(2)
         width = inp.size(3)
         device = inp.device
-        free_offsets = self.num_init_pos * self.free_offset_per_init_pos
-        assert self.height == height and self.width == width
-        assert num_channels % free_offsets == 0, "num of channels cannot be divided by number of offsets"
-        assert offset_plus_rel is None or offset_plus_rel.size(1) == free_offsets
+        assert self.height == height and self.width == width and self.num_channels == num_channels
+        assert offset_plus_rel is None or offset_plus_rel.size(1) == self.num_offsets
 
-        LO_active = self.learnable_offset and (LO_active is True or (LO_active is None and self.LO_active is True))
-        out_LO = None
+        if not self.learnable_offset:
+            detach_offset = True
 
         if not self.disable_displace:
-            offset_rel = self.get_all_offsets()
+            offset_rel = self.get_all_offsets(detach=detach_offset)
 
             if offset_plus_rel is not None:
                 offset_rel = offset_rel[None] + offset_plus_rel
 
-            offset_abs = offset_rel * self.scale
+            offset_abs = offset_rel * self.offset_scale
 
             if self.regress_offset:
                 raise ValueError("No atten map provided")
@@ -286,27 +180,34 @@ class DisplaceChannel(nn.Module):
                 offset_regressed_abs = self.offset_regressor(inp, None)
                 offset_abs = offset_abs + offset_regressed_abs
 
-            if LO_active and self.LO_balance_grad:
-                offset_abs.register_hook(self.offset_grad_hook)
+            if self.transform_offset:
+                offset_abs = self.offset_transformer(inp if transformer_source is None else transformer_source, offset_abs)
 
-            bind_chan = num_channels // free_offsets
-            if self.LO_half_reversed_offset:
+            offset_dim = offset_abs.dim()
+
+            bind_chan = num_channels // self.num_offsets
+            if self.half_reversed_offset:
                 assert bind_chan % 2 == 0
                 bind_chan = bind_chan // 2
-                offset_abs = torch.cat([offset_abs, -offset_abs], dim=-2)
+                if offset_dim in [2, 3]:
+                    offset_abs = torch.cat([offset_abs, -offset_abs], dim=-2)
+                elif offset_dim == 5:
+                    offset_abs = torch.cat([offset_abs, -offset_abs], dim=1)
+                else:
+                    raise ValueError()
 
-            if offset_abs.dim() == 3:
-                out = DisplaceCUDA.apply(inp.view(1, -1, height, width), offset_abs.detach().round().int().view(-1, 2), bind_chan).view(batch_size, -1, height, width)
-            elif offset_abs.dim() == 2:
-                out = DisplaceCUDA.apply(inp, offset_abs.detach().round().int(), bind_chan)
+            if detach_offset:
+                offset_abs = offset_abs.detach()
+
+            if offset_dim == 2:
+                out = DisplaceFracCUDA.apply(inp, offset_abs, bind_chan)
+            elif offset_dim == 3:
+                out = DisplaceFracCUDA.apply(inp.view(1, -1, height, width), offset_abs.view(-1, 2), bind_chan).view(batch_size, -1, height, width)
+            elif offset_dim == 5:
+                out = PositionalDisplace.apply(inp, offset_abs, bind_chan)
             else:
                 raise ValueError()
 
-            if LO_active:
-                if device not in self.field:
-                    self.field[device] = self.field[torch.device("cpu")].to(device)
-
-                out_LO = self.interpolate(out, offset_abs)
         else:
             out = inp
 
@@ -337,4 +238,4 @@ class DisplaceChannel(nn.Module):
             fig.suptitle("displace out")
             plt.show()
 
-        return out, out_LO
+        return out
