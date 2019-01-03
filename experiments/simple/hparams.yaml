@@ -1,0 +1,75 @@
+exp:
+    name: simpleoff
+    id: 1
+
+train:
+    learning_rate: 5.e-4
+    lr_gamma: 0.5
+    num_epoch: 100
+    schedule: []
+    train_batch: 16
+    test_batch: 16
+    weight_decay: 0
+    offset:
+        train_min_step: 200
+        lr: 1.e-3
+        lr_regressor: 1.e-3
+        lr_gamma: 0.3
+        lr_decay_step: 100000 # 15 * 6543
+        bn_momentum: 0.1
+        momentum: 0.0
+
+eval:
+    parse_threshold: 0.1
+
+config:
+    store_map: false
+    valid_interval: 1000
+
+log:
+    # TODO: Make log configurable
+    # TODO: log more:
+    # - Unstable network parapmeter changes
+    # - Intermediate result and visualization
+    tb_domain: offset
+    move_average_cycle: 500
+    offset_save_interval: 1000
+    tb_vis_interval: 3000
+    tb_gradient_interval: 3000
+
+model:
+    use_gn: true
+    inp_shape: [192, 256] # W, H
+    out_shape: [48, 64] # W, H
+    gaussian_kernel: 1.4
+    detail:
+        disable_displace: false
+        displace_learnable_offset: true
+        loss_final: labeled
+        enable_offset_block: true
+
+    learnable_offset:
+        expand_chan_ratio: [4, 4, 4]
+        bind_chan: 1
+        reuse_offset: false
+        half_reversed_offset: false
+        regress_offset: false
+        transform_offset: true
+        enable_atten: true
+        enable_mask: false
+
+dataset:
+    profile: coco
+    subset: 0.3
+    coco:
+        mean_std_file: mean_std.pth
+        ext_border: [0.1, 0.15]
+        scale_factor: 0.25
+        rotate_factor: 30
+        translation_factor: 0.05
+    mpii:
+        mean_std_file: mean_std.pth
+        ext_border: [0.1, 0.15]
+        scale_factor: 0.25
+        rotate_factor: 30
+        translation_factor: 0.02
