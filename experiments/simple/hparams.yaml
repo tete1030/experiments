@@ -1,6 +1,6 @@
 exp:
     name: simpleoff
-    id: 2
+    id: 3
 
 train:
     learning_rate: 5.e-4
@@ -54,7 +54,7 @@ model:
         reuse_offset: false
         half_reversed_offset: false
         regress_offset: false
-        transform_offset: false
+        transform_offset: true
         enable_atten: true
         enable_mask: false
 

@@ -287,9 +287,17 @@ class Experiment(BaseExperiment):
 
     def epoch_start(self, epoch, step, evaluate_only):
         if not evaluate_only:
-            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.LR_GAMMA)
+            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.LR_GAMMA) 
             if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
                 self.set_offset_learning_rate(epoch, step)
+            if isinstance(self.train_dataset, Subset):
+                train_dataset = self.train_dataset.dataset
+            else:
+                train_dataset = self.train_dataset
+            if epoch <= 40:
+                train_dataset.set_resize_scale(0.25 + 0.75 * (epoch - 1) / 40)
+            else:
+                train_dataset.set_resize_scale(1)
 
     def save_offsets(self, step):
         offset_disabled = True
@@ -530,9 +538,6 @@ class OffsetBlock(nn.Module):
             self.downsample = None
 
     def forward(self, x, transformer_source=None):
-        if config.check:
-            assert x.size(2) == self.height and x.size(3) == self.width
-
         if globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             return x
 
