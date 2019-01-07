@@ -8,6 +8,7 @@ import numpy as np
 from io import StringIO
 from ruamel.yaml import YAML
 from collections import OrderedDict
+import traceback
 
 if os.name == 'nt':
     import msvcrt
@@ -19,23 +20,27 @@ def wait_key(tip="Press any key to continue ..."):
     ''' Wait for a key press on the console and return it. '''
     if tip is not None:
         print(tip)
-    result = None
-    if os.name == 'nt':
-        result = msvcrt.getch()
-    else:
-        fd = sys.stdin.fileno()
+    result = ""
+    try:
+        if os.name == 'nt':
+            result = msvcrt.getch()
+        else:
+            fd = sys.stdin.fileno()
 
-        oldterm = termios.tcgetattr(fd)
-        newattr = termios.tcgetattr(fd)
-        newattr[3] = newattr[3] & ~termios.ICANON & ~termios.ECHO
-        termios.tcsetattr(fd, termios.TCSANOW, newattr)
+            oldterm = termios.tcgetattr(fd)
+            newattr = termios.tcgetattr(fd)
+            newattr[3] = newattr[3] & ~termios.ICANON & ~termios.ECHO
+            termios.tcsetattr(fd, termios.TCSANOW, newattr)
 
-        try:
-            result = sys.stdin.read(1)
-        except IOError:
-            pass
-        finally:
-            termios.tcsetattr(fd, termios.TCSAFLUSH, oldterm)
+            try:
+                result = sys.stdin.read(1)
+            except IOError:
+                pass
+            finally:
+                termios.tcsetattr(fd, termios.TCSAFLUSH, oldterm)
+    except Exception as e:
+        print("Uncaught exception during wait_key: " + str(type(e)) + ", " + str(e))
+
     print(result, end="")
 
     return result

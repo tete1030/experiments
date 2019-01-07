@@ -150,10 +150,20 @@ def init_run(run_id):
         exp_name=exp_name,
         exp_id=exp_id,
         run_id=run_id)
+    checkpoint_archive_dest = config.checkpoint_archive_dest_template.format(
+        exp_name=exp_name,
+        exp_id=exp_id,
+        run_id=run_id)
+    run_archive_dest = config.run_archive_dest_template.format(
+        exp_name=exp_name,
+        exp_id=exp_id,
+        run_id=run_id)
 
     globalvars.main_context.run_id = run_id
     globalvars.main_context.checkpoint_dir = checkpoint_dir
     globalvars.main_context.run_dir = run_dir
+    globalvars.main_context.checkpoint_archive_dest = checkpoint_archive_dest
+    globalvars.main_context.run_archive_dest = run_archive_dest
 
 def prepare_checkpoint_dir(resume_run_id):
     checkpoint_dir = globalvars.main_context.checkpoint_dir
@@ -270,23 +280,27 @@ def cleanup(resume_run_id, caught_exception, exit_exception):
     except AttributeError:
         print("No run or checkpoint files created")
     else:
-        do_deletion = (
-            resume_run_id is None \
-            and (
-                isinstance(exit_exception, ExitWithDelete) \
-                or (not ask("Save run and checkpoint?", posstr="y", negstr="delete", ansretry=2, ansdefault=True, timeout_sec=60 if caught_exception is None else None) \
-                    and input("Input name {} to delete: ".format(globalvars.main_context.run_id)) == globalvars.main_context.run_id)))
+        do_archive = False
+        if resume_run_id is None:
+            if isinstance(exit_exception, ExitWithDelete):
+                do_archive = True
+            elif not ask("Save run and checkpoint?", posstr="y", negstr="archive", ansretry=2, ansdefault=True, timeout_sec=60 if caught_exception is None else None):
+                do_archive = True
 
-        if do_deletion:
-            log_i("Deleting run")
+        if do_archive:
+            log_i("Archiving run")
             if os.path.exists(globalvars.main_context.run_dir):
-                shutil.rmtree(globalvars.main_context.run_dir)
+                if not os.path.isdir(globalvars.main_context.run_archive_dest):
+                    os.makedirs(globalvars.main_context.run_archive_dest)
+                shutil.move(globalvars.main_context.run_dir, globalvars.main_context.run_archive_dest)
             else:
                 log_i("Run dir do not exist")
-            log_i("Deleting checkpoint")
+            log_i("Archiving checkpoint")
             if os.path.realpath(globalvars.main_context.run_dir) != os.path.realpath(globalvars.main_context.checkpoint_dir):
                 if os.path.exists(globalvars.main_context.checkpoint_dir):
-                    shutil.rmtree(globalvars.main_context.checkpoint_dir)
+                    if not os.path.isdir(globalvars.main_context.checkpoint_archive_dest):
+                        os.makedirs(globalvars.main_context.checkpoint_archive_dest)
+                    shutil.move(globalvars.main_context.checkpoint_dir, globalvars.main_context.checkpoint_archive_dest)
                 else:
                     log_i("Checkpoint dir do not exist")
         else:
@@ -296,7 +310,7 @@ def cleanup(resume_run_id, caught_exception, exit_exception):
         import traceback
         wait_key(tip="Press any key to print exception...")
         print(''.join(traceback.format_exception(etype=type(caught_exception), value=caught_exception, tb=caught_exception.__traceback__)))
-        if wait_key(tip="Press `d` to debug or other keys to exit...").lower() == "d":
+        if wait_key(tip="Press `d` to debug or other keys to exit...").lower() in ["d", ""]:
             import ipdb; ipdb.post_mortem(caught_exception.__traceback__)
 
 def main(args):
@@ -506,7 +520,7 @@ def validate(exp:BaseExperiment, epoch:int, cur_step:int, call_store:bool) -> No
     if call_store:
         exp.process_stored(epoch_ctx, epoch, cur_step)
 
-def get_args():
+def get_args(args=None):
     argp = argparse.ArgumentParser()
     argp.add_argument("CONF", type=str, nargs="?", default="default")
     argp.add_argument("EXP", type=str, nargs="?", default="main")
@@ -517,7 +531,10 @@ def get_args():
     argp.add_argument("--ptvsd", action="store_true")
     argp.add_argument("-p", "--hparams", nargs=2, metavar=("var", "value"), action="append")
     argp.add_argument("-c", "--config", nargs=2, metavar=("var", "value"), action="append")
-    return argp.parse_args()
+    if args is None:
+        return argp.parse_args()
+    else:
+        return argp.parse_args(args)
 
 if __name__ == "__main__":
     _args = get_args()
