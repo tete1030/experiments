@@ -14,29 +14,28 @@ def transform_maps(x, scale, rotate, blur_sigma):
     in_channels = x.size(1)
     height = x.size(2)
     width = x.size(3)
-    hx = (width - 1) / 2
-    hy = (height - 1) / 2
+
     scale_mat = torch.zeros(batch_size, 3, 3, device=x.device)
     scale = scale.to(x.device)
     rotate = rotate.to(x.device)
     if blur_sigma is not None:
         blur_sigma = blur_sigma.to(x.device)
 
-    scale_mat[:, 0, 0] = scale
+    ratio = width / height
+
+    scale_mat[:, 0, 0] = scale * ratio
     scale_mat[:, 1, 1] = scale
-    scale_mat[:, 0, 2] = - scale * hx
-    scale_mat[:, 1, 2] = - scale * hy
     scale_mat[:, 2, 2] = 1
 
     rotate_sin = torch.sin(rotate)
     rotate_cos = torch.cos(rotate)
     rotate_mat = torch.zeros(batch_size, 2, 3, device=x.device)
-    rotate_mat[:, 0, 0] = rotate_cos
-    rotate_mat[:, 0, 1] = -rotate_sin
-    rotate_mat[:, 0, 2] = hx
+    rotate_mat[:, 0, 0] = rotate_cos / ratio
+    rotate_mat[:, 0, 1] = -rotate_sin / ratio
+    rotate_mat[:, 0, 2] = 0
     rotate_mat[:, 1, 0] = rotate_sin
     rotate_mat[:, 1, 1] = rotate_cos
-    rotate_mat[:, 1, 2] = hy
+    rotate_mat[:, 1, 2] = 0
 
     theta = torch.bmm(rotate_mat, scale_mat)
     grid = affine_grid(theta, x.size())

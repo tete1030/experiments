@@ -54,9 +54,26 @@ class OffsetTransformer(nn.Module):
             nn.Conv2d(inplanes, 1, kernel_size=3, padding=1, bias=False),
             nn.Softsign())
 
+    def visualize(self, scale, angle):
+        import matplotlib.pyplot as plt
+        batch_size = scale.size(0)
+        assert globalvars.main_context.exp.data_source == "coco"
+        img = globalvars.main_context.exp.val_dataset.restore_image(globalvars.cur_img.cpu().numpy())
+        scale = scale.detach().cpu().numpy()
+        angle = angle.detach().cpu().numpy()
+        for i in range(batch_size):
+            fig, axes = plt.subplots(1, 3, figsize=(20, 8))
+            axes[0].imshow(img[i])
+            axes[1].imshow(scale[i, 0], vmin=-1, vmax=1)
+            axes[2].imshow(angle[i, 0], vmin=-1, vmax=1)
+            fig.show()
+            plt.show()
+
     def forward(self, x, offsets):
         scale = self.scale_regressor(x)
         angle = self.angle_regressor(x)
+        if config.vis and False:
+            self.visualize(scale, angle)
         offset_dim = offsets.dim()
         offset_size = offsets.size()
         scale_size = scale.size()

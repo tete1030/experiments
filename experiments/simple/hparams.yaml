@@ -48,6 +48,7 @@ model:
         disable_displace: false
         displace_learnable_offset: true
         loss_final: labeled
+        loss_feature: true
         enable_offset_block: true
 
     learnable_offset:

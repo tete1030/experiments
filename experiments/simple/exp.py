@@ -39,6 +39,7 @@ class GroupNormWrapper(nn.GroupNorm):
 
 class Experiment(BaseExperiment):
     def init(self):
+        globalvars.offsetblock_counter = 0
         globalvars.displace_mods = list()
         globalvars.offsetblock_output = dict()
 
@@ -58,7 +59,7 @@ class Experiment(BaseExperiment):
             globalvars.BatchNorm2dImpl = nn.BatchNorm2d
 
         self.model = nn.DataParallel(MyPose(self.num_parts).cuda())
-        assert OffsetBlock._counter == len(hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO) or not hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK
+        assert globalvars.offsetblock_counter == len(hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO) or not hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK
 
         # Separate parameters
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
@@ -235,7 +236,7 @@ class Experiment(BaseExperiment):
 
         try:
             tb_writer = globalvars.main_context.tb_writer
-        except KeyError:
+        except AttributeError:
             tb_writer = None
 
         if self.data_source == "coco":
@@ -418,14 +419,26 @@ class Experiment(BaseExperiment):
         loss = ((output_maps - det_map_gt_cuda).pow(2) * \
             masking_final).mean().sqrt()
 
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and self.transformer_optimizer and progress["step"] >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and progress["train"]:
+        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and self.transformer_optimizer and progress["step"] >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and progress["train"] and hparams.MODEL.DETAIL.LOSS_FEATURE:
             scale = torch.tensor(truncnorm.rvs(-1, 1, loc=1, scale=0.5, size=batch_size)).float()
             rotate = torch.tensor(truncnorm.rvs(-1, 1, loc=0, scale=np.pi/6, size=batch_size)).float()
-            blur_sigma = torch.tensor(np.abs(truncnorm.rvs(-1, 1, loc=0, scale=0.5, size=batch_size))).float()
-            img_trans = transform_maps(img, scale, rotate, blur_sigma)
+            # blur_sigma = torch.tensor(np.abs(truncnorm.rvs(-1, 1, loc=0, scale=3, size=batch_size))).float()
+            mean_img = torch.tensor(self.val_dataset.mean, dtype=torch.float, device=img.device)[None, :, None, None]
+            img_trans = transform_maps(img + mean_img, scale, rotate, None) - mean_img
             offoutputs_trans = list()
             for offout in offoutputs:
                 offoutputs_trans.append(transform_maps(offout.detach(), scale, rotate, None))
+
+            if config.vis:
+                import matplotlib.pyplot as plt
+                show_img_num = min(3, len(img))
+                fig, axes = plt.subplots(show_img_num, 2, figsize=(16, 10 * show_img_num))
+                img_show = self.val_dataset.restore_image(img.cpu())
+                img_trans_show = self.val_dataset.restore_image(img_trans.cpu())
+                for iimg in range(show_img_num):
+                    axes[iimg, 0].imshow(img_show[iimg])
+                    axes[iimg, 1].imshow(img_trans_show[iimg])
+                plt.show()
 
             set_requires_grad(self.normal_parameters, False)
             set_requires_grad(self.offset_parameters, False)
@@ -559,7 +572,6 @@ class Attention(nn.Module):
         return self.atten(x)
 
 class OffsetBlock(nn.Module):
-    _counter = 0
     def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1):
         super(OffsetBlock, self).__init__()
         self.height = height
@@ -782,8 +794,8 @@ class SimpleEstimator(nn.Module):
                 hparams.MODEL.INP_SHAPE[0] // self.inshape_factor,
                 self.inplanes,
                 self.inplanes,
-                int(self.inplanes * hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter])))
-            OffsetBlock._counter += 1
+                int(self.inplanes * hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[globalvars.offsetblock_counter])))
+            globalvars.offsetblock_counter += 1
 
     def _make_layer(self, block, planes, blocks, res_index, stride=1):
         downsample = None
