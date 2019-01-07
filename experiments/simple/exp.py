@@ -452,7 +452,7 @@ class Experiment(BaseExperiment):
             for ioff, offout_trans in enumerate(offoutputs_trans):
                 feature_loss = feature_loss + (offoutputs_img_trans[ioff] - offout_trans).pow(2).mean()
 
-            loss = loss + feature_loss * 0.1
+            loss = loss + feature_loss
             epoch_ctx.add_scalar("feature_loss", feature_loss.item())
 
         # dirty trick for debug, release
