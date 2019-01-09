@@ -419,7 +419,7 @@ class Experiment(BaseExperiment):
         loss = ((output_maps - det_map_gt_cuda).pow(2) * \
             masking_final).mean().sqrt()
 
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and self.transformer_optimizer and progress["step"] >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and progress["train"] and hparams.MODEL.DETAIL.LOSS_FEATURE:
+        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and self.transformer_optimizer and progress["step"] >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and progress["train"] and hparams.MODEL.LOSS_FEATSTAB:
             scale = torch.tensor(truncnorm.rvs(-1, 1, loc=1, scale=0.5, size=batch_size)).float()
             rotate = torch.tensor(truncnorm.rvs(-1, 1, loc=0, scale=np.pi/6, size=batch_size)).float()
             # blur_sigma = torch.tensor(np.abs(truncnorm.rvs(-1, 1, loc=0, scale=3, size=batch_size))).float()
@@ -452,7 +452,7 @@ class Experiment(BaseExperiment):
             for ioff, offout_trans in enumerate(offoutputs_trans):
                 feature_loss = feature_loss + (offoutputs_img_trans[ioff] - offout_trans).pow(2).mean()
 
-            loss = loss + 0.1 * feature_loss
+            loss = loss + hparams.MODEL.LOSS_FEATSTAB_COF * feature_loss
             epoch_ctx.add_scalar("feature_loss", feature_loss.item())
 
         # dirty trick for debug, release

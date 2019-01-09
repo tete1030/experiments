@@ -44,11 +44,13 @@ model:
     inp_shape: [192, 256] # W, H
     out_shape: [48, 64] # W, H
     gaussian_kernel: 1.4
+    loss_featstab: true
+    loss_featstab_cof: 1
     detail:
         disable_displace: false
         displace_learnable_offset: true
         loss_final: labeled
-        loss_feature: true
+        
         enable_offset_block: true
 
     learnable_offset:
