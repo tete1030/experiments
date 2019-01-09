@@ -72,7 +72,7 @@ class OffsetTransformer(nn.Module):
     def forward(self, x, offsets):
         scale = self.scale_regressor(x)
         angle = self.angle_regressor(x)
-        if config.vis and False:
+        if config.vis:
             self.visualize(scale, angle)
         offset_dim = offsets.dim()
         offset_size = offsets.size()

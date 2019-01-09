@@ -429,7 +429,7 @@ class Experiment(BaseExperiment):
             for offout in offoutputs:
                 offoutputs_trans.append(transform_maps(offout.detach(), scale, rotate, None))
 
-            if config.vis:
+            if config.vis and False:
                 import matplotlib.pyplot as plt
                 show_img_num = min(3, len(img))
                 fig, axes = plt.subplots(show_img_num, 2, figsize=(16, 10 * show_img_num))
@@ -452,7 +452,7 @@ class Experiment(BaseExperiment):
             for ioff, offout_trans in enumerate(offoutputs_trans):
                 feature_loss = feature_loss + (offoutputs_img_trans[ioff] - offout_trans).pow(2).mean()
 
-            loss = loss + feature_loss
+            loss = loss + 0.1 * feature_loss
             epoch_ctx.add_scalar("feature_loss", feature_loss.item())
 
         # dirty trick for debug, release
@@ -629,10 +629,10 @@ class OffsetBlock(nn.Module):
 
         out_final = self.relu(self.bn(out_skip))
 
-        device = out_final.device
-        if out_final.device not in globalvars.offsetblock_output:
+        device = out_post.device
+        if out_post.device not in globalvars.offsetblock_output:
             globalvars.offsetblock_output[device] = list()
-        globalvars.offsetblock_output[device].append(out_final)
+        globalvars.offsetblock_output[device].append(out_post)
 
         if config.debug_nan:
             def get_backward_hook(var_name):
