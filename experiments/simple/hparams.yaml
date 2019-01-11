@@ -44,13 +44,12 @@ model:
     inp_shape: [192, 256] # W, H
     out_shape: [48, 64] # W, H
     gaussian_kernel: 1.4
-    loss_featstab: true
+    loss_featstab: false
     loss_featstab_cof: 1
     detail:
         disable_displace: false
         displace_learnable_offset: true
         loss_final: labeled
-        
         enable_offset_block: true
 
     learnable_offset:
@@ -59,9 +58,10 @@ model:
         reuse_offset: false
         half_reversed_offset: false
         regress_offset: false
-        transform_offset: true
+        transform_offset: false
         enable_atten: true
         enable_mask: false
+        dpool_size: 7
 
 dataset:
     profile: coco

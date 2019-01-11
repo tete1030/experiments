@@ -12,6 +12,7 @@ from torch.nn import DataParallel
 from torch.nn.modules.utils import _pair
 import torch.nn.functional as F
 from torch.utils.data import Subset
+import torchvision.utils as vutils
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
@@ -41,6 +42,7 @@ class Experiment(BaseExperiment):
     def init(self):
         globalvars.offsetblock_counter = 0
         globalvars.displace_mods = list()
+        globalvars.dpools = list()
         globalvars.offsetblock_output = dict()
 
         self.data_source = hparams.DATASET.PROFILE
@@ -336,6 +338,8 @@ class Experiment(BaseExperiment):
                 offset_disabled = False
         if not offset_disabled:
             torch.save([(dm.get_all_offsets(detach=True) * dm.offset_scale).cpu() for dm in globalvars.displace_mods], os.path.join(globalvars.main_context.checkpoint_dir, "offset_{}.pth".format(step)))
+            if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
+                torch.save([dp.sigma.cpu() for dp in globalvars.dpools], os.path.join(globalvars.main_context.checkpoint_dir, "dpool_{}.pth".format(step)))
 
     def epoch_end(self, epoch, step, evaluate_only):
         if not evaluate_only and not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
@@ -571,6 +575,30 @@ class Attention(nn.Module):
 
         return self.atten(x)
 
+class DynamicPooling(nn.Module):
+    def __init__(self, num_channels, kernel_size):
+        super(DynamicPooling, self).__init__()
+        self.num_channels = num_channels
+        self.kernel_size = kernel_size
+        assert kernel_size % 2 == 1
+        x = torch.arange(-(kernel_size // 2), (kernel_size // 2) + 1).view(1, -1).expand(kernel_size, -1)
+        y = torch.arange(-(kernel_size // 2), (kernel_size // 2) + 1).view(-1, 1).expand(-1, kernel_size)
+        dissq = torch.stack((x, y), dim=0).pow(2).float().sum(dim=0)
+        self.register_buffer("dissq", dissq)
+        self.sigma = nn.Parameter(torch.zeros(num_channels))
+        self.sigma.data.fill_(kernel_size / 2)
+        self.eps = np.finfo(np.float32).eps.item()
+        globalvars.dpools.append(self)
+
+    def forward(self, x):
+        kernel = torch.exp(-(self.dissq / 2)[None] / (self.sigma.pow(2)[:, None, None] + self.eps))
+        kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
+        kernel = kernel.view(self.num_channels, 1, self.kernel_size, self.kernel_size)
+        expx = torch.exp(x)
+        gp_expx = F.conv2d(expx, kernel, padding=(self.kernel_size // 2, self.kernel_size // 2), groups=self.num_channels)
+        pooled = torch.log(gp_expx + self.eps)
+        return pooled
+
 class OffsetBlock(nn.Module):
     def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1):
         super(OffsetBlock, self).__init__()
@@ -610,19 +638,30 @@ class OffsetBlock(nn.Module):
                           kernel_size=1, stride=stride, bias=False)
         else:
             self.downsample = None
+        
+        if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
+            self.dpool = DynamicPooling(self.displace_planes, hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE)
+        else:
+            self.dpool = None
 
     def forward(self, x, transformer_source=None):
         if globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             return x
 
         out_pre = self.pre_offset(x)
+
+        if self.dpool:
+            out_dis = self.dpool(out_pre)
+
         out_dis = self.displace(out_pre, transformer_source=transformer_source)
 
         if self.atten_displace is not None:
             out_atten = self.atten_displace(x)
+            out_dis = out_dis * out_atten
         else:
             out_atten = None
-        out_post = self.post_offset(out_atten * out_dis if out_atten is not None else out_dis)
+
+        out_post = self.post_offset(out_dis)
         if self.downsample is not None:
             x = self.downsample(x)
         out_skip = x + (out_post * self.atten_post(x) if self.atten_post is not None else out_post)
@@ -635,6 +674,7 @@ class OffsetBlock(nn.Module):
         globalvars.offsetblock_output[device].append(out_post)
 
         if config.debug_nan:
+            assert False, "out_pre and out_dis are replaced"
             def get_backward_hook(var_name):
                 def _backward_hook(grad):
                     exp = self
