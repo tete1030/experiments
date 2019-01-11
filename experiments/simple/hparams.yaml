@@ -12,7 +12,7 @@ train:
     weight_decay: 0
     gradual_size: false
     offset:
-        train_min_step: 200
+        train_min_step: 3000
         lr: 1.e-3
         lr_regressor: 1.e-3
         lr_transformer: 5.e-4
@@ -61,7 +61,7 @@ model:
         transform_offset: false
         enable_atten: true
         enable_mask: false
-        dpool_size: 15
+        dpool_size: 7
 
 dataset:
     profile: coco
