@@ -64,7 +64,7 @@ model:
         transform_offset: false
         enable_atten: true
         enable_mask: false
-        dpool_size: 7
+        dpool_size: 15
 
 dataset:
     profile: coco
