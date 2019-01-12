@@ -621,7 +621,7 @@ class DynamicPooling(nn.Module):
         kernel = torch.exp(-(self.dissq / 2)[None] / (self.sigma.pow(2)[:, None, None] + self.eps))
         kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
         kernel = kernel.view(self.num_channels, 1, self.kernel_size, self.kernel_size)
-        expx = torch.exp(x)
+        expx = torch.exp(x.clamp(max=88.722835))
         gp_expx = F.conv2d(expx, kernel, padding=(self.kernel_size // 2, self.kernel_size // 2), groups=self.num_channels)
         pooled = torch.log(gp_expx + self.eps)
         return pooled
