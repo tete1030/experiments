@@ -86,7 +86,7 @@ class Experiment(BaseExperiment):
                 self.move_dis_avgmeter.append(OffsetCycleAverageMeter(hparams.LOG.MOVE_AVERAGE_CYCLE, (dm.offset.data * dm.offset_scale).cpu()))
             self.change_sigma_avgmeter = []
             for dp in globalvars.dpools:
-                self.change_sigma_avgmeter.append(OffsetCycleAverageMeter(hparams.LOG.SIGMA_CHANGE_AVERAGE_CYCLE, dp.sigma.detach().cpu()))
+                self.change_sigma_avgmeter.append(OffsetCycleAverageMeter(hparams.LOG.SIGMA_CHANGE_AVERAGE_CYCLE, dp.sigma.detach().cpu().abs()))
         else:
             self.move_dis_avgmeter = None
             self.change_sigma_avgmeter = None
@@ -395,7 +395,7 @@ class Experiment(BaseExperiment):
                 sigma_change = list()
                 sigma_change_avg = list()
                 for idp, dp in enumerate(globalvars.dpools):
-                    self.change_sigma_avgmeter[idp].update(dp.sigma.detach().cpu())
+                    self.change_sigma_avgmeter[idp].update(dp.sigma.detach().cpu().abs())
                     sigma_change.append(self.change_sigma_avgmeter[idp].lastdiff)
                     sigma_change_avg.append(self.change_sigma_avgmeter[idp].avg)
 
@@ -659,7 +659,7 @@ class OffsetBlock(nn.Module):
         else:
             self.atten_post = None
         self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.TRAIN.OFFSET.MOMENTUM_BN)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = StrictNaNReLU(inplace=True)
         if stride > 1 or inplanes != outplanes:
             self.downsample = nn.Conv2d(self.inplanes, self.outplanes,
                           kernel_size=1, stride=stride, bias=False)
