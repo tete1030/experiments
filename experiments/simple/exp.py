@@ -63,52 +63,7 @@ class Experiment(BaseExperiment):
         self.model = nn.DataParallel(MyPose(self.num_parts).cuda())
         assert globalvars.offsetblock_counter == len(hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO) or not hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK
 
-        # Separate parameters
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
-            self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in globalvars.displace_mods if hasattr(dm, "offset")]))
-            self.offset_regressor_parameters = list(filter(lambda x: x.requires_grad, list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in globalvars.displace_mods if hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET]))))
-            if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET:
-                self.offset_transformer_parameters = list(filter(lambda x: x.requires_grad,
-                    list(itertools.chain.from_iterable([dm.offset_transformer.parameters() for dm in globalvars.displace_mods])) + \
-                    list(self.model.module.transformer.parameters())))
-            else:
-                self.offset_transformer_parameters = []
-        else:
-            self.offset_parameters = []
-            self.offset_regressor_parameters = []
-            self.offset_transformer_parameters = []
-
-        special_parameter_ids = list(map(lambda x: id(x),
-            self.offset_parameters + self.offset_regressor_parameters + self.offset_transformer_parameters))
-        self.normal_parameters = list(filter(lambda x: x.requires_grad and id(x) not in special_parameter_ids, self.model.parameters()))
-
-        # Initialize optimizers
-        # Normal optimizer
-        self.optimizer = torch.optim.Adam(
-            self.normal_parameters,
-            lr=hparams.TRAIN.LEARNING_RATE,
-            weight_decay=hparams.TRAIN.WEIGHT_DECAY)
-
-        # Offset and regressor optimizer
-        offset_optimizer_args = []
-        if len(self.offset_parameters) > 0:
-            offset_optimizer_args.append(
-                {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams.TRAIN.OFFSET.LR, "init_lr": hparams.TRAIN.OFFSET.LR})
-        if len(self.offset_regressor_parameters) > 0:
-            offset_optimizer_args.append(
-                {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams.TRAIN.OFFSET.LR_REGRESSOR, "init_lr": hparams.TRAIN.OFFSET.LR_REGRESSOR})
-        
-        if len(offset_optimizer_args) > 0:
-            self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
-        else:
-            self.offset_optimizer = None
-
-        # Transformer optimizer
-        if len(self.offset_transformer_parameters) > 0:
-            self.transformer_optimizer = \
-                torch.optim.Adam([{"para_name": "offset_regressor_lr", "params": self.offset_transformer_parameters, "lr": hparams.TRAIN.OFFSET.LR_TRANSFORMER, "init_lr": hparams.TRAIN.OFFSET.LR_TRANSFORMER}])
-        else:
-            self.transformer_optimizer = None
+        self.init_optimizer()
 
         self.cur_lr = hparams.TRAIN.LEARNING_RATE
 
@@ -129,8 +84,71 @@ class Experiment(BaseExperiment):
                 if dm.offset.size(0) == 0:
                     continue
                 self.move_dis_avgmeter.append(OffsetCycleAverageMeter(hparams.LOG.MOVE_AVERAGE_CYCLE, (dm.offset.data * dm.offset_scale).cpu()))
+            self.change_sigma_avgmeter = []
+            for dp in globalvars.dpools:
+                self.change_sigma_avgmeter.append(OffsetCycleAverageMeter(hparams.LOG.SIGMA_CHANGE_AVERAGE_CYCLE, dp.sigma.detach().cpu()))
         else:
             self.move_dis_avgmeter = None
+            self.change_sigma_avgmeter = None
+
+    def init_optimizer(self):
+        # Separate parameters
+        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
+            self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in globalvars.displace_mods if hasattr(dm, "offset")]))
+            self.offset_regressor_parameters = list(filter(lambda x: x.requires_grad, list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in globalvars.displace_mods if hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET]))))
+            if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET:
+                self.offset_transformer_parameters = list(filter(lambda x: x.requires_grad,
+                    list(itertools.chain.from_iterable([dm.offset_transformer.parameters() for dm in globalvars.displace_mods])) + \
+                    list(self.model.module.transformer.parameters())))
+            else:
+                self.offset_transformer_parameters = []
+            if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
+                self.dpool_parameters = list(filter(lambda x: x.requires_grad, [dp.sigma for dp in globalvars.dpools]))
+            else:
+                self.dpool_parameters = []
+        else:
+            self.offset_parameters = []
+            self.offset_regressor_parameters = []
+            self.offset_transformer_parameters = []
+            self.dpool_parameters = []
+
+        special_parameter_ids = list(map(lambda x: id(x),
+            self.offset_parameters + \
+            self.offset_regressor_parameters + \
+            self.offset_transformer_parameters + \
+            self.dpool_parameters))
+        self.general_parameters = list(filter(lambda x: x.requires_grad and id(x) not in special_parameter_ids, self.model.parameters()))
+
+        # Initialize optimizers
+        # Normal optimizer
+        self.optimizer = torch.optim.Adam(
+            self.general_parameters,
+            lr=hparams.TRAIN.LEARNING_RATE,
+            weight_decay=hparams.TRAIN.WEIGHT_DECAY)
+
+        # Offset and regressor optimizer
+        offset_optimizer_args = []
+        if len(self.offset_parameters) > 0:
+            offset_optimizer_args.append(
+                {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams.TRAIN.OFFSET.LR, "init_lr": hparams.TRAIN.OFFSET.LR})
+        if len(self.offset_regressor_parameters) > 0:
+            offset_optimizer_args.append(
+                {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams.TRAIN.OFFSET.LR_REGRESSOR, "init_lr": hparams.TRAIN.OFFSET.LR_REGRESSOR})
+        if len(self.dpool_parameters) > 0:
+            offset_optimizer_args.append(
+                {"para_name": "offset_dpool_lr", "params": self.dpool_parameters, "lr": hparams.TRAIN.OFFSET.LR_DPOOL_SIGMA, "init_lr": hparams.TRAIN.OFFSET.LR_DPOOL_SIGMA})
+
+        if len(offset_optimizer_args) > 0:
+            self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
+        else:
+            self.offset_optimizer = None
+
+        # Transformer optimizer
+        if len(self.offset_transformer_parameters) > 0:
+            self.transformer_optimizer = \
+                torch.optim.Adam([{"para_name": "offset_regressor_lr", "params": self.offset_transformer_parameters, "lr": hparams.TRAIN.OFFSET.LR_TRANSFORMER, "init_lr": hparams.TRAIN.OFFSET.LR_TRANSFORMER}])
+        else:
+            self.transformer_optimizer = None
 
     def init_mscoco(self):
         self.coco = COCO("data/mscoco/person_keypoints_train2017.json")
@@ -301,14 +319,14 @@ class Experiment(BaseExperiment):
         if self.offset_optimizer is None:
             return
 
-        if step >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and hparams.TRAIN.OFFSET.LR_DECAY_STEP > 0 and hparams.TRAIN.OFFSET.LR_GAMMA > 0:
+        if step >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and hparams.TRAIN.OFFSET.DECAY_STEP_LR > 0 and hparams.TRAIN.OFFSET.GAMMA_LR > 0:
             step_offset = max(0, step - hparams.TRAIN.OFFSET.TRAIN_MIN_STEP)
         else:
             step_offset = -1
 
         for param_group in self.offset_optimizer.param_groups:
             if step_offset >= 0:
-                cur_lr_offset = param_group["init_lr"] * (hparams.TRAIN.OFFSET.LR_GAMMA ** (float(step_offset) / hparams.TRAIN.OFFSET.LR_DECAY_STEP))
+                cur_lr_offset = param_group["init_lr"] * (hparams.TRAIN.OFFSET.GAMMA_LR ** (float(step_offset) / hparams.TRAIN.OFFSET.DECAY_STEP_LR))
                 log_i("Set {} to {:.5f}".format(param_group["para_name"], cur_lr_offset))
             else:
                 cur_lr_offset = param_group["init_lr"]
@@ -316,7 +334,7 @@ class Experiment(BaseExperiment):
 
     def epoch_start(self, epoch, step, evaluate_only):
         if not evaluate_only:
-            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.LR_GAMMA) 
+            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.GAMMA_LR) 
             if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
                 self.set_offset_learning_rate(epoch, step)
 
@@ -373,6 +391,15 @@ class Experiment(BaseExperiment):
                 move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
                 move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
             globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis"), {"mod": np.mean(move_dis_avg), "mod_cur": np.mean(move_dis)}, progress["step"] + 1)
+            if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
+                sigma_change = list()
+                sigma_change_avg = list()
+                for idp, dp in enumerate(globalvars.dpools):
+                    self.change_sigma_avgmeter[idp].update(dp.sigma.detach().cpu())
+                    sigma_change.append(self.change_sigma_avgmeter[idp].lastdiff)
+                    sigma_change_avg.append(self.change_sigma_avgmeter[idp].avg)
+
+                globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change"), {"cur": np.mean(sigma_change), "avg": np.mean(sigma_change_avg)}, progress["step"])
 
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
             self.save_offsets(progress["step"] + 1)
@@ -444,11 +471,11 @@ class Experiment(BaseExperiment):
                     axes[iimg, 1].imshow(img_trans_show[iimg])
                 plt.show()
 
-            set_requires_grad(self.normal_parameters, False)
+            set_requires_grad(self.general_parameters, False)
             set_requires_grad(self.offset_parameters, False)
             set_requires_grad(self.offset_regressor_parameters, False)
             _, *offoutputs_img_trans = self.model(img_trans)
-            set_requires_grad(self.normal_parameters, True)
+            set_requires_grad(self.general_parameters, True)
             set_requires_grad(self.offset_parameters, True)
             set_requires_grad(self.offset_regressor_parameters, True)
 
@@ -556,13 +583,13 @@ class Attention(nn.Module):
         if space_norm:
             self.atten = nn.Sequential(
                 nn.Conv2d(self.total_inplanes, outplanes, 1, stride=stride),
-                nn.BatchNorm2d(outplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM),
+                nn.BatchNorm2d(outplanes, momentum=hparams.TRAIN.OFFSET.MOMENTUM_BN),
                 nn.Softplus(),
                 SpaceNormalization())
         else:
             self.atten = nn.Sequential(
                 nn.Conv2d(self.total_inplanes, outplanes, 1, stride=stride),
-                nn.BatchNorm2d(outplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM),
+                nn.BatchNorm2d(outplanes, momentum=hparams.TRAIN.OFFSET.MOMENTUM_BN),
                 nn.Sigmoid())
 
     def forward(self, x):
@@ -631,7 +658,7 @@ class OffsetBlock(nn.Module):
             self.atten_post = Attention(0, self.outplanes, input_shape=(self.out_height, self.out_width), bias_planes=inplanes // 4, bias_factor=2, space_norm=False)
         else:
             self.atten_post = None
-        self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM)
+        self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.TRAIN.OFFSET.MOMENTUM_BN)
         self.relu = nn.ReLU(inplace=True)
         if stride > 1 or inplanes != outplanes:
             self.downsample = nn.Conv2d(self.inplanes, self.outplanes,
