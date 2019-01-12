@@ -672,13 +672,13 @@ class OffsetBlock(nn.Module):
             self.dpool = None
 
     def forward(self, x, transformer_source=None):
-        if globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
+        if not hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK and globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             return x
 
         out_pre = self.pre_offset(x)
 
         if self.dpool:
-            out_dis = self.dpool(out_pre)
+            out_pre = self.dpool(out_pre)
 
         out_dis = self.displace(out_pre, transformer_source=transformer_source)
 
