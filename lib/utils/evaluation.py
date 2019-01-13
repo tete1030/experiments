@@ -126,6 +126,8 @@ class OffsetCycleAverageMeter(object):
         # self.val = None
         self.avg = None
         self.lastdiff = None
+        self.avg_dir = None
+        self.lastdiff_dir = None
 
     def update(self, val, n=1):
         for i in range(n):
@@ -138,9 +140,15 @@ class OffsetCycleAverageMeter(object):
                 self.count += 1
 
         if self.count > 1:
-            self.lastdiff = (val - self._pool[(self._pointer + self.count - 2) % self.count]).abs().mean().item()
-            self.avg = ((val - self._pool[self._pointer % self.count]) / (self.count - 1)).abs().mean().item()
+            lastdiff = (val - self._pool[(self._pointer + self.count - 2) % self.count])
+            avgdiff = ((val - self._pool[self._pointer % self.count]) / (self.count - 1))
+            self.lastdiff_dir = lastdiff.mean().item()
+            self.avg_dir = avgdiff.mean().item()
+            self.lastdiff = lastdiff.abs().mean().item()
+            self.avg = avgdiff.abs().mean().item()
         else:
+            self.lastdiff_dir = None
+            self.avg_dir = None
             self.lastdiff = None
             self.avg = None
 

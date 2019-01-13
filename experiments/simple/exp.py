@@ -390,16 +390,22 @@ class Experiment(BaseExperiment):
                 self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.offset_scale).cpu())
                 move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
                 move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
-            globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis"), {"mod": np.mean(move_dis_avg), "mod_cur": np.mean(move_dis)}, progress["step"] + 1)
+            move_dis_avg = np.mean(move_dis_avg)
+            move_dis = np.mean(move_dis)
+            globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis"), {"mod": move_dis_avg, "mod_cur": move_dis}, progress["step"])
+            globalvars.main_context.tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis_right_ratio"), move_dis_avg / move_dis, progress["step"])
+
             if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
                 sigma_change = list()
                 sigma_change_avg = list()
                 for idp, dp in enumerate(globalvars.dpools):
                     self.change_sigma_avgmeter[idp].update(dp.sigma.detach().cpu().abs())
-                    sigma_change.append(self.change_sigma_avgmeter[idp].lastdiff)
-                    sigma_change_avg.append(self.change_sigma_avgmeter[idp].avg)
-
-                globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change"), {"cur": np.mean(sigma_change), "avg": np.mean(sigma_change_avg)}, progress["step"])
+                    sigma_change.append(self.change_sigma_avgmeter[idp].lastdiff_dir)
+                    sigma_change_avg.append(self.change_sigma_avgmeter[idp].avg_dir)
+                sigma_change = np.mean(sigma_change)
+                sigma_change_avg = np.mean(sigma_change_avg)
+                globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change"), {"cur": sigma_change, "avg": sigma_change_avg}, progress["step"])
+                globalvars.main_context.tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change_right_ratio"), sigma_change_avg / sigma_change, progress["step"])
 
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
             self.save_offsets(progress["step"] + 1)
@@ -474,10 +480,12 @@ class Experiment(BaseExperiment):
             set_requires_grad(self.general_parameters, False)
             set_requires_grad(self.offset_parameters, False)
             set_requires_grad(self.offset_regressor_parameters, False)
+            set_requires_grad(self.dpool_parameters, False)
             _, *offoutputs_img_trans = self.model(img_trans)
             set_requires_grad(self.general_parameters, True)
             set_requires_grad(self.offset_parameters, True)
             set_requires_grad(self.offset_regressor_parameters, True)
+            set_requires_grad(self.dpool_parameters, True)
 
             feature_loss = 0
             for ioff, offout_trans in enumerate(offoutputs_trans):
