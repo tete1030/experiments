@@ -91,6 +91,8 @@ class Experiment(BaseExperiment):
             self.move_dis_avgmeter = None
             self.change_sigma_avgmeter = None
 
+        assert not (hparams.TRAIN.OFFSET.SEP_TRAIN_ITER > 0 and hparams.MODEL.LOSS_FEATSTAB)
+
     def init_optimizer(self):
         # Separate parameters
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
@@ -149,6 +151,10 @@ class Experiment(BaseExperiment):
                 torch.optim.Adam([{"para_name": "offset_regressor_lr", "params": self.offset_transformer_parameters, "lr": hparams.TRAIN.OFFSET.LR_TRANSFORMER, "init_lr": hparams.TRAIN.OFFSET.LR_TRANSFORMER}])
         else:
             self.transformer_optimizer = None
+
+        self.update_weight = True
+        self.update_offset = True
+        self.update_transformer = True
 
     def init_mscoco(self):
         self.coco = COCO("data/mscoco/person_keypoints_train2017.json")
@@ -235,8 +241,9 @@ class Experiment(BaseExperiment):
                 self.offset_optimizer.load_state_dict(checkpoint["offset_optimizer"])
             if self.transformer_optimizer:
                 self.transformer_optimizer.load_state_dict(checkpoint["transformer_optimizer"])
-        if self.offset_optimizer:
-            self.move_dis_avgmeter = checkpoint["move_dis_avgmeter"]
+
+        self.move_dis_avgmeter = checkpoint["move_dis_avgmeter"]
+        self.change_sigma_avgmeter = checkpoint["change_sigma_avgmeter"]
         return checkpoint["epoch"]
 
     def save_checkpoint(self, checkpoint_full, epoch):
@@ -246,7 +253,8 @@ class Experiment(BaseExperiment):
             "optimizer": self.optimizer.state_dict(),
             "offset_optimizer": self.offset_optimizer.state_dict() if self.offset_optimizer else None,
             "transformer_optimizer": self.transformer_optimizer.state_dict() if self.transformer_optimizer else None,
-            "move_dis_avgmeter": self.move_dis_avgmeter if not hparams.MODEL.DETAIL.DISABLE_DISPLACE else None
+            "move_dis_avgmeter": self.move_dis_avgmeter,
+            "change_sigma_avgmeter": self.change_sigma_avgmeter
         }
         save_checkpoint(checkpoint_dict, checkpoint_full=checkpoint_full, force_replace=True)
 
@@ -332,11 +340,28 @@ class Experiment(BaseExperiment):
                 cur_lr_offset = param_group["init_lr"]
             param_group["lr"] = cur_lr_offset
 
+    def update_training_state(self, iteration, step, only_on_boundary):
+        if step >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
+            if hparams.TRAIN.OFFSET.SEP_TRAIN_ITER > 0:
+                if iteration >= hparams.TRAIN.OFFSET.SEP_TRAIN_ITER:
+                    if not only_on_boundary or iteration == hparams.TRAIN.OFFSET.SEP_TRAIN_ITER:
+                        self.set_training_state(update_weight=False, update_offset=True, update_transformer=True)
+                else:
+                    if not only_on_boundary or iteration == 0:
+                        self.set_training_state(update_weight=True, update_offset=False, update_transformer=False)
+            elif not only_on_boundary or step == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
+                self.set_training_state(update_offset=True, update_transformer=True)
+        else:
+            if not only_on_boundary or step == 0:
+                self.set_training_state(update_offset=False, update_transformer=False)
+
     def epoch_start(self, epoch, step, evaluate_only):
         if not evaluate_only:
             self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.GAMMA_LR) 
             if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
                 self.set_offset_learning_rate(epoch, step)
+
+            self.update_training_state(0, step, False)
 
             if hparams.TRAIN.GRADUAL_SIZE:
                 # Set gradual data size
@@ -360,24 +385,26 @@ class Experiment(BaseExperiment):
                 torch.save([dp.sigma.cpu() for dp in globalvars.dpools], os.path.join(globalvars.main_context.checkpoint_dir, "dpool_{}.pth".format(step)))
 
     def epoch_end(self, epoch, step, evaluate_only):
-        if not evaluate_only and not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
+        if not evaluate_only and self.offset_optimizer:
             self.save_offsets(step)
 
     def iter_step(self, epoch_ctx:EpochContext, loss:torch.Tensor, progress:dict):
-        optimize_offset = False
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and progress["step"] >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
-            optimize_offset = True
+        optimize_weight = self.update_weight
+        optimize_offset = bool(self.offset_optimizer and self.update_offset)
+        optimize_transformer = bool(self.transformer_optimizer and self.update_transformer)
 
-        self.optimizer.zero_grad()
+        if optimize_weight:
+            self.optimizer.zero_grad()
         if optimize_offset:
             self.offset_optimizer.zero_grad()
-        if self.transformer_optimizer:
+        if optimize_transformer:
             self.transformer_optimizer.zero_grad()
         loss.backward()
-        self.optimizer.step()
+        if optimize_weight:
+            self.optimizer.step()
         if optimize_offset:
             self.offset_optimizer.step()
-        if self.transformer_optimizer:
+        if optimize_transformer:
             self.transformer_optimizer.step()
 
         if optimize_offset:
@@ -407,8 +434,8 @@ class Experiment(BaseExperiment):
                 globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change"), {"cur": sigma_change, "avg": sigma_change_avg}, progress["step"])
                 globalvars.main_context.tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change_right_ratio"), sigma_change_avg / sigma_change, progress["step"])
 
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
-            self.save_offsets(progress["step"] + 1)
+            if (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
+                self.save_offsets(progress["step"] + 1)
 
     def summarize_gradient(self):
         # TODO: all gradients? offset gradients?
@@ -417,6 +444,29 @@ class Experiment(BaseExperiment):
     def summarize_parameter(self):
         # TODO: summarize all parameters
         pass
+
+    def set_training_state(self, update_weight=None, update_offset=None, update_transformer=None):
+        state_ori = dict()
+        log_i("Set training state: update_weight={}, update_offset={}, update_transformer={}".format(update_weight, update_offset, update_transformer))
+
+        if update_weight is not None:
+            state_ori["update_weight"] = self.update_weight
+            self.update_weight = update_weight
+            set_requires_grad(self.general_parameters, update_weight)
+
+        if update_offset is not None:
+            state_ori["update_offset"] = self.update_offset
+            self.update_offset = update_offset
+            set_requires_grad(self.offset_parameters, update_offset)
+            set_requires_grad(self.offset_regressor_parameters, update_offset)
+            set_requires_grad(self.dpool_parameters, update_offset)
+
+        if update_transformer is not None:
+            state_ori["update_transformer"] = self.update_transformer
+            self.update_transformer = update_transformer
+            set_requires_grad(self.offset_transformer_parameters, update_transformer)
+
+        return state_ori
 
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict) -> dict:
         image_ids = batch["img_index"].tolist()
@@ -430,8 +480,10 @@ class Experiment(BaseExperiment):
         batch_size = img.size(0)
         globalvars.progress = progress
 
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and progress["step"] == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and progress["train"]:
-            self.save_offsets(progress["step"])
+        if is_train:
+            self.update_training_state(progress["iter"], progress["step"], True)
+            if self.offset_optimizer and progress["step"] == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
+                self.save_offsets(progress["step"])
 
         det_map_gt_cuda = det_maps_gt.cuda()
         # dirty trick for debug
@@ -456,7 +508,7 @@ class Experiment(BaseExperiment):
         loss = ((output_maps - det_map_gt_cuda).pow(2) * \
             masking_final).mean().sqrt()
 
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and self.transformer_optimizer and progress["step"] >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and progress["train"] and hparams.MODEL.LOSS_FEATSTAB:
+        if is_train and hparams.MODEL.LOSS_FEATSTAB and self.offset_optimizer and self.transformer_optimizer and self.update_offset and self.update_transformer:
             scale = torch.tensor(truncnorm.rvs(-1, 1, loc=1, scale=0.5, size=batch_size)).float()
             rotate = torch.tensor(truncnorm.rvs(-1, 1, loc=0, scale=np.pi/6, size=batch_size)).float()
             # blur_sigma = torch.tensor(np.abs(truncnorm.rvs(-1, 1, loc=0, scale=3, size=batch_size))).float()
@@ -477,15 +529,9 @@ class Experiment(BaseExperiment):
                     axes[iimg, 1].imshow(img_trans_show[iimg])
                 plt.show()
 
-            set_requires_grad(self.general_parameters, False)
-            set_requires_grad(self.offset_parameters, False)
-            set_requires_grad(self.offset_regressor_parameters, False)
-            set_requires_grad(self.dpool_parameters, False)
+            state_ori = self.set_training_state(update_weight=False, update_offset=False, update_transformer=True)
             _, *offoutputs_img_trans = self.model(img_trans)
-            set_requires_grad(self.general_parameters, True)
-            set_requires_grad(self.offset_parameters, True)
-            set_requires_grad(self.offset_regressor_parameters, True)
-            set_requires_grad(self.dpool_parameters, True)
+            self.set_training_state(**state_ori)
 
             feature_loss = 0
             for ioff, offout_trans in enumerate(offoutputs_trans):
@@ -642,19 +688,37 @@ class OffsetBlock(nn.Module):
         self.out_height = (height + stride - 1) // stride
         self.out_width = (width + stride - 1) // stride
         self.inplanes = inplanes
-        self.displace_planes = displace_planes
         self.outplanes = outplanes
         self.stride = stride
+        if hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE > 0:
+            init_num_x = 2 * self.out_width // hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE
+            init_num_y = 2 * self.out_height // hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE
+            assert init_num_x > 1 and init_num_y > 1, "Insufficient number of init offsets"
+            init_num_off = init_num_x * init_num_y
+            channels_per_off = int(np.round(displace_planes / init_num_off).item())
+            displace_planes_new = channels_per_off * init_num_off
+            log_i("Displace plane number rounded from {} to {}".format(displace_planes, displace_planes_new))
+            displace_planes = displace_planes_new
+        self.displace_planes = displace_planes
         self.displace = DisplaceChannel(
             self.out_height, self.out_width,
             self.displace_planes, self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN,
             disable_displace=hparams.MODEL.DETAIL.DISABLE_DISPLACE,
-            learnable_offset=hparams.MODEL.DETAIL.DISPLACE_LEARNABLE_OFFSET,
+            learnable_offset=hparams.MODEL.DETAIL.LEARNABLE_OFFSET,
             regress_offset=hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET,
             transform_offset=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET,
             num_transformer_channels=256,
             half_reversed_offset=hparams.MODEL.LEARNABLE_OFFSET.HALF_REVERSED_OFFSET,
             previous_dischan=globalvars.displace_mods[-1] if hparams.MODEL.LEARNABLE_OFFSET.REUSE_OFFSET and len(globalvars.displace_mods) > 0 else None)
+        if hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE > 0:
+            width_span = hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE * init_num_x
+            height_span = hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE * init_num_y
+            for iy, off_y in enumerate(torch.linspace(-height_span / 2, height_span / 2, steps=init_num_y)):
+                for ix, off_x in enumerate(torch.linspace(-width_span / 2, width_span / 2, steps=init_num_x)):
+                    ichan = (iy * init_num_x + ix) * channels_per_off
+                    self.displace.offset.data[ichan:ichan+channels_per_off, 0] = off_x / self.displace.offset_scale
+                    self.displace.offset.data[ichan:ichan+channels_per_off, 1] = off_y / self.displace.offset_scale
+
         globalvars.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
         self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
@@ -703,10 +767,11 @@ class OffsetBlock(nn.Module):
 
         out_final = self.relu(self.bn(out_skip))
 
-        device = out_post.device
-        if out_post.device not in globalvars.offsetblock_output:
-            globalvars.offsetblock_output[device] = list()
-        globalvars.offsetblock_output[device].append(out_post)
+        if hparams.MODEL.LOSS_FEATSTAB:
+            device = out_post.device
+            if out_post.device not in globalvars.offsetblock_output:
+                globalvars.offsetblock_output[device] = list()
+            globalvars.offsetblock_output[device].append(out_post)
 
         if config.debug_nan:
             assert False, "out_pre and out_dis are replaced"

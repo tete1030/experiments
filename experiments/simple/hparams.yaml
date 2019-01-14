@@ -1,6 +1,6 @@
 exp:
     name: simpleoff
-    id: 6
+    id: 7
 
 train:
     learning_rate: 5.e-4
@@ -12,7 +12,8 @@ train:
     weight_decay: 0
     gradual_size: false
     offset:
-        train_min_step: 3000
+        train_min_step: 2785
+        sep_train_iter: 1000
         always_train_block: true
         lr: 1.e-3
         lr_regressor: 1.e-3
@@ -51,11 +52,12 @@ model:
     loss_featstab_cof: 1
     detail:
         disable_displace: false
-        displace_learnable_offset: true
+        learnable_offset: true
         loss_final: labeled
         enable_offset_block: true
 
     learnable_offset:
+        init_stride: 16
         expand_chan_ratio: [4, 4, 4]
         bind_chan: 1
         reuse_offset: false
