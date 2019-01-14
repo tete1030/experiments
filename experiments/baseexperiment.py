@@ -61,7 +61,6 @@ class BaseExperiment(object):
         self.worker_init_fn = None
         self.print_iter_start = " | " # "\n\t"
         self.print_iter_sep = " | "
-        self.cur_lr = None
         self.init()
         self.init_dataloader()
 

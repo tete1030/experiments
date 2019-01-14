@@ -365,9 +365,10 @@ def main(args):
 def train_eval_loop(exp, start_epoch, stop_epoch):
     cur_step = globalvars.main_context.num_train_iters * (start_epoch - 1)
     for epoch in range(start_epoch, stop_epoch):
-        exp.epoch_start(epoch, cur_step, False)
         print()
-        log_progress("Epoch: %d | LR: %.8f" % (epoch, exp.cur_lr))
+        log_progress("Epoch: %d" % (epoch,))
+
+        exp.epoch_start(epoch, cur_step, False)
         log_progress("Training:")
 
         if globalvars.main_context.sigint_triggered:

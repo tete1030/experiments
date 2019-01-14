@@ -107,8 +107,6 @@ class Experiment(BaseExperiment):
         else:
             self.early_predictor_optimizer = None
 
-        self.cur_lr = hparams.TRAIN.LEARNING_RATE
-
         if self.data_source == "coco":
             self.init_mscoco()
         elif self.data_source == "mpii":
@@ -313,7 +311,8 @@ class Experiment(BaseExperiment):
 
     def epoch_start(self, epoch, step, evaluate_only):
         if not evaluate_only:
-            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.LR_GAMMA)
+            cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.LR_GAMMA)
+            log_i("Set learning rate to {:.5f}".format(cur_lr))
             adjust_learning_rate(self.early_predictor_optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.LR_GAMMA)
             if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
                 self.set_offset_learning_rate(epoch, step)

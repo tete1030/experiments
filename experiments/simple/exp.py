@@ -65,8 +65,6 @@ class Experiment(BaseExperiment):
 
         self.init_optimizer()
 
-        self.cur_lr = hparams.TRAIN.LEARNING_RATE
-
         if self.data_source == "coco":
             self.init_mscoco()
         elif self.data_source == "mpii":
@@ -357,7 +355,8 @@ class Experiment(BaseExperiment):
 
     def epoch_start(self, epoch, step, evaluate_only):
         if not evaluate_only:
-            self.cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.GAMMA_LR) 
+            cur_lr = adjust_learning_rate(self.optimizer, epoch, hparams.TRAIN.LEARNING_RATE, hparams.TRAIN.SCHEDULE, hparams.TRAIN.GAMMA_LR) 
+            log_i("Set learning rate to {:.5f}".format(cur_lr))
             if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
                 self.set_offset_learning_rate(epoch, step)
 
@@ -693,7 +692,7 @@ class OffsetBlock(nn.Module):
         if hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE > 0:
             init_num_x = 2 * self.out_width // hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE
             init_num_y = 2 * self.out_height // hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE
-            assert init_num_x > 1 and init_num_y > 1, "Insufficient number of init offsets"
+            assert init_num_x > 0 and init_num_y > 0, "Insufficient number of init offsets"
             init_num_off = init_num_x * init_num_y
             channels_per_off = int(np.round(displace_planes / init_num_off).item())
             displace_planes_new = channels_per_off * init_num_off
@@ -711,8 +710,8 @@ class OffsetBlock(nn.Module):
             half_reversed_offset=hparams.MODEL.LEARNABLE_OFFSET.HALF_REVERSED_OFFSET,
             previous_dischan=globalvars.displace_mods[-1] if hparams.MODEL.LEARNABLE_OFFSET.REUSE_OFFSET and len(globalvars.displace_mods) > 0 else None)
         if hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE > 0:
-            width_span = hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE * init_num_x
-            height_span = hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE * init_num_y
+            width_span = hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE * (init_num_x - 1)
+            height_span = hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE * (init_num_y - 1)
             for iy, off_y in enumerate(torch.linspace(-height_span / 2, height_span / 2, steps=init_num_y)):
                 for ix, off_x in enumerate(torch.linspace(-width_span / 2, width_span / 2, steps=init_num_x)):
                     ichan = (iy * init_num_x + ix) * channels_per_off
