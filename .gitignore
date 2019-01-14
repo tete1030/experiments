@@ -11,6 +11,7 @@ data/mscoco/person_keypoints_*.json
 data/mscoco/image_info_test-dev2017.json
 runs
 runs_archived
+backup
 .vscode
 sftp-config.json
 pose/models/ae_loss/lib
