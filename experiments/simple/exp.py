@@ -362,6 +362,14 @@ class Experiment(BaseExperiment):
 
             self.update_training_state(0, step, False)
 
+            grow_transformer_step = hparams.TRAIN.OFFSET.GROW_TRANSFORMER_STEP
+            if grow_transformer_step > 0:
+                for dm in globalvars.displace_mods:
+                    if dm.offset_transformer.updated_steps <= grow_transformer_step:
+                        dm.offset_transformer.effect_scale.copy_((dm.offset_transformer.updated_steps.float() / float(grow_transformer_step)).clamp(max=1))
+                    else:
+                        dm.offset_transformer.effect_scale.fill_(1.)
+
             if hparams.TRAIN.GRADUAL_SIZE:
                 # Set gradual data size
                 if isinstance(self.train_dataset, Subset):
@@ -405,6 +413,14 @@ class Experiment(BaseExperiment):
             self.offset_optimizer.step()
         if optimize_transformer:
             self.transformer_optimizer.step()
+            grow_transformer_step = hparams.TRAIN.OFFSET.GROW_TRANSFORMER_STEP
+            if grow_transformer_step > 0:
+                for dm in globalvars.displace_mods:
+                    if dm.offset_transformer.updated_steps < grow_transformer_step:
+                        dm.offset_transformer.updated_steps += 1
+                        dm.offset_transformer.effect_scale.copy_((dm.offset_transformer.updated_steps.float() / float(grow_transformer_step)).clamp(max=1))
+                    elif dm.offset_transformer.updated_steps == grow_transformer_step:
+                        dm.offset_transformer.effect_scale.fill_(1.)
 
         if optimize_offset:
             move_dis_avg = list()

@@ -53,6 +53,8 @@ class OffsetTransformer(nn.Module):
         self.angle_regressor = nn.Sequential(
             nn.Conv2d(inplanes, 1, kernel_size=3, padding=1, bias=False),
             nn.Softsign())
+        self.register_buffer("updated_steps", torch.zeros(1, dtype=torch.long))
+        self.register_buffer("effect_scale", torch.ones(1, dtype=torch.float))
 
     def visualize(self, scale, angle):
         import matplotlib.pyplot as plt
@@ -70,8 +72,8 @@ class OffsetTransformer(nn.Module):
             plt.show()
 
     def forward(self, x, offsets):
-        scale = self.scale_regressor(x)
-        angle = self.angle_regressor(x)
+        scale = self.scale_regressor(x) * self.effect_scale
+        angle = self.angle_regressor(x) * self.effect_scale
         if config.vis:
             self.visualize(scale, angle)
         offset_dim = offsets.dim()

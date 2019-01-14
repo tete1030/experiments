@@ -288,14 +288,14 @@ def cleanup(resume_run_id, caught_exception, exit_exception):
                 do_trash = True
 
         if do_trash:
-            log_i("Archiving run")
+            log_i("Trashing run")
             if os.path.exists(globalvars.main_context.run_dir):
                 if not os.path.isdir(globalvars.main_context.run_trash_dest):
                     os.makedirs(globalvars.main_context.run_trash_dest)
                 shutil.move(globalvars.main_context.run_dir, globalvars.main_context.run_trash_dest)
             else:
                 log_i("Run dir do not exist")
-            log_i("Archiving checkpoint")
+            log_i("Trashing checkpoint")
             if os.path.realpath(globalvars.main_context.run_dir) != os.path.realpath(globalvars.main_context.checkpoint_dir):
                 if os.path.exists(globalvars.main_context.checkpoint_dir):
                     if not os.path.isdir(globalvars.main_context.checkpoint_trash_dest):
