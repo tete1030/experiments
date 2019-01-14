@@ -8,8 +8,8 @@ default: &DEFAULT
     evaluate: false
     checkpoint_dir_template: 'checkpoint/{exp_name}_{exp_id}/{run_id}'
     run_dir_template: 'runs/{exp_name}_{exp_id}/{run_id}'
-    checkpoint_archive_dest_template: 'checkpoint/archive/{exp_name}_{exp_id}/'
-    run_archive_dest_template: 'runs/archive/{exp_name}_{exp_id}/'
+    checkpoint_trash_dest_template: 'backup/trash/checkpoint/{exp_name}_{exp_id}/'
+    run_trash_dest_template: 'backup/trash/runs/{exp_name}_{exp_id}/'
     resume: false
     vis: false
     debug_nan: false

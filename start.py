@@ -150,11 +150,11 @@ def init_run(run_id):
         exp_name=exp_name,
         exp_id=exp_id,
         run_id=run_id)
-    checkpoint_archive_dest = config.checkpoint_archive_dest_template.format(
+    checkpoint_trash_dest = config.checkpoint_trash_dest_template.format(
         exp_name=exp_name,
         exp_id=exp_id,
         run_id=run_id)
-    run_archive_dest = config.run_archive_dest_template.format(
+    run_trash_dest = config.run_trash_dest_template.format(
         exp_name=exp_name,
         exp_id=exp_id,
         run_id=run_id)
@@ -162,8 +162,8 @@ def init_run(run_id):
     globalvars.main_context.run_id = run_id
     globalvars.main_context.checkpoint_dir = checkpoint_dir
     globalvars.main_context.run_dir = run_dir
-    globalvars.main_context.checkpoint_archive_dest = checkpoint_archive_dest
-    globalvars.main_context.run_archive_dest = run_archive_dest
+    globalvars.main_context.checkpoint_trash_dest = checkpoint_trash_dest
+    globalvars.main_context.run_trash_dest = run_trash_dest
 
 def prepare_checkpoint_dir(resume_run_id):
     checkpoint_dir = globalvars.main_context.checkpoint_dir
@@ -280,27 +280,27 @@ def cleanup(resume_run_id, caught_exception, exit_exception):
     except AttributeError:
         print("No run or checkpoint files created")
     else:
-        do_archive = False
+        do_trash = False
         if resume_run_id is None:
             if isinstance(exit_exception, ExitWithDelete):
-                do_archive = True
-            elif not ask("Save run and checkpoint?", posstr="y", negstr="archive", ansretry=2, ansdefault=True, timeout_sec=60 if caught_exception is None else None):
-                do_archive = True
+                do_trash = True
+            elif not ask("Save run and checkpoint?", posstr="y", negstr="trash", ansretry=2, ansdefault=True, timeout_sec=60 if caught_exception is None else None):
+                do_trash = True
 
-        if do_archive:
+        if do_trash:
             log_i("Archiving run")
             if os.path.exists(globalvars.main_context.run_dir):
-                if not os.path.isdir(globalvars.main_context.run_archive_dest):
-                    os.makedirs(globalvars.main_context.run_archive_dest)
-                shutil.move(globalvars.main_context.run_dir, globalvars.main_context.run_archive_dest)
+                if not os.path.isdir(globalvars.main_context.run_trash_dest):
+                    os.makedirs(globalvars.main_context.run_trash_dest)
+                shutil.move(globalvars.main_context.run_dir, globalvars.main_context.run_trash_dest)
             else:
                 log_i("Run dir do not exist")
             log_i("Archiving checkpoint")
             if os.path.realpath(globalvars.main_context.run_dir) != os.path.realpath(globalvars.main_context.checkpoint_dir):
                 if os.path.exists(globalvars.main_context.checkpoint_dir):
-                    if not os.path.isdir(globalvars.main_context.checkpoint_archive_dest):
-                        os.makedirs(globalvars.main_context.checkpoint_archive_dest)
-                    shutil.move(globalvars.main_context.checkpoint_dir, globalvars.main_context.checkpoint_archive_dest)
+                    if not os.path.isdir(globalvars.main_context.checkpoint_trash_dest):
+                        os.makedirs(globalvars.main_context.checkpoint_trash_dest)
+                    shutil.move(globalvars.main_context.checkpoint_dir, globalvars.main_context.checkpoint_trash_dest)
                 else:
                     log_i("Checkpoint dir do not exist")
         else:
