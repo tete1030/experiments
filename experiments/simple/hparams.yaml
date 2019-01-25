@@ -58,7 +58,7 @@ model:
         enable_offset_block: true
 
     learnable_offset:
-        init_stride: 16
+        init_stride: 0
         expand_chan_ratio: [2, 2, 2]
         bind_chan: 1
         reuse_offset: false
