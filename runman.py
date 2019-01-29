@@ -4,6 +4,7 @@ import os
 import argparse
 import shutil
 import signal
+import re
 
 ROOT_DIR = "."
 TRASH_DIR = "backup/trash"
@@ -95,6 +96,16 @@ def get_args():
     parser_restore.add_argument("--archive", action="store_true")
     parser_restore.add_argument("runid", action="append")
     parser_restore.set_defaults(func=restore_runs)
+
+    parser_partaction = subparsers.add_parser("paction")
+    parser_partaction.add_argument("--restore", action="store_true")
+    parser_partaction.add_argument("--yes", action="store_true")
+    parser_partaction.add_argument("--dry-run", action="store_true")
+    parser_partaction.add_argument("--backup-dir", choices=["archive", "trash"], default="archive")
+    parser_partaction.add_argument("--type", choices=["checkpoint", "runs"], required=True)
+    parser_partaction.add_argument("--runid-pattern", action="append", help="regex", required=True)
+    parser_partaction.add_argument("--part-pattern", action="append", help="regex", required=True)
+    parser_partaction.set_defaults(func=part_action)
 
     args = argparser.parse_args()
     return args
@@ -314,6 +325,81 @@ def restore_runs(args):
             _move_exp(os.path.join(root_dir, "runs"), run_hier[0], os.path.join(dest_dir, "runs"))
         else:
             print("Invalid runid: " + runid)
+
+def match_any(patterns, string):
+    for pat in patterns:
+        if re.search(pat, string):
+            return True
+    return False
+
+def _match_part(patterns, run_dir):
+    matched_paths = []
+    for (dirpath, dirnames, filenames) in os.walk(run_dir):
+        dirpath = os.path.relpath(dirpath, run_dir)
+        for subpath in filenames:
+            full_path = os.path.join(dirpath, subpath)
+            if match_any(patterns, full_path):
+                matched_paths.append(full_path)
+        
+        # can prune by deleting items
+        dirnames_copy = dirnames.copy()
+        found_counter = 0
+        for idir, subpath in enumerate(dirnames_copy):
+            full_path = os.path.join(dirpath, subpath)
+            if match_any(patterns, full_path):
+                del dirnames[idir - found_counter]
+                found_counter += 1
+                matched_paths.append(full_path)
+    return matched_paths
+
+def part_action(args):
+    backup_subdir = TRASH_DIR if args.backup_dir == "trash" else ARCHIVE_DIR
+    if args.restore:
+        source_root = os.path.join(ROOT_DIR, backup_subdir, args.type)
+        dest_root = os.path.join(ROOT_DIR, args.type)
+    else:
+        source_root = os.path.join(ROOT_DIR, args.type)
+        dest_root = os.path.join(ROOT_DIR, backup_subdir, args.type)
+
+    with os.scandir(source_root) as exp_dir_entries:
+        for exp_dir in exp_dir_entries:
+            if not exp_dir.is_dir():
+                continue
+            has_matched_exp = match_any(args.runid_pattern, exp_dir.name)
+            exp_dir_path = os.path.join(source_root, exp_dir.name)
+            
+            with os.scandir(exp_dir_path) as run_dir_entries:
+                for run_dir in run_dir_entries:
+                    if not run_dir.is_dir():
+                        continue
+                    run_id_full = exp_dir.name + "/" + run_dir.name
+                    run_dir_path = os.path.join(exp_dir_path, run_dir.name)
+                    # print(run_id_full)
+                    if not has_matched_exp and not match_any(args.runid_pattern, run_id_full):
+                        continue
+                    run_dir_inside_path = os.path.join(exp_dir.name, run_dir.name)
+                    for match_path in _match_part(args.part_pattern, run_dir_path):
+                        inside_path = os.path.normpath(os.path.join(run_dir_inside_path, match_path))
+                        source_path = os.path.join(source_root, inside_path)
+                        source_path_base = os.path.dirname(source_path)
+                        assert os.path.relpath(source_path, source_path_base) != "."
+                        dest_path = os.path.join(dest_root, inside_path)
+                        dest_path_base = os.path.dirname(dest_path)
+                        assert os.path.relpath(dest_path, dest_path_base) != "."
+                        if args.yes or args.dry_run or ask("Moving '{}' to '{}', confirm?".format(source_path, dest_path)):
+                            if args.yes or args.dry_run:
+                                print("Moving '{}' to '{}'".format(source_path, dest_path))
+                            if not args.dry_run:
+                                if not os.path.exists(dest_path_base):
+                                    os.makedirs(dest_path_base)
+                                shutil.move(source_path, dest_path_base)
+                                
+                                cur_base = os.path.abspath(source_path_base)
+                                while len(os.listdir(cur_base)) == 0:
+                                    os.rmdir(cur_base)
+                                    cur_base = os.path.dirname(cur_base)
+                                    if os.path.relpath(cur_base, source_root).startswith("."):
+                                        break
 
 if __name__ == "__main__":
     args = get_args()
