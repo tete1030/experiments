@@ -55,7 +55,7 @@ model:
         first_esp_only: false
 
     learnable_offset:
-        expand_chan_ratio: [2, 2, 2, 1, 1, 1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.25]
+        expand_chan_ratio: [4, 2, 2, 2, 1, 1, 1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.25]
         bind_chan: 1
         reuse_offset: false
         half_reversed_offset: false
