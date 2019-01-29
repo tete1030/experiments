@@ -326,11 +326,11 @@ def restore_runs(args):
         else:
             print("Invalid runid: " + runid)
 
-def match_any(patterns, string):
+def match_all(patterns, string):
     for pat in patterns:
-        if re.search(pat, string):
-            return True
-    return False
+        if re.search(pat, string) is None:
+            return False
+    return True
 
 def _match_part(patterns, run_dir):
     matched_paths = []
@@ -338,15 +338,15 @@ def _match_part(patterns, run_dir):
         dirpath = os.path.relpath(dirpath, run_dir)
         for subpath in filenames:
             full_path = os.path.join(dirpath, subpath)
-            if match_any(patterns, full_path):
+            if match_all(patterns, full_path):
                 matched_paths.append(full_path)
         
         # can prune by deleting items
         dirnames_copy = dirnames.copy()
         found_counter = 0
         for idir, subpath in enumerate(dirnames_copy):
-            full_path = os.path.join(dirpath, subpath)
-            if match_any(patterns, full_path):
+            full_path = os.path.normpath(os.path.join(dirpath, subpath))
+            if match_all(patterns, full_path):
                 del dirnames[idir - found_counter]
                 found_counter += 1
                 matched_paths.append(full_path)
@@ -365,7 +365,6 @@ def part_action(args):
         for exp_dir in exp_dir_entries:
             if not exp_dir.is_dir():
                 continue
-            has_matched_exp = match_any(args.runid_pattern, exp_dir.name)
             exp_dir_path = os.path.join(source_root, exp_dir.name)
             
             with os.scandir(exp_dir_path) as run_dir_entries:
@@ -375,7 +374,7 @@ def part_action(args):
                     run_id_full = exp_dir.name + "/" + run_dir.name
                     run_dir_path = os.path.join(exp_dir_path, run_dir.name)
                     # print(run_id_full)
-                    if not has_matched_exp and not match_any(args.runid_pattern, run_id_full):
+                    if not match_all(args.runid_pattern, run_id_full):
                         continue
                     run_dir_inside_path = os.path.join(exp_dir.name, run_dir.name)
                     for match_path in _match_part(args.part_pattern, run_dir_path):
