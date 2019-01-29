@@ -332,24 +332,36 @@ def match_all(patterns, string):
             return False
     return True
 
-def _match_part(patterns, run_dir):
+def _match_part(patterns, run_dir_inside, source_root, dest_root):
     matched_paths = []
-    for (dirpath, dirnames, filenames) in os.walk(run_dir):
-        dirpath = os.path.relpath(dirpath, run_dir)
+    run_dir_source = os.path.join(source_root, run_dir_inside)
+    run_dir_dest = os.path.join(dest_root, run_dir_inside)
+    for (dirpath_source, dirnames, filenames) in os.walk(run_dir_source):
+        dirpath_rel = os.path.relpath(dirpath_source, run_dir_source)
+        dirpath_dest = os.path.join(run_dir_dest, dirpath_rel)
         for subpath in filenames:
-            full_path = os.path.join(dirpath, subpath)
-            if match_all(patterns, full_path):
-                matched_paths.append(full_path)
+            full_path_dest = os.path.join(dirpath_dest, subpath)
+            full_path_rel = os.path.normpath(os.path.join(dirpath_rel, subpath))
+            if match_all(patterns, full_path_rel):
+                if os.path.exists(full_path_dest):
+                    raise RuntimeError("Dest path already exists '{}'".format(full_path_dest))
+                matched_paths.append(full_path_rel)
         
         # can prune by deleting items
         dirnames_copy = dirnames.copy()
         found_counter = 0
         for idir, subpath in enumerate(dirnames_copy):
-            full_path = os.path.normpath(os.path.join(dirpath, subpath))
-            if match_all(patterns, full_path):
+            full_path_dest = os.path.join(dirpath_dest, subpath)
+            full_path_rel = os.path.normpath(os.path.join(dirpath_rel, subpath))
+            if match_all(patterns, full_path_rel):
+                if os.path.exists(full_path_dest):
+                    if os.path.isdir(full_path_dest):
+                        continue
+                    else:
+                        raise RuntimeError("Dest path already exists as a file '{}'".format(full_path_dest))
                 del dirnames[idir - found_counter]
                 found_counter += 1
-                matched_paths.append(full_path)
+                matched_paths.append(full_path_rel)
     return matched_paths
 
 def part_action(args):
@@ -372,12 +384,11 @@ def part_action(args):
                     if not run_dir.is_dir():
                         continue
                     run_id_full = exp_dir.name + "/" + run_dir.name
-                    run_dir_path = os.path.join(exp_dir_path, run_dir.name)
                     # print(run_id_full)
                     if not match_all(args.runid_pattern, run_id_full):
                         continue
                     run_dir_inside_path = os.path.join(exp_dir.name, run_dir.name)
-                    for match_path in _match_part(args.part_pattern, run_dir_path):
+                    for match_path in _match_part(args.part_pattern, run_dir_inside_path, source_root, dest_root):
                         inside_path = os.path.normpath(os.path.join(run_dir_inside_path, match_path))
                         source_path = os.path.join(source_root, inside_path)
                         source_path_base = os.path.dirname(source_path)
