@@ -44,14 +44,17 @@ class OffsetRegressor(nn.Module):
             self.regressor(torch.cat([pos_inp_y, pos_atten_y], dim=-1))], dim=2)
 
 class OffsetTransformer(nn.Module):
-    def __init__(self, inplanes):
+    def __init__(self, inplanes, num_offsets):
         super(OffsetTransformer, self).__init__()
         self.inplanes = inplanes
+        self.num_offsets = num_offsets
         self.scale_regressor = nn.Sequential(
-            nn.Conv2d(inplanes, 1, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(inplanes, 1, kernel_size=3, padding=1, bias=True),
+            nn.BatchNorm2d(1, affine=True),
             nn.Softsign())
         self.angle_regressor = nn.Sequential(
-            nn.Conv2d(inplanes, 1, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(inplanes, 1, kernel_size=3, padding=1, bias=True),
+            nn.BatchNorm2d(1, affine=True),
             nn.Softsign())
         self.register_buffer("updated_steps", torch.zeros(1, dtype=torch.long))
         self.register_buffer("effect_scale", torch.ones(1, dtype=torch.float))
@@ -130,7 +133,7 @@ class DisplaceChannel(nn.Module):
                 self.offset_regressor = OffsetRegressor(self.num_offsets)
             if transform_offset:
                 assert num_transformer_channels is not None
-                self.offset_transformer = OffsetTransformer(num_transformer_channels)
+                self.offset_transformer = OffsetTransformer(num_transformer_channels, self.num_offsets)
         else:
             self.switch_LO_state(False)
 
