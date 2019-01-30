@@ -9,6 +9,7 @@ import re
 ROOT_DIR = "."
 TRASH_DIR = "backup/trash"
 ARCHIVE_DIR = "backup/archive"
+PART_ARCHIVE_DIR = "backup/parchive"
 
 def ask(question, posstr="y", negstr="n", ansretry=True, ansdefault=None, timeout_sec=None):
     def timeout_interrupt(signum, frame):
@@ -99,12 +100,18 @@ def get_args():
 
     parser_partaction = subparsers.add_parser("paction")
     parser_partaction.add_argument("--restore", action="store_true")
-    parser_partaction.add_argument("--yes", action="store_true")
-    parser_partaction.add_argument("--dry-run", action="store_true")
-    parser_partaction.add_argument("--backup-dir", choices=["archive", "trash"], default="archive")
+    parser_partaction.add_argument("--backup-dir", choices=["part", "archive", "trash"], default="part")
     parser_partaction.add_argument("--type", choices=["checkpoint", "runs"], required=True)
+    parser_partaction.add_argument("--runid-match-dest", action="store_true")
     parser_partaction.add_argument("--runid-pattern", action="append", help="regex", required=True)
-    parser_partaction.add_argument("--part-pattern", action="append", help="regex", required=True)
+    parser_partaction.add_argument("--runid-reverse", action="store_true")
+    parser_partaction.add_argument("--part-pattern", action="append", help="regex")
+    parser_partaction.add_argument("--part-reverse", action="store_true")
+    parser_partaction_action_group = parser_partaction.add_mutually_exclusive_group()
+    parser_partaction_action_group.add_argument("--print-source", action="store_true")
+    parser_partaction_action_group.add_argument("--print-dest", action="store_true")
+    parser_partaction_action_group.add_argument("--dry-run", action="store_true")
+    parser_partaction_action_group.add_argument("--yes", action="store_true")
     parser_partaction.set_defaults(func=part_action)
 
     args = argparser.parse_args()
@@ -326,15 +333,18 @@ def restore_runs(args):
         else:
             print("Invalid runid: " + runid)
 
-def match_all(patterns, string):
-    for pat in patterns:
-        if re.search(pat, string) is None:
-            return False
-    return True
+def match_all(patterns, string, reverse_match):
+    if patterns is not None:
+        for pat in patterns:
+            if re.search(pat, string) is None:
+                return False if not reverse_match else True
+    return True if not reverse_match else False
 
-def _match_part(patterns, run_dir_inside, source_root, dest_root):
+def _match_part(patterns, run_dir_inside, source_root, dest_root, reverse_match):
     matched_paths = []
     run_dir_source = os.path.join(source_root, run_dir_inside)
+    if not os.path.isdir(run_dir_source):
+        return matched_paths
     run_dir_dest = os.path.join(dest_root, run_dir_inside)
     for (dirpath_source, dirnames, filenames) in os.walk(run_dir_source):
         dirpath_rel = os.path.relpath(dirpath_source, run_dir_source)
@@ -342,7 +352,7 @@ def _match_part(patterns, run_dir_inside, source_root, dest_root):
         for subpath in filenames:
             full_path_dest = os.path.join(dirpath_dest, subpath)
             full_path_rel = os.path.normpath(os.path.join(dirpath_rel, subpath))
-            if match_all(patterns, full_path_rel):
+            if match_all(patterns, full_path_rel, reverse_match):
                 if os.path.exists(full_path_dest):
                     raise RuntimeError("Dest path already exists '{}'".format(full_path_dest))
                 matched_paths.append(full_path_rel)
@@ -353,7 +363,7 @@ def _match_part(patterns, run_dir_inside, source_root, dest_root):
         for idir, subpath in enumerate(dirnames_copy):
             full_path_dest = os.path.join(dirpath_dest, subpath)
             full_path_rel = os.path.normpath(os.path.join(dirpath_rel, subpath))
-            if match_all(patterns, full_path_rel):
+            if match_all(patterns, full_path_rel, reverse_match):
                 if os.path.exists(full_path_dest):
                     if os.path.isdir(full_path_dest):
                         continue
@@ -365,30 +375,42 @@ def _match_part(patterns, run_dir_inside, source_root, dest_root):
     return matched_paths
 
 def part_action(args):
-    backup_subdir = TRASH_DIR if args.backup_dir == "trash" else ARCHIVE_DIR
+    if args.backup_dir == "trash":
+        backup_subdir = TRASH_DIR
+    elif args.backup_dir == "archive":
+        backup_subdir = ARCHIVE_DIR
+    elif args.backup_dir == "part":
+        backup_subdir = PART_ARCHIVE_DIR
+    else:
+        raise ValueError("Unknown backup dir {}".format(args.backup_dir))
     if args.restore:
         source_root = os.path.join(ROOT_DIR, backup_subdir, args.type)
         dest_root = os.path.join(ROOT_DIR, args.type)
     else:
         source_root = os.path.join(ROOT_DIR, args.type)
         dest_root = os.path.join(ROOT_DIR, backup_subdir, args.type)
-
-    with os.scandir(source_root) as exp_dir_entries:
+    runid_match_root = dest_root if args.runid_match_dest else source_root
+    if not os.path.isdir(runid_match_root):
+        return
+    ask_for_each = not (args.yes or args.dry_run or args.print_source or args.print_dest)
+    take_action = not (args.dry_run or args.print_source or args.print_dest)
+    with os.scandir(runid_match_root) as exp_dir_entries:
         for exp_dir in exp_dir_entries:
             if not exp_dir.is_dir():
                 continue
-            exp_dir_path = os.path.join(source_root, exp_dir.name)
-            
+            exp_dir_path = os.path.join(runid_match_root, exp_dir.name)
+            if not os.path.isdir(exp_dir_path):
+                continue
             with os.scandir(exp_dir_path) as run_dir_entries:
                 for run_dir in run_dir_entries:
                     if not run_dir.is_dir():
                         continue
                     run_id_full = exp_dir.name + "/" + run_dir.name
                     # print(run_id_full)
-                    if not match_all(args.runid_pattern, run_id_full):
+                    if not match_all(args.runid_pattern, run_id_full, args.runid_reverse):
                         continue
                     run_dir_inside_path = os.path.join(exp_dir.name, run_dir.name)
-                    for match_path in _match_part(args.part_pattern, run_dir_inside_path, source_root, dest_root):
+                    for match_path in _match_part(args.part_pattern, run_dir_inside_path, source_root, dest_root, args.part_reverse):
                         inside_path = os.path.normpath(os.path.join(run_dir_inside_path, match_path))
                         source_path = os.path.join(source_root, inside_path)
                         source_path_base = os.path.dirname(source_path)
@@ -396,10 +418,14 @@ def part_action(args):
                         dest_path = os.path.join(dest_root, inside_path)
                         dest_path_base = os.path.dirname(dest_path)
                         assert os.path.relpath(dest_path, dest_path_base) != "."
-                        if args.yes or args.dry_run or ask("Moving '{}' to '{}', confirm?".format(source_path, dest_path)):
+                        if not ask_for_each or ask("Moving '{}' to '{}', confirm?".format(source_path, dest_path)):
                             if args.yes or args.dry_run:
                                 print("Moving '{}' to '{}'".format(source_path, dest_path))
-                            if not args.dry_run:
+                            elif args.print_source:
+                                print(source_path)
+                            elif args.print_dest:
+                                print(dest_path)
+                            if take_action:
                                 if not os.path.exists(dest_path_base):
                                     os.makedirs(dest_path_base)
                                 shutil.move(source_path, dest_path_base)
