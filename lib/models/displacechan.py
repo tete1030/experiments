@@ -44,18 +44,28 @@ class OffsetRegressor(nn.Module):
             self.regressor(torch.cat([pos_inp_y, pos_atten_y], dim=-1))], dim=2)
 
 class OffsetTransformer(nn.Module):
-    def __init__(self, inplanes, num_offsets):
+    def __init__(self, inplanes, num_offsets, bottleneck=None):
         super(OffsetTransformer, self).__init__()
         self.inplanes = inplanes
         self.num_offsets = num_offsets
-        self.scale_regressor = nn.Sequential(
-            nn.Conv2d(inplanes, 1, kernel_size=3, padding=1, bias=True),
-            nn.BatchNorm2d(1, affine=True),
-            nn.Softsign())
-        self.angle_regressor = nn.Sequential(
-            nn.Conv2d(inplanes, 1, kernel_size=3, padding=1, bias=True),
-            nn.BatchNorm2d(1, affine=True),
-            nn.Softsign())
+        self.bottleneck = bottleneck
+        first_layer_channels = 1 if bottleneck is None else bottleneck
+        use_bias = False if bottleneck is None else True
+
+        scale_regressor_mods = []
+        scale_regressor_mods.append(nn.Conv2d(inplanes, first_layer_channels, kernel_size=3, padding=1, bias=use_bias))
+        if bottleneck is not None:
+            scale_regressor_mods.append(nn.Conv2d(bottleneck, num_offsets, kernel_size=1, bias=False))
+        scale_regressor_mods.append(nn.Softsign())
+        self.scale_regressor = nn.Sequential(*scale_regressor_mods)
+
+        angle_regressor_mods = []
+        angle_regressor_mods.append(nn.Conv2d(inplanes, first_layer_channels, kernel_size=3, padding=1, bias=use_bias))
+        if bottleneck is not None:
+            angle_regressor_mods.append(nn.Conv2d(bottleneck, num_offsets, kernel_size=1, bias=False))
+        angle_regressor_mods.append(nn.Softsign())
+        self.angle_regressor = nn.Sequential(*angle_regressor_mods)
+
         self.register_buffer("updated_steps", torch.zeros(1, dtype=torch.long))
         self.register_buffer("effect_scale", torch.ones(1, dtype=torch.float))
 
@@ -103,7 +113,7 @@ class OffsetTransformer(nn.Module):
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, num_channels, num_offsets,
                  disable_displace=False, learnable_offset=False, offset_scale=None,
-                 regress_offset=False, transform_offset=False, num_transformer_channels=None,
+                 regress_offset=False, transform_offset=False, num_transformer_channels=None, transformer_bottleneck=None,
                  half_reversed_offset=False, previous_dischan=None):
         super(DisplaceChannel, self).__init__()
         self.height = height
@@ -133,7 +143,7 @@ class DisplaceChannel(nn.Module):
                 self.offset_regressor = OffsetRegressor(self.num_offsets)
             if transform_offset:
                 assert num_transformer_channels is not None
-                self.offset_transformer = OffsetTransformer(num_transformer_channels, self.num_offsets)
+                self.offset_transformer = OffsetTransformer(num_transformer_channels, self.num_offsets, bottleneck=transformer_bottleneck)
         else:
             self.switch_LO_state(False)
 

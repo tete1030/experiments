@@ -92,6 +92,15 @@ class Experiment(BaseExperiment):
         assert not (hparams.TRAIN.OFFSET.SEP_TRAIN_ITER > 0 and hparams.MODEL.LOSS_FEATSTAB)
 
     def init_optimizer(self):
+        def _print_parameters(para_groups, all_para_pair):
+            print("Parameter groups:")
+            para2name_dict = dict(map(lambda p: (p[1], p[0]), all_para_pair))
+            for group_name, paras in para_groups.items():
+                print("  " + group_name + ":")
+                for para_name in map(para2name_dict.get, paras):
+                    print("    " + para_name)
+                print("")
+
         # Separate parameters
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in globalvars.displace_mods if hasattr(dm, "offset")]))
@@ -99,7 +108,7 @@ class Experiment(BaseExperiment):
             if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET:
                 self.offset_transformer_parameters = list(filter(lambda x: x.requires_grad,
                     list(itertools.chain.from_iterable([dm.offset_transformer.parameters() for dm in globalvars.displace_mods])) + \
-                    list(self.model.module.transformer.parameters())))
+                    (list(self.model.module.transformer.parameters()) if hparams.MODEL.LEARNABLE_OFFSET.INDEPENDENT_TRANSFORMER else [])))
             else:
                 self.offset_transformer_parameters = []
             if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
@@ -112,12 +121,25 @@ class Experiment(BaseExperiment):
             self.offset_transformer_parameters = []
             self.dpool_parameters = []
 
-        special_parameter_ids = list(map(lambda x: id(x),
-            self.offset_parameters + \
+        all_special_parameters = self.offset_parameters + \
             self.offset_regressor_parameters + \
             self.offset_transformer_parameters + \
-            self.dpool_parameters))
+            self.dpool_parameters
+
+        special_parameter_ids = list(map(lambda x: id(x), all_special_parameters))
         self.general_parameters = list(filter(lambda x: x.requires_grad and id(x) not in special_parameter_ids, self.model.parameters()))
+        
+        _print_parameters(
+            dict(
+                offset=self.offset_parameters,
+                offset_regressor=self.offset_regressor_parameters,
+                offset_transformer=self.offset_transformer_parameters,
+                dpool=self.dpool_parameters),
+            self.model.named_parameters())
+
+        # Make sure no parameter is shared
+        all_parameter_ptrs = list(map(lambda x: x.data_ptr(), all_special_parameters + self.general_parameters))
+        assert len(all_parameter_ptrs) == len(np.unique(all_parameter_ptrs)), "shared parameter exists"
 
         # Initialize optimizers
         # Normal optimizer
@@ -722,7 +744,8 @@ class OffsetBlock(nn.Module):
             learnable_offset=hparams.MODEL.DETAIL.LEARNABLE_OFFSET,
             regress_offset=hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET,
             transform_offset=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET,
-            num_transformer_channels=256,
+            num_transformer_channels=TransformFeature.OUTPUT_CHANS if hparams.MODEL.LEARNABLE_OFFSET.INDEPENDENT_TRANSFORMER else self.inplanes,
+            transformer_bottleneck=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER_BOTTLENECK,
             half_reversed_offset=hparams.MODEL.LEARNABLE_OFFSET.HALF_REVERSED_OFFSET,
             previous_dischan=globalvars.displace_mods[-1] if hparams.MODEL.LEARNABLE_OFFSET.REUSE_OFFSET and len(globalvars.displace_mods) > 0 else None)
         if hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE > 0:
@@ -856,12 +879,14 @@ class Bottleneck(nn.Module):
 class MyPose(nn.Module):
     def __init__(self, num_class):
         super(MyPose, self).__init__()
-        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET:
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET and hparams.MODEL.LEARNABLE_OFFSET.INDEPENDENT_TRANSFORMER:
             self.transformer = TransformFeature()
+        else:
+            self.transformer = None
         self.estimator = SimpleEstimator(num_class)
 
     def forward(self, x):
-        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET:
+        if self.transformer is not None:
             transform_features = self.transformer(x)
         else:
             transform_features = None
@@ -874,6 +899,7 @@ class MyPose(nn.Module):
         return (prediction, *block_outputs)
 
 class TransformFeature(nn.Module):
+    OUTPUT_CHANS = 256
     def __init__(self):
         super(TransformFeature, self).__init__()
         self.inplanes = 64
@@ -917,11 +943,16 @@ class TransformFeature(nn.Module):
 
         return x1
 
-class MySequential(nn.Sequential):
+class SequentialForOffsetBlockTransformer(nn.Sequential):
     def forward(self, input, extra):
         for module in self._modules.values():
             if isinstance(module, OffsetBlock):
-                input = module(input, extra)
+                if hparams.MODEL.LEARNABLE_OFFSET.INDEPENDENT_TRANSFORMER:
+                    assert extra is not None
+                    input = module(input, transformer_source=extra)
+                else:
+                    assert extra is None
+                    input = module(input, transformer_source=input)
             else:
                 input = module(input)
         return input
@@ -972,7 +1003,7 @@ class SimpleEstimator(nn.Module):
             self._add_offset_block(layers)
             layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=i))
 
-        return MySequential(*layers)
+        return SequentialForOffsetBlockTransformer(*layers)
 
     def _make_predictor(self, planes, num_class):
         layers = []
@@ -993,6 +1024,8 @@ class SimpleEstimator(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
+        if hparams.MODEL.LEARNABLE_OFFSET.INDEPENDENT_TRANSFORMER:
+            assert transform_features is None
         x1 = self.layer1(x, transform_features)
 
         return self.predictor(x1)
