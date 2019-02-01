@@ -2,8 +2,8 @@ default: &DEFAULT
     workers: 16
     debug: false
     profile: false
-    fast_pass_train: 0
-    fast_pass_valid: 0
+    fast_pass_train: null
+    fast_pass_valid: null
     handle_sig: true
     evaluate: false
     checkpoint_dir_template: 'checkpoint/{exp_name}_{exp_id}/{run_id}'

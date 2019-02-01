@@ -404,6 +404,10 @@ def train_eval_loop(exp, start_epoch, stop_epoch):
     return True
 
 def train(exp:BaseExperiment, epoch:int, cur_step:int, pause_interval:int=0):
+    if config.fast_pass_train == 0:
+        log_progress("Fast Pass!")
+        return
+
     batch_time = AverageMeter()
     data_time = AverageMeter()
     epoch_ctx = EpochContext()
@@ -453,7 +457,7 @@ def train(exp:BaseExperiment, epoch:int, cur_step:int, pause_interval:int=0):
             if globalvars.main_context.sigint_triggered:
                 break
 
-            if config.fast_pass_train > 0 and (i+1) >= config.fast_pass_train:
+            if config.fast_pass_train is not None and (i+1) >= config.fast_pass_train:
                 log_progress("Fast Pass!")
                 yield cur_step, True
                 break
@@ -467,6 +471,10 @@ def train(exp:BaseExperiment, epoch:int, cur_step:int, pause_interval:int=0):
             end = time.time()
 
 def validate(exp:BaseExperiment, epoch:int, cur_step:int, call_store:bool) -> None:
+    if config.fast_pass_valid == 0:
+        log_progress("Fast Pass!")
+        return
+
     batch_time = AverageMeter()
     data_time = AverageMeter()
     epoch_ctx = EpochContext()
@@ -507,7 +515,7 @@ def validate(exp:BaseExperiment, epoch:int, cur_step:int, call_store:bool) -> No
             if globalvars.main_context.sigint_triggered:
                 break
 
-            if config.fast_pass_valid > 0 and (i+1) >= config.fast_pass_valid:
+            if config.fast_pass_valid is not None and (i+1) >= config.fast_pass_valid:
                 log_progress("Fast Pass!")
                 break
 
