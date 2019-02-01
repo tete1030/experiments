@@ -1,4 +1,4 @@
-#include <torch/torch.h>
+#include <torch/extension.h>
 #include <THC/THC.h>
 #include <THC/THCGeneral.hpp>
 #include <cuda.h>
@@ -282,41 +282,6 @@ void offset_mask_frac(
 
   offset_mask_frac_cuda(stream, input, offsets, channel_per_offset, output);
 }
-
-namespace pybind11 { namespace detail {
-  template<> struct type_caster<at::IntList> {
-  public:
-    PYBIND11_TYPE_CASTER(at::IntList, _("at::IntList"));
-
-    bool load(handle src, bool) {
-      PyObject *source = src.ptr();
-      auto tuple = PyTuple_Check(source);
-      if (tuple || PyList_Check(source)) {
-        auto size = tuple ? PyTuple_GET_SIZE(source) : PyList_GET_SIZE(source);
-        v_value.resize(size);
-        for (int idx = 0; idx < size; idx++) {
-          PyObject* obj = tuple ? PyTuple_GET_ITEM(source, idx) : PyList_GET_ITEM(source, idx);
-          if (THPVariable_Check(obj)) {
-            v_value[idx] = THPVariable_Unpack(obj).toCLong();
-          } else if (PyLong_Check(obj)) {
-            // use THPUtils_unpackLong after it is safe to include python_numbers.h
-            v_value[idx] = THPUtils_unpackLong(obj);
-          } else {
-            return false;
-          }
-        }
-        value = v_value;
-        return true;
-      }
-      return false;
-    }
-    static handle cast(at::IntList src, return_value_policy /* policy */, handle /* parent */) {
-      return handle(THPUtils_packInt64Array(src.size(), src.data()));
-    }
-  private:
-    std::vector<int64_t> v_value;
-  };
-}}
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("displace_forward", &displace_forward, "displace forward");
