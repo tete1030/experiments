@@ -463,6 +463,8 @@ class Experiment(BaseExperiment):
                 sigma_change = list()
                 sigma_change_avg = list()
                 for idp, dp in enumerate(globalvars.dpools):
+                    sigma_data = dp.sigma.detach()
+                    sigma_data[sigma_data.abs() > dp.max_sigma] = dp.max_sigma
                     self.change_sigma_avgmeter[idp].update(dp.sigma.detach().cpu().abs())
                     sigma_change.append(self.change_sigma_avgmeter[idp].lastdiff_dir)
                     sigma_change_avg.append(self.change_sigma_avgmeter[idp].avg_dir)
@@ -544,6 +546,10 @@ class Experiment(BaseExperiment):
 
         loss = ((output_maps - det_map_gt_cuda).pow(2) * \
             masking_final).mean().sqrt()
+
+        if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
+            for idp, dp in enumerate(globalvars.dpools):
+                loss = loss + dp.sigma.pow(2).mean() * hparams.MODEL.LOSS_DPOOL_COF
 
         if is_train and hparams.MODEL.LOSS_FEATSTAB and self.offset_optimizer and self.transformer_optimizer and self.update_offset and self.update_transformer:
             scale = torch.tensor(truncnorm.rvs(-1, 1, loc=1, scale=0.5, size=batch_size)).float()
@@ -704,7 +710,8 @@ class DynamicPooling(nn.Module):
         dissq = torch.stack((x, y), dim=0).pow(2).float().sum(dim=0)
         self.register_buffer("dissq", dissq)
         self.sigma = nn.Parameter(torch.zeros(num_channels))
-        self.sigma.data.fill_(kernel_size / 2)
+        self.sigma.data.fill_(kernel_size / 2 / 2)
+        self.register_buffer("max_sigma", torch.tensor(kernel_size / 2, dtype=torch.float))
         self.eps = np.finfo(np.float32).eps.item()
         globalvars.dpools.append(self)
 
