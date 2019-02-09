@@ -50,22 +50,29 @@ class EpochContext(object):
 
 class BaseExperiment(object):
     def __init__(self):
-        self.model = None
-        self.criterion = None
-        self.optimizer = None
-        self.train_dataset = None
-        self.val_dataset = None
         self.train_collate_fn = default_collate
         self.valid_collate_fn = default_collate
-        self.train_drop_last = False
         self.worker_init_fn = None
         self.print_iter_start = " | " # "\n\t"
         self.print_iter_sep = " | "
         self.init()
-        self.init_dataloader()
 
     def init(self):
-        pass
+        self.init_dataset()
+        self.init_model()
+        self.init_optimizer()
+        self.init_dataloader()
+
+    def init_model(self):
+        self.model = None
+        self.criterion = None
+
+    def init_optimizer(self):
+        self.optimizer = None
+
+    def init_dataset(self):
+        self.train_dataset = None
+        self.val_dataset = None
 
     def init_dataloader(self):
         # Data loading code
@@ -77,7 +84,7 @@ class BaseExperiment(object):
                 num_workers=config.workers,
                 shuffle=True,
                 pin_memory=True,
-                drop_last=self.train_drop_last,
+                drop_last=config.train_drop_last,
                 worker_init_fn=self.worker_init_fn)
         else:
             self.train_loader = None
@@ -100,16 +107,23 @@ class BaseExperiment(object):
     def epoch_start(self, epoch:int, step:int, evaluate_only:bool):
         pass
 
-    def iter_process(self, epoch_ctx:EpochContext, batch:dict, progress:dict) -> dict:
+    def epoch_end(self, epoch:int, step:int, evaluate_only:bool):
+        pass
+
+    def train_once(self, epoch_ctx:EpochContext, batch:dict, progress:dict):
+        loss = self.iter_process(epoch_ctx, batch, progress, True)
+        self.iter_step(epoch_ctx, loss, progress)
+
+    def test_once(self, epoch_ctx:EpochContext, batch:dict, progress:dict):
+        self.iter_process(epoch_ctx, batch, progress, False)
+
+    def iter_process(self, epoch_ctx:EpochContext, batch:dict, progress:dict, train:bool) -> torch.Tensor:
         pass
 
     def iter_step(self, epoch_ctx:EpochContext, loss:torch.Tensor, progress:dict):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-
-    def epoch_end(self, epoch:int, step:int, evaluate_only:bool):
-        pass
 
     def process_stored(self, epoch_ctx:EpochContext, epoch:int, step:int):
         pass

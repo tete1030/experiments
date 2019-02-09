@@ -427,16 +427,10 @@ def train(exp:BaseExperiment, epoch:int, cur_step:int, pause_interval:int=0):
                 "iter": i,
                 "iter_len": iter_length,
                 "step": cur_step,
-                "train": True
             }
 
-            result = exp.iter_process(epoch_ctx, batch, progress=progress)
-            loss = result["loss"]
-
-            exp.iter_step(epoch_ctx, loss, progress=progress)
-
-            loss = loss.item() if loss is not None else None
-
+            with torch.autograd.set_detect_anomaly(config.detect_anomaly):
+                exp.train_once(epoch_ctx, batch, progress=progress)
             exp.summary_scalar(epoch_ctx, epoch, cur_step, "train")
 
             # measure elapsed time
@@ -493,9 +487,10 @@ def validate(exp:BaseExperiment, epoch:int, cur_step:int, call_store:bool) -> No
                 "iter": i,
                 "iter_len": iter_length,
                 "step": cur_step,
-                "train": False
             }
-            result = exp.iter_process(epoch_ctx, batch, progress=progress)
+
+            with torch.autograd.set_detect_anomaly(config.detect_anomaly):
+                exp.test_once(epoch_ctx, batch, progress=progress)
 
             # measure elapsed time
             batch_time.update(time.time() - end)

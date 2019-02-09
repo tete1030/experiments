@@ -37,12 +37,17 @@ class GroupNormWrapper(nn.GroupNorm):
 
 class Experiment(BaseExperiment):
     def init(self):
-        globalvars.early_predictor_size = list()
-        globalvars.displace_mods = list()
-        if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
-            globalvars.early_predictors = list()
-            globalvars.pre_early_predictor_outs = dict()
+        super().init()
+        if self.offset_optimizer is not None:
+            self.move_dis_avgmeter = []
+            for dm in globalvars.displace_mods:
+                if dm.offset.size(0) == 0:
+                    continue
+                self.move_dis_avgmeter.append(OffsetCycleAverageMeter(hparams.LOG.MOVE_AVERAGE_CYCLE, (dm.offset.data * dm.offset_scale).cpu()))
+        else:
+            self.move_dis_avgmeter = None
 
+    def init_dataset(self):
         self.data_source = hparams.DATASET.PROFILE
         if self.data_source == "coco":
             self.num_parts = datasets.mscoco.NUM_PARTS
@@ -53,9 +58,21 @@ class Experiment(BaseExperiment):
         else:
             assert False
 
-        pretrained = hparams.MODEL.RESNET_PRETRAINED
-        if config.resume:
-            pretrained = None
+        if self.data_source == "coco":
+            self.init_mscoco()
+        elif self.data_source == "mpii":
+            self.init_mpii()
+
+        if hparams.DATASET.SUBSET is not None:
+            if self.train_dataset:
+                self.train_dataset = Subset(self.train_dataset, list(range(int(len(self.train_dataset) * hparams.DATASET.SUBSET))))
+
+    def init_model(self):
+        globalvars.early_predictor_size = list()
+        globalvars.displace_mods = list()
+        if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
+            globalvars.early_predictors = list()
+            globalvars.pre_early_predictor_outs = dict()
 
         if hparams.MODEL.USE_GN:
             globalvars.BatchNorm2dImpl = GroupNormWrapper
@@ -64,9 +81,14 @@ class Experiment(BaseExperiment):
 
         assert hparams.MODEL.DETAIL.EARLY_PREDICTOR or not hparams.MODEL.DETAIL.FIRST_ESP_ONLY
 
+        pretrained = hparams.MODEL.RESNET_PRETRAINED
+        if config.resume:
+            pretrained = None
+
         self.model = nn.DataParallel(Controller(MainModel(hparams.MODEL.OUT_SHAPE[::-1], self.num_parts, pretrained=pretrained), self.num_parts).cuda())
         assert OffsetBlock._counter == len(hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO) or not hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK
 
+    def init_optimizer(self):
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in globalvars.displace_mods if hasattr(dm, "offset")]))
             self.offset_regressor_parameters = list(filter(lambda x: x.requires_grad, list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in globalvars.displace_mods if hasattr(dm, "offset_regressor")]))))
@@ -107,25 +129,9 @@ class Experiment(BaseExperiment):
         else:
             self.early_predictor_optimizer = None
 
-        if self.data_source == "coco":
-            self.init_mscoco()
-        elif self.data_source == "mpii":
-            self.init_mpii()
-
-        if hparams.DATASET.SUBSET is not None:
-            if self.train_dataset:
-                self.train_dataset = Subset(self.train_dataset, list(range(int(len(self.train_dataset) * hparams.DATASET.SUBSET))))
-
+    def init_dataloader(self):
         self.worker_init_fn = nprand_init
-
-        if self.offset_optimizer is not None:
-            self.move_dis_avgmeter = []
-            for dm in globalvars.displace_mods:
-                if dm.offset.size(0) == 0:
-                    continue
-                self.move_dis_avgmeter.append(OffsetCycleAverageMeter(hparams.LOG.MOVE_AVERAGE_CYCLE, (dm.offset.data * dm.offset_scale).cpu()))
-        else:
-            self.move_dis_avgmeter = None
+        super().init_dataloader()
 
     def init_mscoco(self):
         self.coco = COCO("data/mscoco/person_keypoints_train2017.json")
@@ -370,7 +376,7 @@ class Experiment(BaseExperiment):
         # TODO: summarize all parameters
         pass
 
-    def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict) -> dict:
+    def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict, train: bool) -> torch.Tensor:
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
         det_maps_gt = batch["keypoint_map"]
@@ -378,7 +384,6 @@ class Experiment(BaseExperiment):
         img_flipped = batch["img_flipped"]
         img_ori_size = batch["img_ori_size"]
         keypoint = batch["keypoint"]
-        is_train = progress["train"]
         batch_size = img.size(0)
         globalvars.progress = progress
 
@@ -441,7 +446,7 @@ class Experiment(BaseExperiment):
         if (loss.data != loss.data).any():
             import ipdb; ipdb.set_trace()
 
-        if not is_train or config.vis:
+        if not train or config.vis:
             kp_pred, score = parse_map(output_maps[-1], thres=hparams.EVAL.PARSE_THRESHOLD)
             kp_pred_affined = kp_pred.copy()
             for samp_i in range(batch_size):
@@ -455,7 +460,7 @@ class Experiment(BaseExperiment):
                 ans = generate_mpii_ans(image_ids, batch["person_index"], kp_pred_affined)
                 epoch_ctx.add_store("annotates", {"image_index": image_ids, "annotate": ans, "pred": torch.from_numpy(kp_pred_affined), "gt": batch["keypoint_ori"], "head_box": batch["head_box"]})
 
-            if config.store and hparams.CONFIG.STORE_MAP and is_train:
+            if config.store and hparams.CONFIG.STORE_MAP and train:
                 if not hasattr(epoch_ctx, "store_counter"):
                     epoch_ctx.store_counter = 0
                 if epoch_ctx.store_counter < 30:
@@ -497,12 +502,7 @@ class Experiment(BaseExperiment):
                             ax.set_title(datasets.mscoco.PART_LABELS[j])
                     plt.show()
 
-        result = {
-            "loss": loss,
-            "index": batch["index"]
-        }
-
-        return result
+        return loss
 
 # Attention List:
 # - middle_outputs
