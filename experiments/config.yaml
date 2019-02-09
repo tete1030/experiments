@@ -22,6 +22,7 @@ default: &DEFAULT
     ignore_hparams_mismatch: false
     save_checkpoint: true
     use_tensorboard: true
+    train_drop_last: false
 
 profile: &PROFILE
     <<: *DEFAULT
