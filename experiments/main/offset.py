@@ -107,25 +107,6 @@ class OffsetBlock(nn.Module):
 
         out_final = self.relu(self.bn(out_skip))
 
-        if config.debug_nan:
-            def get_backward_hook(var_name):
-                def _backward_hook(grad):
-                    exp = self
-                    if isinstance(grad, torch.Tensor) and (grad.data != grad.data).any():
-                        print("[OffsetBlock] " + var_name + " contains NaN during backward")
-                        import ipdb; ipdb.set_trace()
-                return _backward_hook
-
-            all_var_names = ["x", "out_pre", "out_dis", "out_atten", "out_post", "out_skip", "out_final"]
-
-            print("[OffsetBlock] !!!!!PERFORMANCE WARN: BACKWARD NAN DEBUGGING ENABLED!!!!!")
-            for var_name in all_var_names:
-                cur_var = locals()[var_name]
-                if not (cur_var.data == cur_var.data).all():
-                    print("[OffsetBlock] " + var_name + " contains NaN during forward")
-                    import ipdb; ipdb.set_trace()
-                cur_var.register_hook(get_backward_hook(var_name))
-
         return out_final
 
 class ConvBlockWithAtten(nn.Module):

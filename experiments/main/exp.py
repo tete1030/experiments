@@ -15,7 +15,6 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
 import lib.datasets as datasets
-from lib.models.common import StrictNaNReLU
 from lib.utils.transforms import fliplr_pts, kpt_affine
 from lib.utils.evaluation import accuracy, OffsetCycleAverageMeter, parse_map, generate_ans, generate_mpii_ans
 from lib.utils.imutils import batch_resize
@@ -576,13 +575,13 @@ class Predictor(nn.Module):
         layers.append(nn.Conv2d(inplanes, 256,
             kernel_size=1, stride=1, bias=False))
         layers.append(globalvars.BatchNorm2dImpl(256))
-        layers.append(StrictNaNReLU(inplace=True))
+        layers.append(nn.ReLU(inplace=True))
 
         # predict of globalNet
         layers.append(nn.Conv2d(256, 256,
             kernel_size=1, stride=1, bias=False))
         layers.append(globalvars.BatchNorm2dImpl(256))
-        layers.append(StrictNaNReLU(inplace=True))
+        layers.append(nn.ReLU(inplace=True))
 
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
@@ -628,7 +627,7 @@ class GlobalNet(nn.Module):
         layers.append(nn.Conv2d(input_size, 256,
             kernel_size=1, stride=1, bias=False))
         layers.append(globalvars.BatchNorm2dImpl(256))
-        layers.append(StrictNaNReLU(inplace=True))
+        layers.append(nn.ReLU(inplace=True))
 
         return nn.Sequential(*layers)
 
@@ -646,7 +645,7 @@ class GlobalNet(nn.Module):
         layers.append(nn.Conv2d(256, 256,
             kernel_size=1, stride=1, bias=False))
         layers.append(globalvars.BatchNorm2dImpl(256))
-        layers.append(StrictNaNReLU(inplace=True))
+        layers.append(nn.ReLU(inplace=True))
 
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))

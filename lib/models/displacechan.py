@@ -7,7 +7,6 @@ from utils.log import log_i
 import torch.nn.functional as F
 import numpy as np
 from .displace import DisplaceFracCUDA, PositionalDisplace
-from lib.models.common import StrictNaNReLU
 from lib.utils.lambdalayer import Lambda
 
 class Weighted(nn.Module):

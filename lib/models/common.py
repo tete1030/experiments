@@ -1,5 +1,6 @@
 import torch.nn as nn
 
+# Update: fixed in pytorch 1.0
 # as of pytorch 0.4.1 , nn.ReLU still give output 0 when input NaN
 # This is hard for debug, so we replace it
 # https://github.com/pytorch/pytorch/issues/10238

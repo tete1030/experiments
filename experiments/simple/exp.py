@@ -17,7 +17,6 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
 import lib.datasets as datasets
-from lib.models.common import StrictNaNReLU
 from lib.utils.transforms import fliplr_pts, kpt_affine
 from lib.utils.evaluation import accuracy, OffsetCycleAverageMeter, parse_map, generate_ans, generate_mpii_ans
 from lib.utils.imutils import batch_resize
@@ -767,7 +766,7 @@ class OffsetBlock(nn.Module):
         else:
             self.atten_post = None
         self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.TRAIN.OFFSET.MOMENTUM_BN)
-        self.relu = StrictNaNReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=True)
         if stride > 1 or inplanes != outplanes:
             self.downsample = nn.Conv2d(self.inplanes, self.outplanes,
                           kernel_size=1, stride=stride, bias=False)
@@ -809,26 +808,6 @@ class OffsetBlock(nn.Module):
                 globalvars.offsetblock_output[device] = list()
             globalvars.offsetblock_output[device].append(out_post)
 
-        if config.debug_nan:
-            assert False, "out_pre and out_dis are replaced"
-            def get_backward_hook(var_name):
-                def _backward_hook(grad):
-                    exp = self
-                    if isinstance(grad, torch.Tensor) and (grad.data != grad.data).any():
-                        print("[OffsetBlock] " + var_name + " contains NaN during backward")
-                        import ipdb; ipdb.set_trace()
-                return _backward_hook
-
-            all_var_names = ["x", "out_pre", "out_dis", "out_atten", "out_post", "out_skip", "out_final"]
-
-            print("[OffsetBlock] !!!!!PERFORMANCE WARN: BACKWARD NAN DEBUGGING ENABLED!!!!!")
-            for var_name in all_var_names:
-                cur_var = locals()[var_name]
-                if not (cur_var.data == cur_var.data).all():
-                    print("[OffsetBlock] " + var_name + " contains NaN during forward")
-                    import ipdb; ipdb.set_trace()
-                cur_var.register_hook(get_backward_hook(var_name))
-
         return out_final
 
 class Bottleneck(nn.Module):
@@ -844,7 +823,7 @@ class Bottleneck(nn.Module):
         self.bn2 = globalvars.BatchNorm2dImpl(planes)
         self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
         self.bn3 = globalvars.BatchNorm2dImpl(planes * 4)
-        self.relu = StrictNaNReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
         self.inshape_factor = inshape_factor
@@ -906,7 +885,7 @@ class TransformFeature(nn.Module):
                                bias=False)
         self.inshape_factor *= 2
         self.bn1 = globalvars.BatchNorm2dImpl(64)
-        self.relu = StrictNaNReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.inshape_factor *= 2
         self.layer1 = self._make_layer(Bottleneck, 64, 3, res_index=0)
@@ -964,7 +943,7 @@ class SimpleEstimator(nn.Module):
                                bias=False)
         self.inshape_factor *= 2
         self.bn1 = globalvars.BatchNorm2dImpl(64)
-        self.relu = StrictNaNReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.inshape_factor *= 2
         self.layer1 = self._make_layer(Bottleneck, 64, 3, res_index=0)
@@ -1008,7 +987,7 @@ class SimpleEstimator(nn.Module):
         layers.append(nn.Conv2d(planes, planes,
             kernel_size=1, stride=1, bias=False))
         layers.append(globalvars.BatchNorm2dImpl(planes))
-        layers.append(StrictNaNReLU(inplace=True))
+        layers.append(nn.ReLU(inplace=True))
 
         layers.append(nn.Conv2d(planes, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))

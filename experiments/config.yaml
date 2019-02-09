@@ -12,7 +12,6 @@ default: &DEFAULT
     run_trash_dest_template: 'backup/trash/runs/{exp_name}_{exp_id}/'
     resume: false
     vis: false
-    debug_nan: false
     valid_interval: 0
     no_strict_model_load: false
     no_criterion_load: false
@@ -23,6 +22,7 @@ default: &DEFAULT
     save_checkpoint: true
     use_tensorboard: true
     train_drop_last: false
+    detect_anomaly: false
 
 profile: &PROFILE
     <<: *DEFAULT
@@ -34,7 +34,7 @@ debug: &DEBUG
     workers: 0
     debug: true
     vis: true
-    debug_nan: true
+    detect_anomaly: true
 
 evaluate: &EVALUATE
     <<: *DEFAULT
@@ -49,6 +49,7 @@ fast: &FAST
     fast_pass_train: 1
     fast_pass_valid: 1
     check: true
+    detect_anomaly: true
 
 fastresume:
     <<: *FAST
@@ -70,3 +71,4 @@ fasteval:
     fast_pass_train: 3
     fast_pass_valid: 3
     check: true
+    detect_anomaly: true

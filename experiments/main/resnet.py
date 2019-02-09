@@ -3,7 +3,6 @@ from torch import nn
 import re
 import math
 
-from lib.models.common import StrictNaNReLU
 from utils.checkpoint import save_pred, load_pretrained_loose
 from utils.globals import config, hparams, globalvars
 from .offset import OffsetBlock
@@ -21,7 +20,7 @@ class Bottleneck(nn.Module):
         self.bn2 = globalvars.BatchNorm2dImpl(planes)
         self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
         self.bn3 = globalvars.BatchNorm2dImpl(planes * 4)
-        self.relu = StrictNaNReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
         self.inshape_factor = inshape_factor
@@ -78,7 +77,7 @@ class BasicBlock(nn.Module):
         self.inplanes = inplanes
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = globalvars.BatchNorm2dImpl(planes)
-        self.relu = StrictNaNReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=True)
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = globalvars.BatchNorm2dImpl(planes)
         self.downsample = downsample
@@ -137,7 +136,7 @@ class ResNet(nn.Module):
                                bias=False)
         self.inshape_factor *= 2
         self.bn1 = globalvars.BatchNorm2dImpl(64)
-        self.relu = StrictNaNReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.inshape_factor *= 2
         self.layer1 = self._make_layer(block, 64, layers[0], res_index=0)
