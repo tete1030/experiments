@@ -268,18 +268,18 @@ class Experiment(BaseExperiment):
                     ("AR", "lar")
                 ]
                 for istat, (stat_type, stat_name) in enumerate(stat_typenames):
-                    tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, stat_type), {stat_name: stats[istat]}, step)
+                    tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, stat_type, stat_name), stats[istat], step)
 
         elif self.data_source == "mpii":
             annotates = epoch_ctx.stored["annotates"]
             acc = accuracy(annotates["pred"], annotates["gt"], annotates["head_box"])
             if tb_writer:
-                tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh"), {"avg": float(acc[0])}, step)
+                tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh", "avg"), float(acc[0]), step)
             results = list()
             results.append("avg: {:2.2f}".format(float(acc[0]) * 100))
             for i in range(0, acc.size(0)-1):
                 if tb_writer:
-                    tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh"), {datasets.mpii.PART_LABELS[i]: float(acc[i+1])}, step)
+                    tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh", datasets.mpii.PART_LABELS[i]), float(acc[i+1]), step)
                 results.append("{}: {:2.2f}".format(datasets.mpii.PART_LABELS[i], float(acc[i+1]) * 100))
             print(" | ".join(results) + "\n")
 
@@ -356,7 +356,8 @@ class Experiment(BaseExperiment):
                 self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.offset_scale).cpu())
                 move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
                 move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
-            globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis"), {"mod": np.mean(move_dis_avg), "mod_cur": np.mean(move_dis)}, progress["step"] + 1)
+            globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis", "mod"), np.mean(move_dis_avg), progress["step"] + 1)
+            globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis", "mod_cur"), np.mean(move_dis), progress["step"] + 1)
 
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
             self.save_offsets(progress["step"] + 1)

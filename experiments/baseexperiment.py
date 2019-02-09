@@ -155,7 +155,7 @@ class BaseExperiment(object):
             if not epoch_ctx.stat_avg[scalar_name]:
                 continue
             if phase is not None:
-                tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), {phase: scalar_value.avg}, step)
+                tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name, phase), scalar_value.avg, step)
             else:
                 tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), scalar_value.avg, step)
 
@@ -166,7 +166,7 @@ class BaseExperiment(object):
             return
         for scalar_name, scalar_value in epoch_ctx.scalar.items():
             if phase is not None:
-                tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), {phase: scalar_value.val}, step)
+                tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name, phase), scalar_value.val, step)
             else:
                 tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), scalar_value.val, step)
             

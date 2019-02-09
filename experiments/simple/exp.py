@@ -319,18 +319,18 @@ class Experiment(BaseExperiment):
                     ("AR", "lar")
                 ]
                 for istat, (stat_type, stat_name) in enumerate(stat_typenames):
-                    tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, stat_type), {stat_name: stats[istat]}, step)
+                    tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, stat_type, stat_name), stats[istat], step)
 
         elif self.data_source == "mpii":
             annotates = epoch_ctx.stored["annotates"]
             acc = accuracy(annotates["pred"], annotates["gt"], annotates["head_box"])
             if tb_writer:
-                tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh"), {"avg": float(acc[0])}, step)
+                tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh", "avg"), float(acc[0]), step)
             results = list()
             results.append("avg: {:2.2f}".format(float(acc[0]) * 100))
             for i in range(0, acc.size(0)-1):
                 if tb_writer:
-                    tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh"), {datasets.mpii.PART_LABELS[i]: float(acc[i+1])}, step)
+                    tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh", datasets.mpii.PART_LABELS[i]), float(acc[i+1]), step)
                 results.append("{}: {:2.2f}".format(datasets.mpii.PART_LABELS[i], float(acc[i+1]) * 100))
             print(" | ".join(results) + "\n")
 
@@ -456,8 +456,9 @@ class Experiment(BaseExperiment):
                 move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
             move_dis_avg = np.mean(move_dis_avg)
             move_dis = np.mean(move_dis)
-            globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis"), {"mod": move_dis_avg, "mod_cur": move_dis}, progress["step"])
-            globalvars.main_context.tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis_right_ratio"), move_dis_avg / move_dis, progress["step"])
+            globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis", "mod"), move_dis_avg, progress["step"])
+            globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis", "mod_cur"), move_dis, progress["step"])
+            globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis", "right_ratio"), move_dis_avg / move_dis, progress["step"])
 
             if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
                 sigma_change = list()
@@ -470,19 +471,12 @@ class Experiment(BaseExperiment):
                     sigma_change_avg.append(self.change_sigma_avgmeter[idp].avg_dir)
                 sigma_change = np.mean(sigma_change)
                 sigma_change_avg = np.mean(sigma_change_avg)
-                globalvars.main_context.tb_writer.add_scalars("{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change"), {"cur": sigma_change, "avg": sigma_change_avg}, progress["step"])
-                globalvars.main_context.tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change_right_ratio"), sigma_change_avg / sigma_change, progress["step"])
+                globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change", "cur"), sigma_change, progress["step"])
+                globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change", "avg"), sigma_change_avg, progress["step"])
+                globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change", "right_ratio"), sigma_change_avg / sigma_change, progress["step"])
 
             if (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
                 self.save_offsets(progress["step"] + 1)
-
-    def summarize_gradient(self):
-        # TODO: all gradients? offset gradients?
-        pass
-
-    def summarize_parameter(self):
-        # TODO: summarize all parameters
-        pass
 
     def set_training_state(self, update_weight=None, update_offset=None, update_transformer=None):
         state_ori = dict()
