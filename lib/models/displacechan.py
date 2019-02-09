@@ -100,13 +100,13 @@ class OffsetTransformer(nn.Module):
             offsets_y = offsets[:, :, 1].view(offset_size[0], offset_size[1], 1, 1).expand(-1, -1, scale_size[2], scale_size[3])
         scale = 1 + scale
         angle = angle * np.pi
-        angle_sin = angle.sin().expand(-1, offset_size[-2], -1, -1)
-        angle_cos = angle.cos().expand(-1, offset_size[-2], -1, -1)
+        angle_ksin = (scale * angle.sin()).expand(-1, offset_size[-2], -1, -1)
+        angle_kcos = (scale * angle.cos()).expand(-1, offset_size[-2], -1, -1)
 
-        new_offsets_x = (angle_cos * offsets_x) - (angle_sin * offsets_y)
-        new_offsets_y = (angle_sin * offsets_x) + (angle_cos * offsets_y)
+        new_offsets_x = (angle_kcos * offsets_x) - (angle_ksin * offsets_y)
+        new_offsets_y = (angle_ksin * offsets_x) + (angle_kcos * offsets_y)
 
-        new_offsets = torch.stack([new_offsets_x, new_offsets_y], dim=-1) * scale[..., None]
+        new_offsets = torch.stack([new_offsets_x, new_offsets_y], dim=-1)
         return new_offsets
 
 class DisplaceChannel(nn.Module):
