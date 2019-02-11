@@ -62,7 +62,7 @@ model:
         reuse_offset: false
         half_reversed_offset: false
         regress_offset: false
-        transform_offset: true
+        transform_offset: false
         independent_transformer: false
         transformer_bottleneck: 32
         enable_atten: true
