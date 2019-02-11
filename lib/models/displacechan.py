@@ -42,8 +42,26 @@ class OffsetRegressor(nn.Module):
             self.regressor(torch.cat([pos_inp_x, pos_atten_x], dim=-1)),
             self.regressor(torch.cat([pos_inp_y, pos_atten_y], dim=-1))], dim=2)
 
+class TransformCoordinate(Function):
+    @staticmethod
+    def forward(ctx, offsets_x, offsets_y, angle_ksin, angle_kcos):
+        offsets_x_new = ((angle_kcos * offsets_x) - (angle_ksin * offsets_y))
+        offsets_y_new = ((angle_ksin * offsets_x) + (angle_kcos * offsets_y))
+        ctx.save_for_backward(offsets_x, offsets_y, angle_ksin, angle_kcos)
+        return offsets_x_new, offsets_y_new
+
+    @staticmethod
+    def backward(ctx, grad_offsets_x_new, grad_offsets_y_new):
+        offsets_x, offsets_y, angle_ksin, angle_kcos = ctx.saved_tensors
+        grad_offsets_x = grad_offsets_x_new * angle_kcos + grad_offsets_y_new * angle_ksin
+        grad_offsets_y = -grad_offsets_x_new * angle_ksin + grad_offsets_y_new * angle_kcos
+        grad_angle_ksin = -grad_offsets_x_new * offsets_y + grad_offsets_y_new * offsets_x
+        grad_angle_kcos = grad_offsets_x_new * offsets_x + grad_offsets_y_new * offsets_y
+
+        return grad_offsets_x, grad_offsets_y, grad_angle_ksin, grad_angle_kcos
+
 class OffsetTransformer(nn.Module):
-    def __init__(self, inplanes, num_offsets, bottleneck=None):
+    def __init__(self, inplanes, num_offsets, bottleneck=None, scale_grow_step=None):
         super(OffsetTransformer, self).__init__()
         self.inplanes = inplanes
         self.num_offsets = num_offsets
@@ -65,8 +83,12 @@ class OffsetTransformer(nn.Module):
         angle_regressor_mods.append(nn.Softsign())
         self.angle_regressor = nn.Sequential(*angle_regressor_mods)
 
-        self.register_buffer("updated_steps", torch.zeros(1, dtype=torch.long))
-        self.register_buffer("effect_scale", torch.ones(1, dtype=torch.float))
+        if scale_grow_step is not None:
+            self.register_buffer("effect_scale", torch.zeros(1, dtype=torch.float))
+            self.register_buffer("scale_grow_step", torch.tensor(scale_grow_step, dtype=torch.float))
+        else:
+            self.effect_scale = None
+            self.scale_grow_step = None
 
     def visualize(self, scale, angle):
         import matplotlib.pyplot as plt
@@ -84,8 +106,11 @@ class OffsetTransformer(nn.Module):
             plt.show()
 
     def forward(self, x, offsets):
-        scale = self.scale_regressor(x) * self.effect_scale
-        angle = self.angle_regressor(x) * self.effect_scale
+        scale = self.scale_regressor(x)
+        angle = self.angle_regressor(x)
+        if self.effect_scale is not None:
+            scale = scale * self.effect_scale
+            angle = angle * self.effect_scale
         if config.vis:
             self.visualize(scale, angle)
         offset_dim = offsets.dim()
@@ -100,11 +125,10 @@ class OffsetTransformer(nn.Module):
             offsets_y = offsets[:, :, 1].view(offset_size[0], offset_size[1], 1, 1).expand(-1, -1, scale_size[2], scale_size[3])
         scale = 1 + scale
         angle = angle * np.pi
-        angle_ksin = (scale * angle.sin()).expand(-1, offset_size[-2], -1, -1)
-        angle_kcos = (scale * angle.cos()).expand(-1, offset_size[-2], -1, -1)
+        angle_ksin = (angle.sin() * scale).expand(-1, offset_size[-2], -1, -1)
+        angle_kcos = (angle.cos() * scale).expand(-1, offset_size[-2], -1, -1)
 
-        new_offsets_x = (angle_kcos * offsets_x) - (angle_ksin * offsets_y)
-        new_offsets_y = (angle_ksin * offsets_x) + (angle_kcos * offsets_y)
+        new_offsets_x, new_offsets_y = TransformCoordinate.apply(offsets_x, offsets_y, angle_ksin, angle_kcos)
 
         new_offsets = torch.stack([new_offsets_x, new_offsets_y], dim=-1)
         return new_offsets
@@ -112,7 +136,7 @@ class OffsetTransformer(nn.Module):
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, num_channels, num_offsets,
                  disable_displace=False, learnable_offset=False, offset_scale=None,
-                 regress_offset=False, transform_offset=False, num_transformer_channels=None, transformer_bottleneck=None,
+                 regress_offset=False, transformer=None,
                  half_reversed_offset=False, previous_dischan=None):
         super(DisplaceChannel, self).__init__()
         self.height = height
@@ -124,7 +148,7 @@ class DisplaceChannel(nn.Module):
         self.disable_displace = disable_displace
         self.half_reversed_offset = half_reversed_offset
         self.regress_offset = regress_offset
-        self.transform_offset = transform_offset
+        self.offset_transformer = transformer
 
         if not disable_displace:
             self.previous_dischan = previous_dischan
@@ -140,9 +164,6 @@ class DisplaceChannel(nn.Module):
 
             if regress_offset:
                 self.offset_regressor = OffsetRegressor(self.num_offsets)
-            if transform_offset:
-                assert num_transformer_channels is not None
-                self.offset_transformer = OffsetTransformer(num_transformer_channels, self.num_offsets, bottleneck=transformer_bottleneck)
         else:
             self.switch_LO_state(False)
 
@@ -211,7 +232,7 @@ class DisplaceChannel(nn.Module):
                 offset_regressed_abs = self.offset_regressor(inp, None)
                 offset_abs = offset_abs + offset_regressed_abs
 
-            if self.transform_offset:
+            if self.offset_transformer is not None:
                 offset_abs = self.offset_transformer(inp if transformer_source is None else transformer_source, offset_abs)
 
             offset_dim = offset_abs.dim()

@@ -273,18 +273,18 @@ class Experiment(BaseExperiment):
                     ("AR", "lar")
                 ]
                 for istat, (stat_type, stat_name) in enumerate(stat_typenames):
-                    tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, stat_type, stat_name), stats[istat], step)
+                    tb_writer.add_scalar("coco/{}_{}".format(stat_type, stat_name), stats[istat], step)
 
         elif self.data_source == "mpii":
             annotates = epoch_ctx.stored["annotates"]
             acc = accuracy(annotates["pred"], annotates["gt"], annotates["head_box"])
             if tb_writer:
-                tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh", "avg"), float(acc[0]), step)
+                tb_writer.add_scalar("mpii/{}_{}".format("PCKh", "avg"), float(acc[0]), step)
             results = list()
             results.append("avg: {:2.2f}".format(float(acc[0]) * 100))
             for i in range(0, acc.size(0)-1):
                 if tb_writer:
-                    tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh", datasets.mpii.PART_LABELS[i]), float(acc[i+1]), step)
+                    tb_writer.add_scalar("mpii/{}_{}".format("PCKh", datasets.mpii.PART_LABELS[i]), float(acc[i+1]), step)
                 results.append("{}: {:2.2f}".format(datasets.mpii.PART_LABELS[i], float(acc[i+1]) * 100))
             print(" | ".join(results) + "\n")
 
@@ -351,30 +351,6 @@ class Experiment(BaseExperiment):
         if self.early_predictor_optimizer:
             self.early_predictor_optimizer.step()
 
-        if optimize_offset:
-            move_dis_avg = list()
-            move_dis = list()
-            for idm in range(len(globalvars.displace_mods)):
-                dm = globalvars.displace_mods[idm]
-                if dm.offset.size(0) == 0:
-                    continue
-                self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.offset_scale).cpu())
-                move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
-                move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
-            globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis", "mod"), np.mean(move_dis_avg), progress["step"] + 1)
-            globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis", "mod_cur"), np.mean(move_dis), progress["step"] + 1)
-
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
-            self.save_offsets(progress["step"] + 1)
-
-    def summarize_gradient(self):
-        # TODO: all gradients? offset gradients?
-        pass
-
-    def summarize_parameter(self):
-        # TODO: summarize all parameters
-        pass
-
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict, train: bool) -> torch.Tensor:
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
@@ -389,18 +365,12 @@ class Experiment(BaseExperiment):
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and progress["step"] == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and progress["train"]:
             self.save_offsets(progress["step"])
 
-        det_map_gt_cuda = [dm.cuda() for dm in det_maps_gt]
-        # dirty trick for debug
-        if config.vis:
-            globalvars.cur_img = img
-        output_maps, early_predictor_outputs = self.model(img)
-        # dirty trick for debug, release
-        if config.vis:
-            globalvars.cur_img = None
-
-        mask_notlabeled = (keypoint[:, :, 2] <= 0.1).cuda()
+        det_map_gt_cuda = [dm.cuda(non_blocking=True) for dm in det_maps_gt]
+        keypoint_cuda = keypoint.cuda(non_blocking=True)
+        
+        mask_notlabeled = (keypoint_cuda[:, :, 2] <= 0.1)
         mask_labeled = (~mask_notlabeled)
-        mask_visible = (keypoint[:, :, 2] > 1.1).cuda()
+        mask_visible = (keypoint_cuda[:, :, 2] > 1.1)
         mask_notvisible = (mask_labeled & (~mask_visible))
 
         if hparams.MODEL.DETAIL.LOSS_EARLY == "all":
@@ -421,11 +391,17 @@ class Experiment(BaseExperiment):
         else:
             assert False
 
+        # dirty trick for debug
+        if config.vis:
+            globalvars.cur_img = img
+        output_maps, early_predictor_outputs = self.model(img)
+        # dirty trick for debug, release
+        if config.vis:
+            globalvars.cur_img = None
+
         if not hparams.MODEL.DETAIL.FIRST_ESP_ONLY:
             loss = 0.
             for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
-                # if ilabel < len(det_map_gt_cuda) - 1:
-                #     gtv *= (keypoint[:, :, 2] > 1.1).float().view(-1, self.num_parts, 1, 1).cuda()
                 if ilabel < len(det_map_gt_cuda) - 1:
                     loss = loss + ((outv - gtv).pow(2) * masking_early).mean().sqrt()
                 else:
@@ -440,10 +416,7 @@ class Experiment(BaseExperiment):
             loss = ((early_predictor_outputs[0] - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][0]]).pow(2) * \
                 masking_early).mean().sqrt()
 
-        epoch_ctx.add_scalar("loss", loss.item())
-
-        if (loss.data != loss.data).any():
-            import ipdb; ipdb.set_trace()
+        epoch_ctx.set_iter_data("loss", loss)
 
         if not train or config.vis:
             kp_pred, score = parse_map(output_maps[-1], thres=hparams.EVAL.PARSE_THRESHOLD)
@@ -502,6 +475,35 @@ class Experiment(BaseExperiment):
                     plt.show()
 
         return loss
+
+    def summarize_iter(self, epoch_ctx:EpochContext, progress:dict, train:bool):
+        tb_writer = globalvars.main_context.get("tb_writer")
+
+        loss_val = epoch_ctx.iter_data["loss"].item()
+        if train and tb_writer is not None:
+            tb_writer.add_scalar("loss/all_train", loss_val, progress["step"])
+        epoch_ctx.add_scalar("loss", loss_val)
+
+        if train and not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and progress["step"] >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
+            move_dis_avg = list()
+            move_dis = list()
+            for idm in range(len(globalvars.displace_mods)):
+                dm = globalvars.displace_mods[idm]
+                if dm.offset.size(0) == 0:
+                    continue
+                self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.offset_scale).cpu())
+                move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
+                move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
+            tb_writer.add_scalar("{}/{}".format("move_dis", "mod"), np.mean(move_dis_avg), progress["step"] + 1)
+            tb_writer.add_scalar("{}/{}".format("move_dis", "mod_cur"), np.mean(move_dis), progress["step"] + 1)
+
+            if (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
+                self.save_offsets(progress["step"] + 1)
+
+    def summarize_epoch(self, epoch_ctx:EpochContext, progress:dict, train:bool):
+        tb_writer = globalvars.main_context.get("tb_writer")
+        if tb_writer and not train:
+            tb_writer.add_scalar("loss/all_valid", epoch_ctx.scalar["loss"].avg, progress["step"])
 
 # Attention List:
 # - middle_outputs

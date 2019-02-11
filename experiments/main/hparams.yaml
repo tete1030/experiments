@@ -31,11 +31,8 @@ log:
     # TODO: log more:
     # - Unstable network parapmeter changes
     # - Intermediate result and visualization
-    tb_domain: offset
     move_average_cycle: 500
     offset_save_interval: 1000
-    tb_vis_interval: 3000
-    tb_gradient_interval: 3000
 
 model:
     use_gn: true

@@ -45,6 +45,7 @@ from utils.log import log_w, log_e, log_q, log_i, log_suc, log_progress
 from utils.train import TrainContext, ValidContext
 from lib.utils.evaluation import AverageMeter
 from experiments.baseexperiment import BaseExperiment, EpochContext
+from utils.pytracing import TraceProfiler
 
 globalvars.main_context.sigint_triggered = False
 def enable_sigint_handler():
@@ -429,9 +430,20 @@ def train(exp:BaseExperiment, epoch:int, cur_step:int, pause_interval:int=0):
                 "step": cur_step,
             }
 
-            with torch.autograd.set_detect_anomaly(config.detect_anomaly):
-                exp.train_once(epoch_ctx, batch, progress=progress)
-            exp.summary_scalar(epoch_ctx, epoch, cur_step, "train")
+            epoch_ctx.clear_iter_data()
+
+            tp = TraceProfiler(output_file=os.path.join(globalvars.main_context.checkpoint_dir, "trace_python_train.cpuprofile"), enabled=config.profile)
+
+            with torch.autograd.profiler.profile(enabled=config.profile and not config.nvprof, use_cuda=not config.nvprof) as prof, tp.traced(enabled=config.profile):
+                with torch.autograd.profiler.emit_nvtx(enabled=config.nvprof):
+                    with torch.autograd.set_detect_anomaly(config.detect_anomaly):
+                        exp.train_once(epoch_ctx, batch, progress=progress)
+                    exp.summarize_iter(epoch_ctx, progress, True)
+
+            if prof is not None:
+                prof.export_chrome_trace(os.path.join(globalvars.main_context.checkpoint_dir, "trace_train.cpuprofile"))
+
+            epoch_ctx.clear_iter_data()
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -463,6 +475,12 @@ def train(exp:BaseExperiment, epoch:int, cur_step:int, pause_interval:int=0):
             cur_step += 1
 
             end = time.time()
+    
+    progress = {
+        "epoch": epoch,
+        "step": cur_step,
+    }
+    exp.summarize_epoch(epoch_ctx, progress, train=True)
 
 def validate(exp:BaseExperiment, epoch:int, cur_step:int, call_store:bool) -> None:
     if config.fast_pass_valid == 0:
@@ -489,8 +507,19 @@ def validate(exp:BaseExperiment, epoch:int, cur_step:int, call_store:bool) -> No
                 "step": cur_step,
             }
 
-            with torch.autograd.set_detect_anomaly(config.detect_anomaly):
-                exp.test_once(epoch_ctx, batch, progress=progress)
+            epoch_ctx.clear_iter_data()
+
+            tp = TraceProfiler(output_file=os.path.join(globalvars.main_context.checkpoint_dir, "trace_python_valid.cpuprofile"), enabled=config.profile)
+            with torch.autograd.profiler.profile(enabled=config.profile, use_cuda=not config.nvprof) as prof, tp.traced(enabled=config.profile):
+                with torch.autograd.profiler.emit_nvtx(enabled=config.nvprof):
+                    with torch.autograd.set_detect_anomaly(config.detect_anomaly):
+                        exp.test_once(epoch_ctx, batch, progress=progress)
+                    exp.summarize_iter(epoch_ctx, progress, False)
+
+            if prof is not None:
+                prof.export_chrome_trace(os.path.join(globalvars.main_context.checkpoint_dir, "trace_valid.cpuprofile"))
+
+            epoch_ctx.clear_iter_data()
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -516,8 +545,11 @@ def validate(exp:BaseExperiment, epoch:int, cur_step:int, call_store:bool) -> No
 
             end = time.time()
 
-    if config.use_tensorboard:
-        exp.summary_scalar_avg(epoch_ctx, epoch, cur_step, phase="valid")
+    progress = {
+        "epoch": epoch,
+        "step": cur_step,
+    }
+    exp.summarize_epoch(epoch_ctx, progress, train=False)
 
     exp.evaluate(epoch_ctx, epoch, cur_step)
 

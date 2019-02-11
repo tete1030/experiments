@@ -20,7 +20,7 @@ import lib.datasets as datasets
 from lib.utils.transforms import fliplr_pts, kpt_affine
 from lib.utils.evaluation import accuracy, OffsetCycleAverageMeter, parse_map, generate_ans, generate_mpii_ans
 from lib.utils.imutils import batch_resize
-from lib.models.displacechan import DisplaceChannel
+from lib.models.displacechan import DisplaceChannel, OffsetTransformer
 from lib.models.spacenorm import SpaceNormalization
 from utils.globals import config, hparams, globalvars
 from utils.log import log_i
@@ -321,18 +321,18 @@ class Experiment(BaseExperiment):
                     ("AR", "lar")
                 ]
                 for istat, (stat_type, stat_name) in enumerate(stat_typenames):
-                    tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, stat_type, stat_name), stats[istat], step)
+                    tb_writer.add_scalar("coco/{}_{}".format(stat_type, stat_name), stats[istat], step)
 
         elif self.data_source == "mpii":
             annotates = epoch_ctx.stored["annotates"]
             acc = accuracy(annotates["pred"], annotates["gt"], annotates["head_box"])
             if tb_writer:
-                tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh", "avg"), float(acc[0]), step)
+                tb_writer.add_scalar("mpii/{}_{}".format("PCKh", "avg"), float(acc[0]), step)
             results = list()
             results.append("avg: {:2.2f}".format(float(acc[0]) * 100))
             for i in range(0, acc.size(0)-1):
                 if tb_writer:
-                    tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "PCKh", datasets.mpii.PART_LABELS[i]), float(acc[i+1]), step)
+                    tb_writer.add_scalar("mpii/{}_{}".format("PCKh", datasets.mpii.PART_LABELS[i]), float(acc[i+1]), step)
                 results.append("{}: {:2.2f}".format(datasets.mpii.PART_LABELS[i], float(acc[i+1]) * 100))
             print(" | ".join(results) + "\n")
 
@@ -386,14 +386,6 @@ class Experiment(BaseExperiment):
 
             self._update_training_state(0, step, False)
 
-            grow_transformer_step = hparams.TRAIN.OFFSET.GROW_TRANSFORMER_STEP
-            if grow_transformer_step > 0:
-                for dm in globalvars.displace_mods:
-                    if dm.offset_transformer.updated_steps <= grow_transformer_step:
-                        dm.offset_transformer.effect_scale.copy_((dm.offset_transformer.updated_steps.float() / float(grow_transformer_step)).clamp(max=1))
-                    else:
-                        dm.offset_transformer.effect_scale.fill_(1.)
-
             if hparams.TRAIN.GRADUAL_SIZE:
                 # Set gradual data size
                 if isinstance(self.train_dataset, Subset):
@@ -437,50 +429,15 @@ class Experiment(BaseExperiment):
             self.offset_optimizer.step()
         if optimize_transformer:
             self.transformer_optimizer.step()
-            grow_transformer_step = hparams.TRAIN.OFFSET.GROW_TRANSFORMER_STEP
-            if grow_transformer_step > 0:
-                for dm in globalvars.displace_mods:
-                    if dm.offset_transformer.updated_steps < grow_transformer_step:
-                        dm.offset_transformer.updated_steps += 1
-                        dm.offset_transformer.effect_scale.copy_((dm.offset_transformer.updated_steps.float() / float(grow_transformer_step)).clamp(max=1))
-                    elif dm.offset_transformer.updated_steps == grow_transformer_step:
-                        dm.offset_transformer.effect_scale.fill_(1.)
-
-        if optimize_offset:
-            move_dis_avg = list()
-            move_dis = list()
-            for idm in range(len(globalvars.displace_mods)):
-                dm = globalvars.displace_mods[idm]
-                if dm.offset.size(0) == 0:
-                    continue
-                self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.offset_scale).cpu())
-                move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
-                move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
-            move_dis_avg = np.mean(move_dis_avg)
-            move_dis = np.mean(move_dis)
-            globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis", "mod"), move_dis_avg, progress["step"])
-            globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis", "mod_cur"), move_dis, progress["step"])
-            globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "move_dis", "right_ratio"), move_dis_avg / move_dis, progress["step"])
-
-            if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
-                sigma_change = list()
-                sigma_change_avg = list()
-                for idp, dp in enumerate(globalvars.dpools):
-                    sigma_data = dp.sigma.detach()
-                    sigma_data[sigma_data.abs() > dp.max_sigma] = dp.max_sigma
-                    self.change_sigma_avgmeter[idp].update(dp.sigma.detach().cpu().abs())
-                    sigma_change.append(self.change_sigma_avgmeter[idp].lastdiff_dir)
-                    sigma_change_avg.append(self.change_sigma_avgmeter[idp].avg_dir)
-                sigma_change = np.mean(sigma_change)
-                sigma_change_avg = np.mean(sigma_change_avg)
-                globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change", "cur"), sigma_change, progress["step"])
-                globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change", "avg"), sigma_change_avg, progress["step"])
-                globalvars.main_context.tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, "sigma_change", "right_ratio"), sigma_change_avg / sigma_change, progress["step"])
-
-            if (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
-                self._save_offsets(progress["step"] + 1)
+            for dm in globalvars.displace_mods:
+                if dm.offset_transformer.effect_scale is not None:
+                    dm.offset_transformer.effect_scale.data.add_(dm.offset_transformer.scale_grow_step.data).clamp_(0, 1)
 
     def _set_training_state(self, update_weight=None, update_offset=None, update_transformer=None):
+        def set_requires_grad(paras, requires_grad):
+            for para in paras:
+                para.requires_grad = requires_grad
+
         state_ori = dict()
         log_i("Set training state: update_weight={}, update_offset={}, update_transformer={}".format(update_weight, update_offset, update_transformer))
 
@@ -519,15 +476,16 @@ class Experiment(BaseExperiment):
             if self.offset_optimizer and progress["step"] == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
                 self._save_offsets(progress["step"])
 
-        det_map_gt_cuda = det_maps_gt.cuda()
+        det_map_gt_cuda = det_maps_gt.cuda(non_blocking=True)
+        keypoint_cuda = keypoint.cuda(non_blocking=True)
         # dirty trick for debug
         if config.vis:
             globalvars.cur_img = img
         output_maps, *offoutputs = self.model(img)
 
-        mask_notlabeled = (keypoint[:, :, 2] <= 0.1).cuda()
+        mask_notlabeled = (keypoint_cuda[:, :, 2] <= 0.1)
         mask_labeled = (~mask_notlabeled)
-        mask_visible = (keypoint[:, :, 2] > 1.1).cuda()
+        mask_visible = (keypoint_cuda[:, :, 2] > 1.1)
         mask_notvisible = (mask_labeled & (~mask_visible))
 
         if hparams.MODEL.DETAIL.LOSS_FINAL == "all":
@@ -539,13 +497,19 @@ class Experiment(BaseExperiment):
         else:
             assert False
 
-        loss = ((output_maps - det_map_gt_cuda).pow(2) * \
+        loss_map = ((output_maps - det_map_gt_cuda).pow(2) * \
             masking_final).mean().sqrt()
 
-        if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
-            for idp, dp in enumerate(globalvars.dpools):
-                loss = loss + dp.sigma.pow(2).mean() * hparams.MODEL.LOSS_DPOOL_COF
+        epoch_ctx.set_iter_data("loss_map", loss_map)
 
+        loss_dpool = 0
+        if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1 and hparams.MODEL.LOSS_DPOOL_COF is not None:
+            for idp, dp in enumerate(globalvars.dpools):
+                loss_dpool = loss_dpool + dp.sigma.pow(2).mean()
+            loss_dpool = loss_dpool * hparams.MODEL.LOSS_DPOOL_COF
+            epoch_ctx.set_iter_data("loss_dpool", loss_dpool)
+
+        loss_feature = 0
         if train and hparams.MODEL.LOSS_FEATSTAB and self.offset_optimizer and self.transformer_optimizer and self.update_offset and self.update_transformer:
             scale = torch.tensor(truncnorm.rvs(-1, 1, loc=1, scale=0.5, size=batch_size)).float()
             rotate = torch.tensor(truncnorm.rvs(-1, 1, loc=0, scale=np.pi/6, size=batch_size)).float()
@@ -571,21 +535,20 @@ class Experiment(BaseExperiment):
             _, *offoutputs_img_trans = self.model(img_trans)
             self._set_training_state(**state_ori)
 
-            feature_loss = 0
+            loss_feature = 0
             for ioff, offout_trans in enumerate(offoutputs_trans):
-                feature_loss = feature_loss + (offoutputs_img_trans[ioff] - offout_trans).pow(2).mean()
+                loss_feature = loss_feature + (offoutputs_img_trans[ioff] - offout_trans).pow(2).mean()
 
-            loss = loss + hparams.MODEL.LOSS_FEATSTAB_COF * feature_loss
-            epoch_ctx.add_scalar("feature_loss", feature_loss.item())
+            loss_feature = loss_feature * hparams.MODEL.LOSS_FEATSTAB_COF
+            epoch_ctx.set_iter_data("loss_feature", loss_feature)
 
         # dirty trick for debug, release
         if config.vis:
             globalvars.cur_img = None
 
-        epoch_ctx.add_scalar("loss", loss.item())
+        loss = loss_map + loss_dpool + loss_feature
 
-        if (loss.data != loss.data).any():
-            import ipdb; ipdb.set_trace()
+        epoch_ctx.set_iter_data("loss", loss)
 
         if not train or config.vis:
             kp_pred, score = parse_map(output_maps, thres=hparams.EVAL.PARSE_THRESHOLD)
@@ -644,9 +607,73 @@ class Experiment(BaseExperiment):
 
         return loss
 
-def set_requires_grad(paras, requires_grad):
-    for para in paras:
-        para.requires_grad = requires_grad
+    def summarize_iter(self, epoch_ctx:EpochContext, progress:dict, train:bool):
+        tb_writer = globalvars.main_context.get("tb_writer")
+
+        if "loss_feature" in epoch_ctx.iter_data:
+            loss_feature_val = epoch_ctx.iter_data["loss_feature"].item()
+        else:
+            loss_feature_val = None
+
+        if "loss_dpool" in epoch_ctx.iter_data:
+            loss_dpool_val = epoch_ctx.iter_data["loss_dpool"].item()
+        else:
+            loss_dpool_val = None
+
+        loss_map_val = epoch_ctx.iter_data["loss_map"].item()
+        loss_val = epoch_ctx.iter_data["loss"].item()
+        if train and tb_writer is not None:
+            tb_writer.add_scalar("loss/map", loss_map_val, progress["step"])
+            if loss_dpool_val is not None:
+                tb_writer.add_scalar("loss/dpool", loss_dpool_val, progress["step"])
+            if loss_feature_val is not None:
+                tb_writer.add_scalar("loss/feature", loss_feature_val, progress["step"])
+            tb_writer.add_scalar("loss/all_train", loss_val, progress["step"])
+
+        if loss_feature_val is not None:
+            epoch_ctx.add_scalar("loss_feature", loss_feature_val)
+        epoch_ctx.add_scalar("loss", loss_val)
+
+        if train and self.offset_optimizer and self.update_offset:
+            if tb_writer:
+                move_dis_avg = list()
+                move_dis = list()
+                for idm in range(len(globalvars.displace_mods)):
+                    dm = globalvars.displace_mods[idm]
+                    if dm.offset.size(0) == 0:
+                        continue
+                    self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.offset_scale).cpu())
+                    move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
+                    move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
+                move_dis_avg = np.mean(move_dis_avg)
+                move_dis = np.mean(move_dis)
+
+                tb_writer.add_scalar("{}/{}".format("move_dis", "mod"), move_dis_avg, progress["step"])
+                tb_writer.add_scalar("{}/{}".format("move_dis", "mod_cur"), move_dis, progress["step"])
+                tb_writer.add_scalar("{}/{}".format("move_dis", "right_ratio"), move_dis_avg / move_dis, progress["step"])
+
+                if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
+                    sigma_change = list()
+                    sigma_change_avg = list()
+                    for idp, dp in enumerate(globalvars.dpools):
+                        sigma_data = dp.sigma.detach()
+                        sigma_data[sigma_data.abs() > dp.max_sigma] = dp.max_sigma
+                        self.change_sigma_avgmeter[idp].update(dp.sigma.detach().cpu().abs())
+                        sigma_change.append(self.change_sigma_avgmeter[idp].lastdiff_dir)
+                        sigma_change_avg.append(self.change_sigma_avgmeter[idp].avg_dir)
+                    sigma_change = np.mean(sigma_change)
+                    sigma_change_avg = np.mean(sigma_change_avg)
+                    tb_writer.add_scalar("{}/{}".format("sigma_change", "cur"), sigma_change, progress["step"])
+                    tb_writer.add_scalar("{}/{}".format("sigma_change", "avg"), sigma_change_avg, progress["step"])
+                    tb_writer.add_scalar("{}/{}".format("sigma_change", "right_ratio"), sigma_change_avg / sigma_change, progress["step"])
+
+            if (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
+                self._save_offsets(progress["step"] + 1)
+
+    def summarize_epoch(self, epoch_ctx:EpochContext, progress:dict, train:bool):
+        tb_writer = globalvars.main_context.get("tb_writer")
+        if tb_writer and not train:
+            tb_writer.add_scalar("loss/all_valid", epoch_ctx.scalar["loss"].avg, progress["step"])
 
 class Attention(nn.Module):
     def __init__(self, inplanes, outplanes, input_shape=None, bias_planes=0, bias_factor=0, space_norm=True, stride=1):
@@ -734,15 +761,21 @@ class OffsetBlock(nn.Module):
             log_i("Displace plane number rounded from {} to {}".format(displace_planes, displace_planes_new))
             displace_planes = displace_planes_new
         self.displace_planes = displace_planes
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET:
+            offset_transformer = OffsetTransformer(
+                TransformFeature.OUTPUT_CHANS if hparams.MODEL.LEARNABLE_OFFSET.INDEPENDENT_TRANSFORMER else self.inplanes,
+                self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN,
+                bottleneck=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER_BOTTLENECK,
+                scale_grow_step=1 / hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None)
+        else:
+            offset_transformer = None
         self.displace = DisplaceChannel(
             self.out_height, self.out_width,
             self.displace_planes, self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN,
             disable_displace=hparams.MODEL.DETAIL.DISABLE_DISPLACE,
             learnable_offset=hparams.MODEL.DETAIL.LEARNABLE_OFFSET,
             regress_offset=hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET,
-            transform_offset=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET,
-            num_transformer_channels=TransformFeature.OUTPUT_CHANS if hparams.MODEL.LEARNABLE_OFFSET.INDEPENDENT_TRANSFORMER else self.inplanes,
-            transformer_bottleneck=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER_BOTTLENECK,
+            transformer=offset_transformer,
             half_reversed_offset=hparams.MODEL.LEARNABLE_OFFSET.HALF_REVERSED_OFFSET,
             previous_dischan=globalvars.displace_mods[-1] if hparams.MODEL.LEARNABLE_OFFSET.REUSE_OFFSET and len(globalvars.displace_mods) > 0 else None)
         if hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE > 0:

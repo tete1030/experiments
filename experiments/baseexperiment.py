@@ -33,6 +33,7 @@ class EpochContext(object):
         self.format = dict()
         self.stat_avg = dict()
         self.stored = dict()
+        self.iter_data = dict()
 
     def add_scalar(self, sname, sval, val_format=None, stat_avg=True, cycle_avg=0):
         if sname not in self.scalar:
@@ -41,6 +42,13 @@ class EpochContext(object):
             self.format[sname] = val_format
         self.scalar[sname].update(sval)
         self.stat_avg[sname] = stat_avg
+
+    def set_iter_data(self, sname, sval):
+        self.iter_data[sname] = sval
+
+    def clear_iter_data(self):
+        for sname in list(self.iter_data.keys()):
+            del self.iter_data[sname]
 
     def add_store(self, sname, sval):
         if sname not in self.stored:
@@ -160,29 +168,11 @@ class BaseExperiment(object):
             checkpoint_dict["criterion"] = self.criterion.state_dict()
         save_checkpoint(checkpoint_dict, checkpoint_full=checkpoint_full, force_replace=True)
 
-    def summary_scalar_avg(self, epoch_ctx:EpochContext, epoch:int, step:int, phase=None):
-        try:
-            tb_writer = globalvars.main_context.tb_writer
-        except KeyError:
-            return
-        for scalar_name, scalar_value in epoch_ctx.scalar.items():
-            if not epoch_ctx.stat_avg[scalar_name]:
-                continue
-            if phase is not None:
-                tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name, phase), scalar_value.avg, step)
-            else:
-                tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), scalar_value.avg, step)
+    def summarize_iter(self, epoch_ctx:EpochContext, progress:dict, train:bool):
+        pass
 
-    def summary_scalar(self, epoch_ctx:EpochContext, epoch:int, step:int, phase=None):
-        try:
-            tb_writer = globalvars.main_context.tb_writer
-        except KeyError:
-            return
-        for scalar_name, scalar_value in epoch_ctx.scalar.items():
-            if phase is not None:
-                tb_writer.add_scalar("{}/{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name, phase), scalar_value.val, step)
-            else:
-                tb_writer.add_scalar("{}/{}".format(hparams.LOG.TB_DOMAIN, scalar_name), scalar_value.val, step)
+    def summarize_epoch(self, epoch_ctx:EpochContext, progress:dict, train:bool):
+        pass
             
     def print_iter(self, epoch_ctx:EpochContext, epoch:int, step:int):
         val_list = list()

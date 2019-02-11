@@ -62,7 +62,11 @@ class AttrDict(OrderedDict):
         srcdict = self._update_subdict(srcdict)
         super(AttrDict, self).update(srcdict)
 
+class Namespace(SimpleNamespace):
+    def get(self, k, default=None):
+        return getattr(self, k, default)
+
 hparams = AttrDict()
 config = AttrDict()
 globalvars = AttrDict()
-globalvars.main_context = SimpleNamespace()
+globalvars.main_context = Namespace()

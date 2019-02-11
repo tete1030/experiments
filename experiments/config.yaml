@@ -23,6 +23,7 @@ default: &DEFAULT
     use_tensorboard: true
     train_drop_last: false
     detect_anomaly: false
+    nvprof: false
 
 profile: &PROFILE
     <<: *DEFAULT
