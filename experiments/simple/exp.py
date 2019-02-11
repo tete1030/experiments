@@ -396,6 +396,35 @@ class Experiment(BaseExperiment):
                     train_dataset.set_resize_scale(0.25 + 0.75 * (epoch - 1) / 40)
                 else:
                     train_dataset.set_resize_scale(1)
+            if epoch == 1:
+                tb_writer = globalvars.main_context.get("tb_writer")
+                if tb_writer:
+                    custom_scalars = {
+                        "loss": {
+                            "all": ["Multiline", [r"loss/all_.*"]],
+                            "train": ["Multiline", [r"loss/all_train", r"loss/(?!all_).*"]]
+                        },
+                        "offset": {
+                            "move_dis": ["Multiline", [r"move_dis/(?!right_ratio)"]],
+                            "sigma_change": ["Multiline", [r"sigma_change/(?!right_ratio)"]]
+                        }
+                    }
+                    if self.data_source == "coco":
+                        custom_scalars.update({
+                            "coco": {
+                                "AP": ["Multiline", [r"coco/AP_.*"]],
+                                "AR": ["Multiline", [r"coco/AR_.*"]]
+                            }
+                        })
+                    elif self.data_source == "mpii":
+                        custom_scalars.update({
+                            "mpii": {
+                                "PCKh": ["Multiline", [r"mpii/.*"]]
+                            }
+                        })
+                    else:
+                        raise ValueError("Unknown data_source")
+                    tb_writer.add_custom_scalars(custom_scalars)
 
     def _save_offsets(self, step):
         offset_disabled = True
@@ -653,8 +682,8 @@ class Experiment(BaseExperiment):
                 move_dis_avg = np.mean(move_dis_avg)
                 move_dis = np.mean(move_dis)
 
-                tb_writer.add_scalar("{}/{}".format("move_dis", "mod"), move_dis_avg, progress["step"])
-                tb_writer.add_scalar("{}/{}".format("move_dis", "mod_cur"), move_dis, progress["step"])
+                tb_writer.add_scalar("{}/{}".format("move_dis", "cur"), move_dis, progress["step"])
+                tb_writer.add_scalar("{}/{}".format("move_dis", "avg"), move_dis_avg, progress["step"])
                 tb_writer.add_scalar("{}/{}".format("move_dis", "right_ratio"), move_dis_avg / move_dis, progress["step"])
 
                 if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
