@@ -460,6 +460,40 @@ class Experiment(BaseExperiment):
 
         return state_ori
 
+    def _loss_feature_stability(self, epoch_ctx, img, offoutputs):
+        batch_size = img.size(0)
+        scale = torch.tensor(truncnorm.rvs(-1, 1, loc=1, scale=0.5, size=batch_size)).float()
+        rotate = torch.tensor(truncnorm.rvs(-1, 1, loc=0, scale=np.pi/6, size=batch_size)).float()
+        # blur_sigma = torch.tensor(np.abs(truncnorm.rvs(-1, 1, loc=0, scale=3, size=batch_size))).float()
+        mean_img = torch.tensor(self.val_dataset.mean, dtype=torch.float, device=img.device)[None, :, None, None]
+        img_trans = transform_maps(img + mean_img, scale, rotate, None) - mean_img
+        offoutputs_trans = list()
+        for offout in offoutputs:
+            offoutputs_trans.append(transform_maps(offout.detach(), scale, rotate, None))
+
+        if config.vis and False:
+            import matplotlib.pyplot as plt
+            show_img_num = min(3, len(img))
+            fig, axes = plt.subplots(show_img_num, 2, figsize=(16, 10 * show_img_num))
+            img_show = self.val_dataset.restore_image(img.cpu())
+            img_trans_show = self.val_dataset.restore_image(img_trans.cpu())
+            for iimg in range(show_img_num):
+                axes[iimg, 0].imshow(img_show[iimg])
+                axes[iimg, 1].imshow(img_trans_show[iimg])
+            plt.show()
+
+        state_ori = self._set_training_state(update_weight=False, update_offset=False, update_transformer=True)
+        _, *offoutputs_img_trans = self.model(img_trans)
+        self._set_training_state(**state_ori)
+
+        loss_feature = 0
+        for ioff, offout_trans in enumerate(offoutputs_trans):
+            loss_feature = loss_feature + (offoutputs_img_trans[ioff] - offout_trans).pow(2).mean()
+
+        loss_feature = loss_feature * hparams.MODEL.LOSS_FEATSTAB_COF
+        epoch_ctx.set_iter_data("loss_feature", loss_feature)
+        return loss_feature
+
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict, train: bool) -> torch.Tensor:
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
@@ -511,36 +545,7 @@ class Experiment(BaseExperiment):
 
         loss_feature = 0
         if train and hparams.MODEL.LOSS_FEATSTAB and self.offset_optimizer and self.transformer_optimizer and self.update_offset and self.update_transformer:
-            scale = torch.tensor(truncnorm.rvs(-1, 1, loc=1, scale=0.5, size=batch_size)).float()
-            rotate = torch.tensor(truncnorm.rvs(-1, 1, loc=0, scale=np.pi/6, size=batch_size)).float()
-            # blur_sigma = torch.tensor(np.abs(truncnorm.rvs(-1, 1, loc=0, scale=3, size=batch_size))).float()
-            mean_img = torch.tensor(self.val_dataset.mean, dtype=torch.float, device=img.device)[None, :, None, None]
-            img_trans = transform_maps(img + mean_img, scale, rotate, None) - mean_img
-            offoutputs_trans = list()
-            for offout in offoutputs:
-                offoutputs_trans.append(transform_maps(offout.detach(), scale, rotate, None))
-
-            if config.vis and False:
-                import matplotlib.pyplot as plt
-                show_img_num = min(3, len(img))
-                fig, axes = plt.subplots(show_img_num, 2, figsize=(16, 10 * show_img_num))
-                img_show = self.val_dataset.restore_image(img.cpu())
-                img_trans_show = self.val_dataset.restore_image(img_trans.cpu())
-                for iimg in range(show_img_num):
-                    axes[iimg, 0].imshow(img_show[iimg])
-                    axes[iimg, 1].imshow(img_trans_show[iimg])
-                plt.show()
-
-            state_ori = self._set_training_state(update_weight=False, update_offset=False, update_transformer=True)
-            _, *offoutputs_img_trans = self.model(img_trans)
-            self._set_training_state(**state_ori)
-
-            loss_feature = 0
-            for ioff, offout_trans in enumerate(offoutputs_trans):
-                loss_feature = loss_feature + (offoutputs_img_trans[ioff] - offout_trans).pow(2).mean()
-
-            loss_feature = loss_feature * hparams.MODEL.LOSS_FEATSTAB_COF
-            epoch_ctx.set_iter_data("loss_feature", loss_feature)
+            loss_feature = self._loss_feature_stability(epoch_ctx, img, offoutputs)
 
         # dirty trick for debug, release
         if config.vis:
