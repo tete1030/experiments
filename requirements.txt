@@ -1,4 +1,4 @@
-tensorboardX>=1.4
+tensorboardX>=1.6
 ruamel.yaml>=0.15.45
 munkres>=1.0.12
 ipdb>=0.11
