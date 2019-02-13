@@ -15,7 +15,7 @@ train:
         train_min_step: 2785
         sep_train_iter: 0
         always_train_block: true
-        lr: 1.e-3
+        lr: 5.e-4
         lr_regressor: 1.e-3
         lr_transformer: 5.e-4
         lr_dpool_sigma: 5.e-4
