@@ -48,7 +48,7 @@ model:
     gaussian_kernel: 1.4
     loss_featstab: false
     loss_featstab_cof: 1
-    loss_dpool_cof: 1.e-5
+    loss_dpool_cof: 1.e-6
     detail:
         disable_displace: false
         learnable_offset: true

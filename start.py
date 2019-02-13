@@ -281,6 +281,9 @@ def cleanup(resume_run_id, caught_exception, exit_exception):
     except AttributeError:
         print("No run or checkpoint files created")
     else:
+        if globalvars.main_context.get("tb_writer"):
+            globalvars.main_context.tb_writer.close()
+
         do_trash = False
         if resume_run_id is None:
             if isinstance(exit_exception, ExitWithDelete):
