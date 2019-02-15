@@ -8,12 +8,14 @@ import shutil
 import time
 import traceback
 from tqdm import tqdm
+import re
+import six
 
 from collections import defaultdict
 import tensorboard.version
 from tensorboard.backend.event_processing.plugin_event_accumulator import EventAccumulator, DEFAULT_SIZE_GUIDANCE, TENSORS
 
-from tensorboardX.event_file_writer import EventFileWriter, EventsWriter
+from utils.tbevents import EventFileWriter, EventsWriter
 from tensorboardX.summary import scalar, custom_scalars
 from tensorboardX.proto import event_pb2
 from tensorboardX.proto import summary_pb2
@@ -225,11 +227,17 @@ def main(args):
 
         if args.dry_run:
             continue
-        
-        writer = EventFileWriter(cur_run_dir, filename_suffix=".converted")
+
+        first_event_timestamp = None
+        for _, event_ac in events:
+            if first_event_timestamp is None or event_ac._first_event_timestamp < first_event_timestamp:
+                first_event_timestamp = event_ac._first_event_timestamp
+        assert first_event_timestamp is not None
+
+        writer = EventFileWriter(cur_run_dir, filename_suffix=".converted", timestamp=int(first_event_timestamp))
         try:
             cusscalar_event = event_pb2.Event(summary=custom_scalars(cusscalar_layout))
-            cusscalar_event.wall_time = time.time()
+            cusscalar_event.wall_time = first_event_timestamp
             writer.add_event(cusscalar_event)
 
             for event_conf, event_ac in events:
@@ -270,7 +278,13 @@ def main(args):
         else:
             writer.close()
 
-        delete_filedirs = set(os.listdir(cur_run_dir)) - set([os.path.relpath(writer._ev_writer._file_name, cur_run_dir)])
+        filename_orig = writer._ev_writer._file_name
+        timestamp_file = re.match(r".*/events\.out\.tfevents\.(\d+).*\.converted$", filename_orig).group(1)
+        filename_new = filename_orig.replace(timestamp_file, str(int(first_event_timestamp)))
+        print("Renaming from {} to {}".format(filename_orig, filename_new))
+        os.rename(filename_orig, filename_new)
+
+        delete_filedirs = set(os.listdir(cur_run_dir)) - set([os.path.relpath(filename_new, cur_run_dir)])
         temp_path = os.path.join("/tmp", "mypose_runs", cur_run_dir)
         if not os.path.isdir(temp_path):
             os.makedirs(temp_path)
