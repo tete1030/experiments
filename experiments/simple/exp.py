@@ -830,7 +830,7 @@ class OffsetBlock(nn.Module):
         else:
             self.atten_displace = None
         if hparams.MODEL.LEARNABLE_OFFSET.ENABLE_POST_ATTEN:
-            self.atten_post = Attention(0, self.outplanes, input_shape=(self.out_height, self.out_width), bias_planes=0, bias_factor=0, space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN_SPACE_NORM)
+            self.atten_post = Attention(self.inplanes, self.inplanes, input_shape=(self.out_height, self.out_width), bias_planes=0, bias_factor=0, space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN_SPACE_NORM, stride=stride)
         else:
             self.atten_post = None
         self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.TRAIN.OFFSET.MOMENTUM_BN)
@@ -864,9 +864,14 @@ class OffsetBlock(nn.Module):
             out_atten = None
 
         out_post = self.post_offset(out_dis)
+
+        if self.atten_post is not None:
+            out_post = out_post * self.atten_post(x)
+
         if self.downsample is not None:
             x = self.downsample(x)
-        out_skip = x + (out_post * self.atten_post(x) if self.atten_post is not None else out_post)
+
+        out_skip = x + out_post
 
         out_final = self.relu(self.bn(out_skip))
 
