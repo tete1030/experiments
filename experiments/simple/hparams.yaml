@@ -64,8 +64,9 @@ model:
         regress_offset: false
         transform_offset: true
         independent_transformer: false
-        transformer_bottleneck: 16
+        transformer_bottleneck: 32
         enable_atten: true
+        atten_space_norm: true
         enable_mask: false
         dpool_size: 15
 

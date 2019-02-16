@@ -825,7 +825,7 @@ class OffsetBlock(nn.Module):
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
         self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
         if hparams.MODEL.LEARNABLE_OFFSET.ENABLE_ATTEN:
-            self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=False, stride=stride)
+            self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN_SPACE_NORM, stride=stride)
         else:
             self.atten_displace = None
         if hparams.MODEL.LEARNABLE_OFFSET.ENABLE_MASK:
