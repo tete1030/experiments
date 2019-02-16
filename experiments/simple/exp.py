@@ -103,10 +103,10 @@ class Experiment(BaseExperiment):
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in globalvars.displace_mods if hasattr(dm, "offset")]))
             self.offset_regressor_parameters = list(filter(lambda x: x.requires_grad, list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in globalvars.displace_mods if hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET]))))
-            if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET:
+            if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE:
                 self.offset_transformer_parameters = list(filter(lambda x: x.requires_grad,
                     list(itertools.chain.from_iterable([dm.offset_transformer.parameters() for dm in globalvars.displace_mods])) + \
-                    (list(self.model.module.transformer.parameters()) if hparams.MODEL.LEARNABLE_OFFSET.INDEPENDENT_TRANSFORMER else [])))
+                    (list(self.model.module.transformer.parameters()) if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT else [])))
             else:
                 self.offset_transformer_parameters = []
             if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
@@ -795,12 +795,13 @@ class OffsetBlock(nn.Module):
             log_i("Displace plane number rounded from {} to {}".format(displace_planes, displace_planes_new))
             displace_planes = displace_planes_new
         self.displace_planes = displace_planes
-        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET:
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE:
             offset_transformer = OffsetTransformer(
-                TransformFeature.OUTPUT_CHANS if hparams.MODEL.LEARNABLE_OFFSET.INDEPENDENT_TRANSFORMER else self.inplanes,
+                TransformFeature.OUTPUT_CHANS if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT else self.inplanes,
                 self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN,
-                bottleneck=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER_BOTTLENECK,
-                scale_grow_step=1 / hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None)
+                bottleneck=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.BOTTLENECK,
+                scale_grow_step=1 / hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None,
+                absolute_regressor=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ABSOLUTE_REGRESSOR)
         else:
             offset_transformer = None
         self.displace = DisplaceChannel(
@@ -828,8 +829,8 @@ class OffsetBlock(nn.Module):
             self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN_SPACE_NORM, stride=stride)
         else:
             self.atten_displace = None
-        if hparams.MODEL.LEARNABLE_OFFSET.ENABLE_MASK:
-            self.atten_post = Attention(0, self.outplanes, input_shape=(self.out_height, self.out_width), bias_planes=inplanes // 4, bias_factor=2, space_norm=False)
+        if hparams.MODEL.LEARNABLE_OFFSET.ENABLE_POST_ATTEN:
+            self.atten_post = Attention(0, self.outplanes, input_shape=(self.out_height, self.out_width), bias_planes=0, bias_factor=0, space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN_SPACE_NORM)
         else:
             self.atten_post = None
         self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.TRAIN.OFFSET.MOMENTUM_BN)
@@ -923,7 +924,7 @@ class Bottleneck(nn.Module):
 class MyPose(nn.Module):
     def __init__(self, num_class):
         super(MyPose, self).__init__()
-        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORM_OFFSET and hparams.MODEL.LEARNABLE_OFFSET.INDEPENDENT_TRANSFORMER:
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
             self.transformer = TransformFeature()
         else:
             self.transformer = None
@@ -991,7 +992,7 @@ class SequentialForOffsetBlockTransformer(nn.Sequential):
     def forward(self, input, extra):
         for module in self._modules.values():
             if isinstance(module, OffsetBlock):
-                if hparams.MODEL.LEARNABLE_OFFSET.INDEPENDENT_TRANSFORMER:
+                if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
                     assert extra is not None
                     input = module(input, transformer_source=extra)
                 else:
@@ -1068,7 +1069,7 @@ class SimpleEstimator(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        if hparams.MODEL.LEARNABLE_OFFSET.INDEPENDENT_TRANSFORMER:
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
             assert transform_features is None
         x1 = self.layer1(x, transform_features)
 

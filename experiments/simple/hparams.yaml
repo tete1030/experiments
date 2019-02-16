@@ -62,13 +62,15 @@ model:
         reuse_offset: false
         half_reversed_offset: false
         regress_offset: false
-        transform_offset: true
-        independent_transformer: false
-        transformer_bottleneck: 32
         enable_atten: true
-        atten_space_norm: true
-        enable_mask: false
+        enable_post_atten: false
+        atten_space_norm: false
         dpool_size: 15
+        transformer:
+            enable: true
+            independent: false
+            bottleneck: 32
+            absolute_regressor: true
 
 dataset:
     profile: coco
