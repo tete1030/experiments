@@ -414,7 +414,7 @@ class COCOSinglePose(data.Dataset):
     def __init__(self, img_folder, anno, split_file, meanstd_file,
                  is_train, img_res=(192, 256), minus_mean=True,
                  ext_border=(0., 0.),
-                 kpmap_res=(48, 64), keypoint_res=None,
+                 kpmap_res=(48, 64), keypoint_res=(48, 64),
                  kpmap_sigma=1, scale_factor=0.25, rot_factor=30, trans_factor=0.05):
         """COCO Keypoints Single Person
         
@@ -445,7 +445,7 @@ class COCOSinglePose(data.Dataset):
         self.kpmap_res = tuple(kpmap_res) if kpmap_res else None
         assert isinstance(kpmap_sigma, (int, float, list))
         self.kpmap_sigma = kpmap_sigma
-        self.keypoint_res = tuple(keypoint_res) if keypoint_res else None
+        self.keypoint_res = tuple(keypoint_res)
         self.scale_factor = scale_factor
         self.rot_factor = rot_factor
         self.trans_factor = trans_factor
@@ -454,8 +454,7 @@ class COCOSinglePose(data.Dataset):
         if self.kpmap_res is not None:
             assert float(self.img_res[0]) / float(self.img_res[1]) == float(self.kpmap_res[0]) / float(self.kpmap_res[1])
         
-        if self.keypoint_res is not None:
-            assert float(self.img_res[0]) / float(self.img_res[1]) == float(self.keypoint_res[0]) / float(self.keypoint_res[1])
+        assert float(self.img_res[0]) / float(self.img_res[1]) == float(self.keypoint_res[0]) / float(self.keypoint_res[1])
 
         self.heatmap_gen = HeatmapGenerator()
 
@@ -570,9 +569,12 @@ class COCOSinglePose(data.Dataset):
             img_res = (
                 int(np.ceil(self.img_res[0] * self.resize_scale / FACTOR)) * FACTOR,
                 int(np.ceil(self.img_res[1] * self.resize_scale / FACTOR)) * FACTOR)
-            kpmap_res = (
-                int(np.ceil(self.kpmap_res[0] * self.resize_scale)),
-                int(np.ceil(self.kpmap_res[1] * self.resize_scale)))
+            if self.kpmap_res is not None:
+                kpmap_res = (
+                    int(np.ceil(self.kpmap_res[0] * self.resize_scale)),
+                    int(np.ceil(self.kpmap_res[1] * self.resize_scale)))
+            else:
+                kpmap_res = None
             if isinstance(self.kpmap_sigma, list):
                 kpmap_sigma = list()
                 for kpmsig in self.kpmap_sigma:
@@ -644,23 +646,26 @@ class COCOSinglePose(data.Dataset):
             keypoints_tf = keypoints.copy()
         
         keypoints_tf = np.c_[
-                transform(keypoints_tf[:, :2], center, None, (kpmap_res[0], kpmap_res[1]), rot=rotate, scale=float(kpmap_res[arg_min_shape]) / scale),
+                transform(keypoints_tf[:, :2], center, None, (keypoint_res[0], keypoint_res[1]), rot=rotate, scale=float(keypoint_res[arg_min_shape]) / scale),
                 keypoints_tf[:, [2]]
             ]
 
-        keypoints_tf_ret = keypoints_tf.copy()
-        if keypoint_res and keypoint_res != kpmap_res:
-            keypoints_tf_ret[..., :2] = keypoints_tf_ret[..., :2] * (float(keypoint_res[0]) / kpmap_res[0])
+        if kpmap_res is not None:
+            keypoints_map_tf = keypoints_tf.copy()
+            if kpmap_res != keypoint_res:
+                keypoints_map_tf[..., :2] = keypoints_map_tf[..., :2] * (float(kpmap_res[0]) / keypoint_res[0])
 
-        if not isinstance(kpmap_sigma, list):
-            kp_map = np.zeros((NUM_PARTS, kpmap_res[1], kpmap_res[0]), dtype=np.float32)
-            self._draw_label(keypoints_tf, kp_map, out_res=kpmap_res, sigma=kpmap_sigma)
+            if not isinstance(kpmap_sigma, list):
+                kp_map = np.zeros((NUM_PARTS, kpmap_res[1], kpmap_res[0]), dtype=np.float32)
+                self._draw_label(keypoints_map_tf, kp_map, out_res=kpmap_res, sigma=kpmap_sigma)
+            else:
+                kp_map = list()
+                for kpmsigma in kpmap_sigma:
+                    kpm = np.zeros((NUM_PARTS, kpmap_res[1], kpmap_res[0]), dtype=np.float32)
+                    self._draw_label(keypoints_map_tf, kpm, out_res=kpmap_res, sigma=kpmsigma)
+                    kp_map.append(kpm)
         else:
-            kp_map = list()
-            for kpmsigma in kpmap_sigma:
-                kpm = np.zeros((NUM_PARTS, kpmap_res[1], kpmap_res[0]), dtype=np.float32)
-                self._draw_label(keypoints_tf, kpm, out_res=kpmap_res, sigma=kpmsigma)
-                kp_map.append(kpm)
+            kp_map = None
 
         if self.debug:
             # print("Aug Setting: scale_fac %.2f , rotate_fac %.2f, trans_fac %.2f" % (sf, rf, self.trans_factor))
@@ -704,12 +709,19 @@ class COCOSinglePose(data.Dataset):
             "center": torch.from_numpy(center),
             "scale": scale,
             "keypoint_ori": torch.from_numpy(keypoints),
-            "keypoint": torch.from_numpy(keypoints_tf_ret),
+            "keypoint": torch.from_numpy(keypoints_tf),
             "img_transform": torch.from_numpy(img_transform_mat),
             "img_flipped": flip_status,
-            "img_ori_size": torch.from_numpy(img_size.astype(np.int32)),
-            "keypoint_map": [torch.from_numpy(kpm) for kpm in kp_map] if isinstance(kp_map, list) else torch.from_numpy(kp_map)
+            "img_ori_size": torch.from_numpy(img_size.astype(np.int32))
         }
+        if isinstance(kp_map, list):
+            result["keypoint_map"] = [torch.from_numpy(kpm) for kpm in kp_map]
+        elif isinstance(kp_map, np.ndarray):
+            result["keypoint_map"] = torch.from_numpy(kp_map)
+        elif kp_map is None:
+            pass
+        else:
+            raise ValueError()
 
         return result
 

@@ -25,18 +25,20 @@ EVAL_INDEX = [0, 1, 2, 3, 4, 5, 10, 11, 14, 15]
 class MPII(data.Dataset):
     def __init__(self, img_folder, anno_file, split_file, meanstd_file,
                  is_train, single_person,
-                 img_res=(192, 256), kpmap_res=(48, 64),
+                 img_res=(192, 256), kpmap_res=(48, 64), keypoint_res=(48, 64),
                  kpmap_sigma=1., scale_factor=0.25, rot_factor=30, trans_factor=0.05):
         self.img_folder = img_folder    # root image folders
         self.is_train = is_train           # training set or test set
         self.img_res = tuple(img_res)
-        self.kpmap_res = tuple(kpmap_res)
+        self.kpmap_res = tuple(kpmap_res) if kpmap_res is not None else None
+        self.keypoint_res = tuple(keypoint_res)
         self.kpmap_sigma = kpmap_sigma
         self.scale_factor = scale_factor
         self.rot_factor = rot_factor
         self.trans_factor = trans_factor
         self.single_person = single_person
-        self.heatmap_gen = HeatmapGenerator(out_res=self.kpmap_res)
+        if self.kpmap_res is not None:
+            self.heatmap_gen = HeatmapGenerator(out_res=self.kpmap_res)
 
         # create train/val split
         with open(anno_file) as af:
@@ -181,19 +183,26 @@ class MPII(data.Dataset):
 
             # keypoints: #person * #joints * 3
             keypoints_tf = np.c_[
-                    transform(keypoints_tf[..., :2], center, None, (self.kpmap_res[0], self.kpmap_res[1]), rot=rotate, scale=float(self.kpmap_res[0]) / scale),
+                    transform(keypoints_tf[..., :2], center, None, (self.keypoint_res[0], self.keypoint_res[1]), rot=rotate, scale=float(self.keypoint_res[0]) / scale),
                     keypoints_tf[:, [2]]
                 ]
 
-            if not isinstance(self.kpmap_sigma, list):
-                kp_map = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
-                self._draw_label(keypoints_tf, kp_map, sigma=self.kpmap_sigma)
+            if self.kpmap_res is not None:
+                keypoints_map_tf = keypoints_tf.copy()
+                if self.kpmap_res != self.keypoint_res:
+                    keypoints_map_tf[..., :2] = keypoints_map_tf[..., :2] * (float(self.kpmap_res[0]) / self.keypoint_res[0])
+
+                if not isinstance(self.kpmap_sigma, list):
+                    kp_map = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
+                    self._draw_label(keypoints_map_tf, kp_map, sigma=self.kpmap_sigma)
+                else:
+                    kp_map = list()
+                    for kpmsigma in self.kpmap_sigma:
+                        kpm = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
+                        self._draw_label(keypoints_map_tf, kpm, sigma=kpmsigma)
+                        kp_map.append(kpm)
             else:
-                kp_map = list()
-                for kpmsigma in self.kpmap_sigma:
-                    kpm = np.zeros((NUM_PARTS, self.kpmap_res[1], self.kpmap_res[0]), dtype=np.float32)
-                    self._draw_label(keypoints_tf, kpm, sigma=kpmsigma)
-                    kp_map.append(kpm)
+                kp_map = None
 
         result = {
             'index': index,
@@ -209,7 +218,8 @@ class MPII(data.Dataset):
         }
 
         if "annopoints" in ann:
-            result['keypoint_map'] = [torch.from_numpy(kpm) for kpm in kp_map] if isinstance(kp_map, list) else torch.from_numpy(kp_map)
+            if kp_map is not None:
+                result['keypoint_map'] = [torch.from_numpy(kpm) for kpm in kp_map] if isinstance(kp_map, list) else torch.from_numpy(kp_map)
             result['keypoint_ori'] = torch.from_numpy(keypoints)
             result['keypoint'] = torch.from_numpy(keypoints_tf)
 

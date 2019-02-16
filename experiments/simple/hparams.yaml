@@ -46,6 +46,7 @@ model:
     inp_shape: [192, 256] # W, H
     out_shape: [48, 64] # W, H
     gaussian_kernel: 1.4
+    regress_predict: true
     loss_featstab: false
     loss_featstab_cof: 1
     loss_dpool_cof: 1.e-6
@@ -62,9 +63,9 @@ model:
         reuse_offset: false
         half_reversed_offset: false
         regress_offset: false
-        enable_atten: false
-        enable_post_atten: true
-        atten_space_norm: true
+        enable_atten: true
+        enable_post_atten: false
+        atten_space_norm: false
         dpool_size: 15
         transformer:
             enable: true

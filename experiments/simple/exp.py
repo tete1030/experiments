@@ -88,6 +88,10 @@ class Experiment(BaseExperiment):
 
         self.model = nn.DataParallel(MyPose(self.num_parts).cuda())
         assert globalvars.offsetblock_counter == len(hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO) or not hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK
+        if hparams.MODEL.REGRESS_PREDICT:
+            self.pose_regressor = RegressPredictor(
+                hparams.MODEL.OUT_SHAPE[1],
+                hparams.MODEL.OUT_SHAPE[0]).cuda()
 
     def init_optimizer(self):
         def _print_parameters(para_groups, all_para_pair):
@@ -179,6 +183,7 @@ class Experiment(BaseExperiment):
         super().init_dataloader()
 
     def init_mscoco(self):
+        kpmap_res = None if hparams.MODEL.REGRESS_PREDICT else hparams.MODEL.OUT_SHAPE
         self.coco = COCO("data/mscoco/person_keypoints_train2017.json")
         self.train_dataset = datasets.COCOSinglePose(
             "data/mscoco/images2017",
@@ -188,7 +193,7 @@ class Experiment(BaseExperiment):
             True,
             img_res=hparams.MODEL.INP_SHAPE,
             ext_border=hparams.DATASET["COCO"].EXT_BORDER,
-            kpmap_res=hparams.MODEL.OUT_SHAPE,
+            kpmap_res=kpmap_res,
             keypoint_res=hparams.MODEL.OUT_SHAPE,
             kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNEL,
             scale_factor=hparams.DATASET["COCO"].SCALE_FACTOR,
@@ -203,7 +208,7 @@ class Experiment(BaseExperiment):
             False,
             img_res=hparams.MODEL.INP_SHAPE,
             ext_border=hparams.DATASET["COCO"].EXT_BORDER,
-            kpmap_res=hparams.MODEL.OUT_SHAPE,
+            kpmap_res=kpmap_res,
             keypoint_res=hparams.MODEL.OUT_SHAPE,
             kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNEL,
             scale_factor=hparams.DATASET["COCO"].SCALE_FACTOR,
@@ -213,6 +218,7 @@ class Experiment(BaseExperiment):
         self.valid_collate_fn = datasets.COCOSinglePose.collate_function
 
     def init_mpii(self):
+        kpmap_res = None if hparams.MODEL.REGRESS_PREDICT else hparams.MODEL.OUT_SHAPE
         self.train_dataset = datasets.MPII("data/mpii/images",
             "data/mpii/mpii_human_pose.json",
             "data/mpii/split_sig.pth",
@@ -220,7 +226,8 @@ class Experiment(BaseExperiment):
             True,
             True,
             img_res=hparams.MODEL.INP_SHAPE,
-            kpmap_res=hparams.MODEL.OUT_SHAPE,
+            kpmap_res=kpmap_res,
+            keypoint_res=hparams.MODEL.OUT_SHAPE,
             kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNEL,
             scale_factor=hparams.DATASET["MPII"].SCALE_FACTOR,
             rot_factor=hparams.DATASET["MPII"].ROTATE_FACTOR,
@@ -233,7 +240,8 @@ class Experiment(BaseExperiment):
             False,
             True,
             img_res=hparams.MODEL.INP_SHAPE,
-            kpmap_res=hparams.MODEL.OUT_SHAPE,
+            kpmap_res=kpmap_res,
+            keypoint_res=hparams.MODEL.OUT_SHAPE,
             kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNEL,
             scale_factor=hparams.DATASET["MPII"].SCALE_FACTOR,
             rot_factor=hparams.DATASET["MPII"].ROTATE_FACTOR,
@@ -266,6 +274,8 @@ class Experiment(BaseExperiment):
 
         self.move_dis_avgmeter = checkpoint["move_dis_avgmeter"]
         self.change_sigma_avgmeter = checkpoint["change_sigma_avgmeter"]
+        if hparams.MODEL.REGRESS_PREDICT:
+            self.pose_regressor.load_state_dict(checkpoint["pose_regressor"])
         return checkpoint["epoch"]
 
     def save_checkpoint(self, checkpoint_full, epoch):
@@ -278,6 +288,8 @@ class Experiment(BaseExperiment):
             "move_dis_avgmeter": self.move_dis_avgmeter,
             "change_sigma_avgmeter": self.change_sigma_avgmeter
         }
+        if hparams.MODEL.REGRESS_PREDICT:
+            checkpoint_dict["pose_regressor"] = self.pose_regressor.state_dict()
         save_checkpoint(checkpoint_dict, checkpoint_full=checkpoint_full, force_replace=True)
 
     def evaluate(self, epoch_ctx:EpochContext, epoch, step):
@@ -526,7 +538,8 @@ class Experiment(BaseExperiment):
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict, train: bool) -> torch.Tensor:
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
-        det_maps_gt = batch["keypoint_map"]
+        if not hparams.MODEL.REGRESS_PREDICT:
+            det_maps_gt = batch["keypoint_map"]
         transform_mat = batch["img_transform"]
         img_flipped = batch["img_flipped"]
         img_ori_size = batch["img_ori_size"]
@@ -539,7 +552,8 @@ class Experiment(BaseExperiment):
             if self.offset_optimizer and progress["step"] == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
                 self._save_offsets(progress["step"])
 
-        det_map_gt_cuda = det_maps_gt.cuda(non_blocking=True)
+        if not hparams.MODEL.REGRESS_PREDICT:
+            det_map_gt_cuda = det_maps_gt.cuda(non_blocking=True)
         keypoint_cuda = keypoint.cuda(non_blocking=True)
         # dirty trick for debug
         if config.vis:
@@ -560,8 +574,12 @@ class Experiment(BaseExperiment):
         else:
             assert False
 
-        loss_map = ((output_maps - det_map_gt_cuda).pow(2) * \
-            masking_final).mean().sqrt()
+        if not hparams.MODEL.REGRESS_PREDICT:
+            loss_map = ((output_maps - det_map_gt_cuda).pow(2) * \
+                masking_final).mean().sqrt()
+        else:
+            kp_pred_reg = self.pose_regressor(output_maps)
+            loss_map = ((kp_pred_reg - keypoint_cuda[:, :, :2]).norm(dim=-1)[:, :, None, None] * masking_final).mean()
 
         epoch_ctx.set_iter_data("loss_map", loss_map)
 
@@ -1006,6 +1024,24 @@ class SequentialForOffsetBlockTransformer(nn.Sequential):
             else:
                 input = module(input)
         return input
+
+class RegressPredictor(nn.Module):
+    def __init__(self, height, width):
+        super().__init__()
+        self.height = height
+        self.width = width
+        x = torch.arange(width, dtype=torch.float) + 0.5
+        y = torch.arange(height, dtype=torch.float) + 0.5
+        self.register_buffer("weight_x", x.view(1, -1).repeat(height, 1))
+        self.register_buffer("weight_y", y.view(-1, 1).repeat(1, width))
+    
+    def forward(self, inp):
+        assert inp.size()[-2:] == (self.height, self.width)
+        inp_exp_norm = inp.exp()
+        inp_exp_norm = inp_exp_norm / inp_exp_norm.sum(dim=-1, keepdim=True).sum(dim=-2, keepdim=True)
+        x = (inp_exp_norm * self.weight_x.expand_as(inp_exp_norm)).sum(dim=-1).sum(dim=-1)
+        y = (inp_exp_norm * self.weight_y.expand_as(inp_exp_norm)).sum(dim=-1).sum(dim=-1)
+        return torch.stack([x, y], dim=-1)
 
 class SimpleEstimator(nn.Module):
     def __init__(self, num_class):
