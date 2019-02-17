@@ -164,7 +164,7 @@ class OffsetTransformer(nn.Module):
             pre_angle = self.pre_angle_regressor(x)
             angle_kcos = self.angle_x_regressor(pre_angle)
             angle_ksin = self.angle_y_regressor(pre_angle)
-            angle_knorm = scale * torch.stack([angle_kcos, angle_ksin], dim=0).norm(dim=0)
+            angle_knorm = torch.stack([angle_kcos, angle_ksin], dim=0).norm(dim=0) / scale
             angle_kcos = angle_kcos / angle_knorm
             angle_ksin = angle_ksin / angle_knorm
 

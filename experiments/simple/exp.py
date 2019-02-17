@@ -1110,8 +1110,10 @@ class SimpleEstimator(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+        if not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
             assert transform_features is None
+        else:
+            assert transform_features is not None
         x1 = self.layer1(x, transform_features)
 
         return self.predictor(x1)

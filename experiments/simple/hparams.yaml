@@ -69,8 +69,8 @@ model:
         dpool_size: 15
         transformer:
             enable: true
-            independent: false
-            bottleneck: null
+            independent: true
+            bottleneck: 32
             absolute_regressor: true
 
 dataset:
