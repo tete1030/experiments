@@ -906,13 +906,13 @@ class OffsetBlock(nn.Module):
 class Bottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, inplanes, planes, inshape_factor, res_index, block_index, stride=1, downsample=None):
+    def __init__(self, inplanes, planes, inshape_factor, res_index, block_index, stride=1, dilation=1, downsample=None):
         super(Bottleneck, self).__init__()
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         self.inplanes = inplanes
         self.bn1 = globalvars.BatchNorm2dImpl(planes)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
-                               padding=1, bias=False)
+                               padding=dilation, dilation=dilation, bias=False)
         self.bn2 = globalvars.BatchNorm2dImpl(planes)
         self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
         self.bn3 = globalvars.BatchNorm2dImpl(planes * 4)
@@ -994,12 +994,12 @@ class TransformFeature(nn.Module):
 
         layers = []
 
-        layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=0, stride=stride, downsample=downsample))
+        layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=0, stride=stride, dilation=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.DILATION, downsample=downsample))
         if stride != 1:
             self.inshape_factor *= 2
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=i))
+            layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=i, dilation=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.DILATION))
 
         return nn.Sequential(*layers)
 

@@ -68,6 +68,7 @@ model:
         atten_space_norm: false
         dpool_size: 15
         transformer:
+            dilation: 2
             enable: true
             independent: true
             bottleneck: 32
