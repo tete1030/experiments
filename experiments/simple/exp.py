@@ -998,8 +998,25 @@ class TransformFeature(nn.Module):
         if stride != 1:
             self.inshape_factor *= 2
         self.inplanes = planes * block.expansion
+
+        _strided_factor = 1
+
+        stride = 2 if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.IDP_USE_STRIDE else 1
         for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=i, dilation=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.DILATION))
+            downsample = None
+            if stride != 1:
+                downsample = nn.Sequential(
+                    nn.Conv2d(self.inplanes, self.inplanes,
+                            kernel_size=1, stride=stride, bias=False),
+                    globalvars.BatchNorm2dImpl(self.inplanes),
+                )
+            layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=i, stride=stride, dilation=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.DILATION, downsample=downsample))
+            if stride != 1:
+                self.inshape_factor *= stride
+                _strided_factor *= stride
+
+        if _strided_factor > 1:
+            log_i("Transformer strided by " + str(_strided_factor))
 
         return nn.Sequential(*layers)
 

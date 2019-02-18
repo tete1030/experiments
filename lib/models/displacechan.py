@@ -132,7 +132,7 @@ class OffsetTransformer(nn.Module):
             fig.show()
             plt.show()
 
-    def forward(self, x, offsets):
+    def forward(self, x, offsets, spatial_size):
         offset_dim = offsets.dim()
         offset_size = offsets.size()
         if offset_dim == 2:
@@ -143,6 +143,15 @@ class OffsetTransformer(nn.Module):
             offsets_y = offsets[:, :, 1]
 
         use_effect_scale = bool(self.effect_scale is not None and (self.effect_scale < 1).all())
+
+        assert len(spatial_size) == 2
+        if x.size()[-2:] != spatial_size:
+            height_ori = x.size(-2)
+            width_ori = x.size(-1)
+            height_new = spatial_size[0]
+            width_new = spatial_size[1]
+            assert height_new / height_ori == width_new / width_ori and height_new > height_ori
+            x = F.interpolate(x, size=spatial_size, mode="bilinear", align_corners=True)
 
         if not self.use_absolute_regressor:
             scale = self.scale_regressor(x)
@@ -289,7 +298,7 @@ class DisplaceChannel(nn.Module):
                 offset_abs = offset_abs + offset_regressed_abs
 
             if self.offset_transformer is not None:
-                offset_abs = self.offset_transformer(inp if transformer_source is None else transformer_source, offset_abs)
+                offset_abs = self.offset_transformer(inp if transformer_source is None else transformer_source, offset_abs, inp.size()[-2:])
 
             offset_dim = offset_abs.dim()
 

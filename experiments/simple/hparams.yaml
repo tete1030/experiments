@@ -68,9 +68,10 @@ model:
         atten_space_norm: false
         dpool_size: 15
         transformer:
-            dilation: 2
+            dilation: 1
             enable: true
             independent: true
+            idp_use_stride: true
             bottleneck: 32
             absolute_regressor: true
 
