@@ -15,11 +15,7 @@ def transform_maps(x, scale, rotate, blur_sigma):
     height = x.size(2)
     width = x.size(3)
 
-    scale_mat = torch.zeros(batch_size, 3, 3, device=x.device)
-    scale = scale.to(x.device)
-    rotate = rotate.to(x.device)
-    if blur_sigma is not None:
-        blur_sigma = blur_sigma.to(x.device)
+    scale_mat = torch.zeros(batch_size, 3, 3).to(x.device, non_blocking=True)
 
     ratio = width / height
 
@@ -29,7 +25,7 @@ def transform_maps(x, scale, rotate, blur_sigma):
 
     rotate_sin = torch.sin(rotate)
     rotate_cos = torch.cos(rotate)
-    rotate_mat = torch.zeros(batch_size, 2, 3, device=x.device)
+    rotate_mat = torch.zeros(batch_size, 2, 3).to(x.device, non_blocking=True)
     rotate_mat[:, 0, 0] = rotate_cos / ratio
     rotate_mat[:, 0, 1] = -rotate_sin / ratio
     rotate_mat[:, 0, 2] = 0
@@ -46,9 +42,9 @@ def transform_maps(x, scale, rotate, blur_sigma):
 
     kernel_halfsize = int((blur_sigma * 3).ceil().max())
     kernel_size = kernel_halfsize * 2 + 1
-    ky = torch.arange(-kernel_halfsize, kernel_halfsize + 1)
-    kx = torch.arange(-kernel_halfsize, kernel_halfsize + 1)
-    field = torch.stack([kx.expand(kernel_size, -1), ky[:, None].expand(-1, kernel_size)], dim=2).float().to(x.device)
+    ky = torch.arange(-kernel_halfsize, kernel_halfsize + 1).to(x.device, dtype=torch.float, non_blocking=True)
+    kx = torch.arange(-kernel_halfsize, kernel_halfsize + 1).to(x.device, dtype=torch.float, non_blocking=True)
+    field = torch.stack([kx.expand(kernel_size, -1), ky[:, None].expand(-1, kernel_size)], dim=2)
     kernel = torch.exp(- field.pow(2).sum(dim=2).view(1, kernel_size, kernel_size) / 2 / blur_sigma.pow(2).view(-1, 1, 1))
     kernel /= kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
     flat_channels = batch_size * in_channels

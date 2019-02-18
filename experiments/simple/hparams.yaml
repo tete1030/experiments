@@ -17,7 +17,7 @@ train:
         always_train_block: true
         lr: 1.e-3
         lr_regressor: 1.e-3
-        lr_transformer: 1.e-3
+        lr_transformer: 5.e-4
         lr_dpool_sigma: 5.e-4
         gamma_lr: 0.3
         decay_step_lr: 100000 # 15 * 6543
@@ -49,6 +49,8 @@ model:
     regress_predict: false
     loss_featstab: false
     loss_featstab_cof: 1
+    loss_featstab_v2: true
+    loss_featstab_v2_cof: 1.e-2
     loss_dpool_cof: 1.e-6
     detail:
         disable_displace: false
@@ -71,7 +73,7 @@ model:
             dilation: 1
             enable: true
             independent: true
-            idp_use_stride: true
+            idp_use_stride: false
             bottleneck: 32
             absolute_regressor: true
 

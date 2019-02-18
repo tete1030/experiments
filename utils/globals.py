@@ -68,5 +68,5 @@ class Namespace(SimpleNamespace):
 
 hparams = AttrDict()
 config = AttrDict()
-globalvars = AttrDict()
+globalvars = AttrDict(recursive_convert=False, copy=False)
 globalvars.main_context = Namespace()

@@ -132,7 +132,7 @@ class OffsetTransformer(nn.Module):
             fig.show()
             plt.show()
 
-    def forward(self, x, offsets, spatial_size):
+    def forward(self, x, offsets, spatial_size, use_effect_scale=True):
         offset_dim = offsets.dim()
         offset_size = offsets.size()
         if offset_dim == 2:
@@ -142,7 +142,7 @@ class OffsetTransformer(nn.Module):
             offsets_x = offsets[:, :, 0]
             offsets_y = offsets[:, :, 1]
 
-        use_effect_scale = bool(self.effect_scale is not None and (self.effect_scale < 1).all())
+        use_effect_scale = bool(use_effect_scale and self.effect_scale is not None and (self.effect_scale < 1).all())
 
         assert len(spatial_size) == 2
         if x.size()[-2:] != spatial_size:

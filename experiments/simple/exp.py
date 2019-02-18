@@ -81,6 +81,12 @@ class Experiment(BaseExperiment):
         globalvars.dpools = list()
         globalvars.offsetblock_output = dict()
 
+        assert not (hparams.MODEL.LOSS_FEATSTAB and hparams.MODEL.LOSS_FEATSTAB_V2)
+        assert hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT or not hparams.MODEL.LOSS_FEATSTAB_V2
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LOSS_FEATSTAB_V2:
+            globalvars.featstab_v2_data = dict()
+            globalvars.featstab_v2_loss = list()
+
         if hparams.MODEL.USE_GN:
             globalvars.BatchNorm2dImpl = GroupNormWrapper
         else:
@@ -507,10 +513,10 @@ class Experiment(BaseExperiment):
 
     def _loss_feature_stability(self, epoch_ctx, img, offoutputs):
         batch_size = img.size(0)
-        scale = torch.tensor(truncnorm.rvs(-1, 1, loc=1, scale=0.5, size=batch_size)).float()
-        rotate = torch.tensor(truncnorm.rvs(-1, 1, loc=0, scale=np.pi/6, size=batch_size)).float()
-        # blur_sigma = torch.tensor(np.abs(truncnorm.rvs(-1, 1, loc=0, scale=3, size=batch_size))).float()
-        mean_img = torch.tensor(self.val_dataset.mean, dtype=torch.float, device=img.device)[None, :, None, None]
+        scale = torch.tensor(truncnorm.rvs(-1, 1, loc=1, scale=0.5, size=batch_size)).float().to(device=img.device, non_blocking=True)
+        rotate = torch.tensor(truncnorm.rvs(-1, 1, loc=0, scale=np.pi/6, size=batch_size)).float().to(device=img.device, non_blocking=True)
+        # blur_sigma = torch.tensor(np.abs(truncnorm.rvs(-1, 1, loc=0, scale=3, size=batch_size))).float().to(device=img.device, non_blocking=True)
+        mean_img = torch.tensor(self.val_dataset.mean, dtype=torch.float).to(device=img.device, non_blocking=True)[None, :, None, None]
         img_trans = transform_maps(img + mean_img, scale, rotate, None) - mean_img
         offoutputs_trans = list()
         for offout in offoutputs:
@@ -539,6 +545,35 @@ class Experiment(BaseExperiment):
         epoch_ctx.set_iter_data("loss_feature", loss_feature)
         return loss_feature
 
+    def _get_feature_stability_v2_data(self, img):
+        batch_size = img.size(0)
+        scale = torch.tensor(truncnorm.rvs(-1, 1, loc=1, scale=0.5, size=batch_size)).float().to(device=img.device, non_blocking=True)
+        rotate = torch.tensor(truncnorm.rvs(-1, 1, loc=0, scale=np.pi/6, size=batch_size)).float().to(device=img.device, non_blocking=True)
+        # blur_sigma = torch.tensor(np.abs(truncnorm.rvs(-1, 1, loc=0, scale=3, size=batch_size))).float().to(device=img.device, non_blocking=True)
+        mean_img = torch.tensor(self.val_dataset.mean, dtype=torch.float).to(device=img.device, non_blocking=True)[None, :, None, None]
+        img_trans = transform_maps(img + mean_img, scale, rotate, None) - mean_img
+        mask = torch.ones(img.size(0), 1, img.size(2), img.size(3), device=img.device, dtype=torch.float)
+        mask_trans = transform_maps(mask, scale, rotate, None)
+
+        transform_feature_trans = self.model.module.transformer(img_trans)
+
+        if config.vis and False:
+            import matplotlib.pyplot as plt
+            show_img_num = min(3, len(img))
+            fig, axes = plt.subplots(show_img_num, 2, figsize=(16, 10 * show_img_num))
+            img_show = self.val_dataset.restore_image(img.cpu())
+            img_trans_show = self.val_dataset.restore_image(img_trans.cpu())
+            for iimg in range(show_img_num):
+                axes[iimg, 0].imshow(img_show[iimg])
+                axes[iimg, 1].imshow(img_trans_show[iimg])
+            plt.show()
+
+        return {
+            "scale": scale,
+            "rotate": rotate,
+            "feat_trans": transform_feature_trans,
+            "mask_trans": mask_trans}
+
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict, train: bool) -> torch.Tensor:
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
@@ -556,13 +591,27 @@ class Experiment(BaseExperiment):
             if self.offset_optimizer and progress["step"] == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
                 self._save_offsets(progress["step"])
 
+        img_cuda = img.cuda(non_blocking=True)
         if not hparams.MODEL.REGRESS_PREDICT:
             det_map_gt_cuda = det_maps_gt.cuda(non_blocking=True)
         keypoint_cuda = keypoint.cuda(non_blocking=True)
         # dirty trick for debug
         if config.vis:
-            globalvars.cur_img = img
-        output_maps, *offoutputs = self.model(img)
+            globalvars.cur_img = img_cuda
+
+        update_featstab_v2 = bool(train and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LOSS_FEATSTAB_V2 and self.update_transformer)
+
+        if update_featstab_v2:
+            globalvars.featstab_v2_data = self._get_feature_stability_v2_data(img_cuda)
+            globalvars.featstab_v2_loss = list()
+        output_maps, *offoutputs = self.model(img_cuda)
+        if update_featstab_v2:
+            globalvars.featstab_v2_data.clear()
+            loss_feature_v2 = sum(globalvars.featstab_v2_loss) * hparams.MODEL.LOSS_FEATSTAB_V2_COF
+            epoch_ctx.set_iter_data("loss_feature", loss_feature_v2)
+            globalvars.featstab_v2_loss = list()
+        else:
+            loss_feature_v2 = 0
 
         mask_notlabeled = (keypoint_cuda[:, :, 2] <= 0.1)
         mask_labeled = (~mask_notlabeled)
@@ -596,13 +645,13 @@ class Experiment(BaseExperiment):
 
         loss_feature = 0
         if train and hparams.MODEL.LOSS_FEATSTAB and self.offset_optimizer and self.transformer_optimizer and self.update_offset and self.update_transformer:
-            loss_feature = self._loss_feature_stability(epoch_ctx, img, offoutputs)
+            loss_feature = self._loss_feature_stability(epoch_ctx, img_cuda, offoutputs)
 
         # dirty trick for debug, release
         if config.vis:
             globalvars.cur_img = None
 
-        loss = loss_map + loss_dpool + loss_feature
+        loss = loss_map + loss_dpool + loss_feature + loss_feature_v2
 
         epoch_ctx.set_iter_data("loss", loss)
 
@@ -629,7 +678,7 @@ class Experiment(BaseExperiment):
 
         if config.vis and False:
             import matplotlib.pyplot as plt
-            img_restored = np.ascontiguousarray(self.train_dataset.restore_image(img.data.cpu().numpy())[..., ::-1])
+            img_restored = np.ascontiguousarray(self.train_dataset.restore_image(img.data.numpy())[..., ::-1])
 
             if False:
                 nrows = int(np.sqrt(float(batch_size)))
@@ -870,6 +919,7 @@ class OffsetBlock(nn.Module):
         if not hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK and globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             return x
 
+        shortcut = x
         out_pre = self.pre_offset(x)
 
         if self.dpool:
@@ -889,17 +939,33 @@ class OffsetBlock(nn.Module):
             out_post = out_post * self.atten_post(x)
 
         if self.downsample is not None:
-            x = self.downsample(x)
+            shortcut = self.downsample(x)
 
-        out_skip = x + out_post
+        out_skip = shortcut + out_post
 
         out_final = self.relu(self.bn(out_skip))
 
-        if hparams.MODEL.LOSS_FEATSTAB:
+        update_transformer = bool(self.training and globalvars.main_context.exp.transformer_optimizer and globalvars.main_context.exp.update_transformer)
+
+        if hparams.MODEL.LOSS_FEATSTAB and update_transformer:
             device = out_post.device
             if out_post.device not in globalvars.offsetblock_output:
                 globalvars.offsetblock_output[device] = list()
             globalvars.offsetblock_output[device].append(out_post)
+
+        if hparams.MODEL.LOSS_FEATSTAB_V2 and update_transformer:
+            scale = globalvars.featstab_v2_data["scale"]
+            rotate = globalvars.featstab_v2_data["rotate"]
+            feat_trans = globalvars.featstab_v2_data["feat_trans"]
+            mask_trans = globalvars.featstab_v2_data["mask_trans"]
+            out_pre_trans = transform_maps(out_pre.detach(), scale, rotate, None)
+            out_atten_trans = transform_maps(out_atten.detach(), scale, rotate, None)
+            out_dis_trans_calc = self.displace(out_pre_trans, transformer_source=feat_trans) * out_atten_trans
+            out_dis_trans = transform_maps(out_dis.detach(), scale, rotate, None)
+            if mask_trans.size() != out_dis_trans.size()[-2:]:
+                mask_trans = F.interpolate(mask_trans, size=out_dis_trans.size()[-2:], mode="area")
+
+            globalvars.featstab_v2_loss.append(((out_dis_trans - out_dis_trans_calc).pow(2) * mask_trans).mean())
 
         return out_final
 
