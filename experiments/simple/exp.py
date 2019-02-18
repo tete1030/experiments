@@ -468,6 +468,10 @@ class Experiment(BaseExperiment):
             self.optimizer.step()
         if optimize_offset:
             self.offset_optimizer.step()
+            if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
+                for idp, dp in enumerate(globalvars.dpools):
+                    sigma_data = dp.sigma.data
+                    sigma_data[sigma_data.abs() > dp.max_sigma] = dp.max_sigma
         if optimize_transformer:
             self.transformer_optimizer.step()
             for dm in globalvars.displace_mods:
@@ -708,8 +712,6 @@ class Experiment(BaseExperiment):
                     sigma_change = list()
                     sigma_change_avg = list()
                     for idp, dp in enumerate(globalvars.dpools):
-                        sigma_data = dp.sigma.detach()
-                        sigma_data[sigma_data.abs() > dp.max_sigma] = dp.max_sigma
                         self.change_sigma_avgmeter[idp].update(dp.sigma.detach().cpu().abs())
                         sigma_change.append(self.change_sigma_avgmeter[idp].lastdiff_dir)
                         sigma_change_avg.append(self.change_sigma_avgmeter[idp].avg_dir)
