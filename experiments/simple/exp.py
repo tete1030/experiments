@@ -957,15 +957,21 @@ class OffsetBlock(nn.Module):
             scale = globalvars.featstab_v2_data["scale"]
             rotate = globalvars.featstab_v2_data["rotate"]
             feat_trans = globalvars.featstab_v2_data["feat_trans"]
-            mask_trans = globalvars.featstab_v2_data["mask_trans"]
+            mask_img_trans = globalvars.featstab_v2_data["mask_trans"]
             out_pre_trans = transform_maps(out_pre.detach(), scale, rotate, None)
             out_atten_trans = transform_maps(out_atten.detach(), scale, rotate, None)
             out_dis_trans_calc = self.displace(out_pre_trans, transformer_source=feat_trans) * out_atten_trans
             out_dis_trans = transform_maps(out_dis.detach(), scale, rotate, None)
-            if mask_trans.size() != out_dis_trans.size()[-2:]:
-                mask_trans = F.interpolate(mask_trans, size=out_dis_trans.size()[-2:], mode="area")
 
-            globalvars.featstab_v2_loss.append(((out_dis_trans - out_dis_trans_calc).pow(2) * mask_trans).mean())
+            with torch.autograd.no_grad():
+                mask_dis_trans = transform_maps(self.displace(torch.ones_like(out_pre), transformer_source=transformer_source), scale, rotate, None)
+                mask_dis_trans_calc = self.displace(torch.ones_like(out_pre_trans), transformer_source=feat_trans)
+                mask_dis = (mask_dis_trans + mask_dis_trans_calc) / 2
+
+            if mask_img_trans.size() != out_dis_trans.size()[-2:]:
+                mask_img_trans = F.interpolate(mask_img_trans, size=out_dis_trans.size()[-2:], mode="area")
+
+            globalvars.featstab_v2_loss.append(((out_dis_trans - out_dis_trans_calc).pow(2) * mask_img_trans * mask_dis).mean())
 
         return out_final
 
