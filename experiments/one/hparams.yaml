@@ -67,7 +67,7 @@ model:
         transformer:
             num_offset: 256
             num_feature: 256
-            enable: true
+            enable: false
             independent: true
             bottleneck: null
             absolute_regressor: true

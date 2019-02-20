@@ -898,12 +898,9 @@ class TransformFeature(nn.Module):
             hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_OFFSET,
             use_transformer=False,
             use_atten=False)
-        self.bn_relu = nn.Sequential(
-            nn.BatchNorm2d(hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE),
-            nn.ReLU(inplace=True))
 
     def forward(self, x):
-        return self.bn_relu(self.offblk(self.pre(x)))
+        return self.offblk(self.pre(x))
 
 class RegressPredictor(nn.Module):
     def __init__(self, height, width):
@@ -940,11 +937,8 @@ class SimpleEstimator(nn.Module):
             SimpleEstimator.CHANNELS,
             hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET,
             use_atten=hparams.MODEL.LEARNABLE_OFFSET.ENABLE_ATTEN,
-            independent_atten_source=True,
+            independent_atten_source=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE,
             use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE)
-        self.bn_relu = nn.Sequential(
-            nn.BatchNorm2d(SimpleEstimator.CHANNELS),
-            nn.ReLU(inplace=True))
         self.predictor = self._make_predictor(SimpleEstimator.CHANNELS, num_class)
 
     def _make_predictor(self, planes, num_class):
@@ -961,11 +955,11 @@ class SimpleEstimator(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x, transform_features):
-        if not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+        if not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE or not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
             assert transform_features is None
         else:
             assert transform_features is not None
 
         off = self.offblk(self.pre(x), transformer_source=transform_features, atten_source=transform_features)
 
-        return self.predictor(self.bn_relu(off))
+        return self.predictor(off)
