@@ -749,6 +749,20 @@ class DynamicPooling(nn.Module):
         pooled = torch.log(gp_expx + self.eps)
         return pooled
 
+class SequentialForOffsetBlockTransformer(nn.Sequential):
+    def forward(self, input, extra):
+        for module in self._modules.values():
+            if isinstance(module, OffsetBlock):
+                if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+                    assert extra is not None
+                    input = module(input, transformer_source=extra, atten_source=extra)
+                else:
+                    assert extra is None
+                    input = module(input, transformer_source=input, atten_source=input)
+            else:
+                input = module(input)
+        return input
+
 class OffsetBlock(nn.Module):
     def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1, use_transformer=False, use_atten=False, use_post_atten=False, independent_atten_source=False):
         super(OffsetBlock, self).__init__()
@@ -800,7 +814,6 @@ class OffsetBlock(nn.Module):
         globalvars.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
         self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
-        self.independent_atten_source = independent_atten_source
         if use_atten:
             self.atten_displace = Attention(
                 self.inplanes if not independent_atten_source else hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE,
@@ -842,10 +855,6 @@ class OffsetBlock(nn.Module):
         out_dis = self.displace(out_pre, transformer_source=transformer_source)
 
         if self.atten_displace is not None:
-            if self.independent_atten_source:
-                assert atten_source is not None
-            else:
-                atten_source = x
             out_atten = self.atten_displace(atten_source)
             out_dis = out_dis * out_atten
         else:
@@ -930,15 +939,22 @@ class SimpleEstimator(nn.Module):
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
-        self.offblk = OffsetBlock(
-            hparams.MODEL.INP_SHAPE[1] // 4,
-            hparams.MODEL.INP_SHAPE[0] // 4,
-            64,
-            SimpleEstimator.CHANNELS,
-            hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET,
-            use_atten=hparams.MODEL.LEARNABLE_OFFSET.ENABLE_ATTEN,
-            independent_atten_source=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE,
-            use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE)
+        channels = 64
+        offblks = []
+        for i in range(hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK):
+            offblks.append(
+                OffsetBlock(
+                    hparams.MODEL.INP_SHAPE[1] // 4,
+                    hparams.MODEL.INP_SHAPE[0] // 4,
+                    channels,
+                    SimpleEstimator.CHANNELS,
+                    hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET,
+                    use_atten=hparams.MODEL.LEARNABLE_OFFSET.ENABLE_ATTEN,
+                    independent_atten_source=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE,
+                    use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE))
+            channels = SimpleEstimator.CHANNELS
+        self.offblk = SequentialForOffsetBlockTransformer(*offblks)
+        
         self.predictor = self._make_predictor(SimpleEstimator.CHANNELS, num_class)
 
     def _make_predictor(self, planes, num_class):
@@ -960,6 +976,6 @@ class SimpleEstimator(nn.Module):
         else:
             assert transform_features is not None
 
-        off = self.offblk(self.pre(x), transformer_source=transform_features, atten_source=transform_features)
+        off = self.offblk(self.pre(x), transform_features)
 
         return self.predictor(off)

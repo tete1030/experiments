@@ -55,6 +55,7 @@ model:
 
     learnable_offset:
         init_stride: 0
+        num_blk: 2
         num_offset: 256
         bind_chan: 1
         reuse_offset: false
@@ -67,7 +68,7 @@ model:
         transformer:
             num_offset: 256
             num_feature: 256
-            enable: false
+            enable: true
             independent: true
             bottleneck: null
             absolute_regressor: true
