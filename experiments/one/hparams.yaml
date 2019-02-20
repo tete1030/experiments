@@ -1,0 +1,89 @@
+exp:
+    name: oneoff
+    id: 10
+
+train:
+    learning_rate: 5.e-4
+    gamma_lr: 0.5
+    num_epoch: 100
+    schedule: []
+    train_batch: 16
+    test_batch: 16
+    weight_decay: 0
+    gradual_size: false
+    offset:
+        train_min_step: 2785
+        sep_train_iter: 0
+        always_train_block: true
+        lr: 1.e-3
+        lr_regressor: 1.e-3
+        lr_transformer: 5.e-4
+        lr_dpool_sigma: 5.e-4
+        gamma_lr: 0.3
+        decay_step_lr: 100000 # 15 * 6543
+        transformer_grow_iter: 2785
+        momentum_bn: 0.1
+        momentum: 0.0
+
+eval:
+    parse_threshold: 0.1
+
+config:
+    store_map: false
+    valid_interval: 1000
+
+log:
+    # TODO: Make log configurable
+    # TODO: log more:
+    # - Unstable network parapmeter changes
+    # - Intermediate result and visualization
+    move_average_cycle: 500
+    sigma_change_average_cycle: 500
+    offset_save_interval: 1000
+
+model:
+    inp_shape: [192, 256] # W, H
+    out_shape: [48, 64] # W, H
+    gaussian_kernel: 1.4
+    regress_predict: false
+    loss_dpool_cof: 1.e-6
+    detail:
+        disable_displace: false
+        learnable_offset: true
+        loss_final: labeled
+        enable_offset_block: true
+
+    learnable_offset:
+        init_stride: 0
+        num_offset: 256
+        bind_chan: 1
+        reuse_offset: false
+        half_reversed_offset: false
+        regress_offset: false
+        enable_atten: true
+        enable_post_atten: false
+        atten_space_norm: false
+        dpool_size: 15
+        transformer:
+            num_offset: 256
+            num_feature: 256
+            enable: true
+            independent: true
+            bottleneck: null
+            absolute_regressor: true
+
+dataset:
+    profile: coco
+    subset: 0.3
+    coco:
+        mean_std_file: mean_std.pth
+        ext_border: [0.1, 0.15]
+        scale_factor: 0.25
+        rotate_factor: 30
+        translation_factor: 0.05
+    mpii:
+        mean_std_file: mean_std.pth
+        ext_border: [0.1, 0.15]
+        scale_factor: 0.25
+        rotate_factor: 30
+        translation_factor: 0.02

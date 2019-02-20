@@ -61,14 +61,16 @@ class TransformCoordinate(Function):
         return grad_offsets_x, grad_offsets_y, grad_angle_ksin, grad_angle_kcos
 
 class OffsetTransformer(nn.Module):
-    def __init__(self, inplanes, num_offsets, bottleneck=None, scale_grow_step=None, absolute_regressor=False):
+    def __init__(self, inplanes, num_offsets, bottleneck=None, single_regress=True, scale_grow_step=None, absolute_regressor=False):
         super(OffsetTransformer, self).__init__()
         self.inplanes = inplanes
         self.num_offsets = num_offsets
         self.bottleneck = bottleneck
+        self.single_regress = single_regress
         self.use_absolute_regressor = absolute_regressor
+        # assert not bottleneck or not single_regress, "single_regress should not be specified when using bottleneck"
         if not self.use_absolute_regressor:
-            first_layer_channels = 1 if bottleneck is None else bottleneck
+            first_layer_channels = (1 if self.single_regress else num_offsets) if bottleneck is None else bottleneck
             use_bias = False if bottleneck is None else True
 
             scale_regressor_mods = []
@@ -86,7 +88,7 @@ class OffsetTransformer(nn.Module):
             self.angle_regressor = nn.Sequential(*angle_regressor_mods)
         else:
             num_last_inp_channels = inplanes if bottleneck is None else bottleneck
-            num_last_out_channels = 1 if bottleneck is None else num_offsets
+            num_last_out_channels = (1 if self.single_regress else num_offsets) if bottleneck is None else num_offsets
 
             scale_regressor_mods = []
             if bottleneck is not None:

@@ -75,25 +75,10 @@ class Experiment(BaseExperiment):
                 self.train_dataset = Subset(self.train_dataset, list(range(int(len(self.train_dataset) * hparams.DATASET.SUBSET))))
 
     def init_model(self):
-        assert not (hparams.TRAIN.OFFSET.SEP_TRAIN_ITER > 0 and hparams.MODEL.LOSS_FEATSTAB)
-        globalvars.offsetblock_counter = 0
         globalvars.displace_mods = list()
         globalvars.dpools = list()
-        globalvars.offsetblock_output = dict()
-
-        assert not (hparams.MODEL.LOSS_FEATSTAB and hparams.MODEL.LOSS_FEATSTAB_V2)
-        assert hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT or not hparams.MODEL.LOSS_FEATSTAB_V2
-        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LOSS_FEATSTAB_V2:
-            globalvars.featstab_v2_data = dict()
-            globalvars.featstab_v2_loss = list()
-
-        if hparams.MODEL.USE_GN:
-            globalvars.BatchNorm2dImpl = GroupNormWrapper
-        else:
-            globalvars.BatchNorm2dImpl = nn.BatchNorm2d
 
         self.model = nn.DataParallel(MyPose(self.num_parts).cuda())
-        assert globalvars.offsetblock_counter == len(hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO) or not hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK
         if hparams.MODEL.REGRESS_PREDICT:
             self.pose_regressor = RegressPredictor(
                 hparams.MODEL.OUT_SHAPE[1],
@@ -112,17 +97,25 @@ class Experiment(BaseExperiment):
         # Separate parameters
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in globalvars.displace_mods if hasattr(dm, "offset")]))
+            offset_parameter_ids = list(map(lambda x: id(x), self.offset_parameters))
+            
             self.offset_regressor_parameters = list(filter(lambda x: x.requires_grad, list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in globalvars.displace_mods if hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET]))))
-            if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE:
-                self.offset_transformer_parameters = list(filter(lambda x: x.requires_grad,
-                    list(itertools.chain.from_iterable([dm.offset_transformer.parameters() for dm in globalvars.displace_mods])) + \
-                    (list(self.model.module.transformer.parameters()) if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT else [])))
-            else:
-                self.offset_transformer_parameters = []
+
             if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
                 self.dpool_parameters = list(filter(lambda x: x.requires_grad, [dp.sigma for dp in globalvars.dpools]))
             else:
                 self.dpool_parameters = []
+            dpool_parameter_ids = list(map(lambda x: id(x), self.dpool_parameters))
+
+            if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE:
+                self.offset_transformer_parameters = list(filter(
+                    lambda x: id(x) not in offset_parameter_ids and id(x) not in dpool_parameter_ids,
+                    filter(
+                        lambda x: x.requires_grad,
+                        list(itertools.chain.from_iterable([dm.offset_transformer.parameters() for dm in globalvars.displace_mods if dm.offset_transformer is not None])) + \
+                        (list(self.model.module.transformer.parameters()) if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT else []))))
+            else:
+                self.offset_transformer_parameters = []
         else:
             self.offset_parameters = []
             self.offset_regressor_parameters = []
@@ -481,7 +474,7 @@ class Experiment(BaseExperiment):
         if optimize_transformer:
             self.transformer_optimizer.step()
             for dm in globalvars.displace_mods:
-                if dm.offset_transformer.effect_scale is not None:
+                if dm.offset_transformer is not None and dm.offset_transformer.effect_scale is not None:
                     dm.offset_transformer.effect_scale.data.add_(dm.offset_transformer.scale_grow_step.data).clamp_(0, 1)
 
     def _set_training_state(self, update_weight=None, update_offset=None, update_transformer=None):
@@ -511,69 +504,6 @@ class Experiment(BaseExperiment):
 
         return state_ori
 
-    def _loss_feature_stability(self, epoch_ctx, img, offoutputs):
-        batch_size = img.size(0)
-        scale = torch.tensor(truncnorm.rvs(-1, 1, loc=1, scale=0.5, size=batch_size)).float().to(device=img.device, non_blocking=True)
-        rotate = torch.tensor(truncnorm.rvs(-1, 1, loc=0, scale=np.pi/6, size=batch_size)).float().to(device=img.device, non_blocking=True)
-        # blur_sigma = torch.tensor(np.abs(truncnorm.rvs(-1, 1, loc=0, scale=3, size=batch_size))).float().to(device=img.device, non_blocking=True)
-        mean_img = torch.tensor(self.val_dataset.mean, dtype=torch.float).to(device=img.device, non_blocking=True)[None, :, None, None]
-        img_trans = transform_maps(img + mean_img, scale, rotate, None) - mean_img
-        offoutputs_trans = list()
-        for offout in offoutputs:
-            offoutputs_trans.append(transform_maps(offout.detach(), scale, rotate, None))
-
-        if config.vis and False:
-            import matplotlib.pyplot as plt
-            show_img_num = min(3, len(img))
-            fig, axes = plt.subplots(show_img_num, 2, figsize=(16, 10 * show_img_num))
-            img_show = self.val_dataset.restore_image(img.cpu())
-            img_trans_show = self.val_dataset.restore_image(img_trans.cpu())
-            for iimg in range(show_img_num):
-                axes[iimg, 0].imshow(img_show[iimg])
-                axes[iimg, 1].imshow(img_trans_show[iimg])
-            plt.show()
-
-        state_ori = self._set_training_state(update_weight=False, update_offset=False, update_transformer=True)
-        _, *offoutputs_img_trans = self.model(img_trans)
-        self._set_training_state(**state_ori)
-
-        loss_feature = 0
-        for ioff, offout_trans in enumerate(offoutputs_trans):
-            loss_feature = loss_feature + (offoutputs_img_trans[ioff] - offout_trans).pow(2).mean()
-
-        loss_feature = loss_feature * hparams.MODEL.LOSS_FEATSTAB_COF
-        epoch_ctx.set_iter_data("loss_feature", loss_feature)
-        return loss_feature
-
-    def _get_feature_stability_v2_data(self, img):
-        batch_size = img.size(0)
-        scale = torch.tensor(truncnorm.rvs(-1, 1, loc=1, scale=0.5, size=batch_size)).float().to(device=img.device, non_blocking=True)
-        rotate = torch.tensor(truncnorm.rvs(-1, 1, loc=0, scale=np.pi/6, size=batch_size)).float().to(device=img.device, non_blocking=True)
-        # blur_sigma = torch.tensor(np.abs(truncnorm.rvs(-1, 1, loc=0, scale=3, size=batch_size))).float().to(device=img.device, non_blocking=True)
-        mean_img = torch.tensor(self.val_dataset.mean, dtype=torch.float).to(device=img.device, non_blocking=True)[None, :, None, None]
-        img_trans = transform_maps(img + mean_img, scale, rotate, None) - mean_img
-        mask = torch.ones(img.size(0), 1, img.size(2), img.size(3), device=img.device, dtype=torch.float)
-        mask_trans = (transform_maps(mask, scale, rotate, None) > 0.9).float()
-
-        transform_feature_trans = self.model.module.transformer(img_trans)
-
-        if config.vis and False:
-            import matplotlib.pyplot as plt
-            show_img_num = min(3, len(img))
-            fig, axes = plt.subplots(show_img_num, 2, figsize=(16, 10 * show_img_num))
-            img_show = self.val_dataset.restore_image(img.cpu())
-            img_trans_show = self.val_dataset.restore_image(img_trans.cpu())
-            for iimg in range(show_img_num):
-                axes[iimg, 0].imshow(img_show[iimg])
-                axes[iimg, 1].imshow(img_trans_show[iimg])
-            plt.show()
-
-        return {
-            "scale": scale,
-            "rotate": rotate,
-            "feat_trans": transform_feature_trans,
-            "mask_trans": mask_trans}
-
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict, train: bool) -> torch.Tensor:
         image_ids = batch["img_index"].tolist()
         img = batch["img"]
@@ -599,19 +529,7 @@ class Experiment(BaseExperiment):
         if config.vis:
             globalvars.cur_img = img_cuda
 
-        update_featstab_v2 = bool(train and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LOSS_FEATSTAB_V2 and self.update_transformer)
-
-        if update_featstab_v2:
-            globalvars.featstab_v2_data = self._get_feature_stability_v2_data(img_cuda)
-            globalvars.featstab_v2_loss = list()
-        output_maps, *offoutputs = self.model(img_cuda)
-        if update_featstab_v2:
-            globalvars.featstab_v2_data.clear()
-            loss_feature_v2 = sum(globalvars.featstab_v2_loss) * hparams.MODEL.LOSS_FEATSTAB_V2_COF
-            epoch_ctx.set_iter_data("loss_feature", loss_feature_v2)
-            globalvars.featstab_v2_loss = list()
-        else:
-            loss_feature_v2 = 0
+        output_maps = self.model(img_cuda)
 
         mask_notlabeled = (keypoint_cuda[:, :, 2] <= 0.1)
         mask_labeled = (~mask_notlabeled)
@@ -643,15 +561,11 @@ class Experiment(BaseExperiment):
             loss_dpool = loss_dpool * hparams.MODEL.LOSS_DPOOL_COF
             epoch_ctx.set_iter_data("loss_dpool", loss_dpool)
 
-        loss_feature = 0
-        if train and hparams.MODEL.LOSS_FEATSTAB and self.offset_optimizer and self.transformer_optimizer and self.update_offset and self.update_transformer:
-            loss_feature = self._loss_feature_stability(epoch_ctx, img_cuda, offoutputs)
-
         # dirty trick for debug, release
         if config.vis:
             globalvars.cur_img = None
 
-        loss = loss_map + loss_dpool + loss_feature + loss_feature_v2
+        loss = loss_map + loss_dpool
 
         epoch_ctx.set_iter_data("loss", loss)
 
@@ -715,11 +629,6 @@ class Experiment(BaseExperiment):
     def summarize_iter(self, epoch_ctx:EpochContext, progress:dict, train:bool):
         tb_writer = globalvars.main_context.get("tb_writer")
 
-        if "loss_feature" in epoch_ctx.iter_data:
-            loss_feature_val = epoch_ctx.iter_data["loss_feature"].item()
-        else:
-            loss_feature_val = None
-
         if "loss_dpool" in epoch_ctx.iter_data:
             loss_dpool_val = epoch_ctx.iter_data["loss_dpool"].item()
         else:
@@ -731,12 +640,8 @@ class Experiment(BaseExperiment):
             tb_writer.add_scalar("loss/map", loss_map_val, progress["step"])
             if loss_dpool_val is not None:
                 tb_writer.add_scalar("loss/dpool", loss_dpool_val, progress["step"])
-            if loss_feature_val is not None:
-                tb_writer.add_scalar("loss/feature", loss_feature_val, progress["step"])
             tb_writer.add_scalar("loss/all_train", loss_val, progress["step"])
 
-        if loss_feature_val is not None:
-            epoch_ctx.add_scalar("loss_feature", loss_feature_val)
         epoch_ctx.add_scalar("loss", loss_val)
 
         if train and self.offset_optimizer and self.update_offset:
@@ -845,7 +750,7 @@ class DynamicPooling(nn.Module):
         return pooled
 
 class OffsetBlock(nn.Module):
-    def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1):
+    def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1, use_transformer=False, use_atten=False, use_post_atten=False, independent_atten_source=False):
         super(OffsetBlock, self).__init__()
         self.height = height
         self.width = width
@@ -864,11 +769,12 @@ class OffsetBlock(nn.Module):
             log_i("Displace plane number rounded from {} to {}".format(displace_planes, displace_planes_new))
             displace_planes = displace_planes_new
         self.displace_planes = displace_planes
-        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE:
+        if use_transformer:
             offset_transformer = OffsetTransformer(
-                TransformFeature.OUTPUT_CHANS if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT else self.inplanes,
+                hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT else self.inplanes,
                 self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN,
                 bottleneck=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.BOTTLENECK,
+                single_regress=False,
                 scale_grow_step=1 / hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None,
                 absolute_regressor=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ABSOLUTE_REGRESSOR)
         else:
@@ -894,11 +800,19 @@ class OffsetBlock(nn.Module):
         globalvars.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
         self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
-        if hparams.MODEL.LEARNABLE_OFFSET.ENABLE_ATTEN:
-            self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN_SPACE_NORM, stride=stride)
+        self.independent_atten_source = independent_atten_source
+        if use_atten:
+            self.atten_displace = Attention(
+                self.inplanes if not independent_atten_source else hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE,
+                self.displace_planes,
+                input_shape=(self.height, self.width),
+                bias_planes=0,
+                bias_factor=0,
+                space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN_SPACE_NORM,
+                stride=stride)
         else:
             self.atten_displace = None
-        if hparams.MODEL.LEARNABLE_OFFSET.ENABLE_POST_ATTEN:
+        if use_post_atten:
             self.atten_post = Attention(self.inplanes, self.inplanes, input_shape=(self.out_height, self.out_width), bias_planes=0, bias_factor=0, space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN_SPACE_NORM, stride=stride)
         else:
             self.atten_post = None
@@ -915,7 +829,7 @@ class OffsetBlock(nn.Module):
         else:
             self.dpool = None
 
-    def forward(self, x, transformer_source=None):
+    def forward(self, x, transformer_source=None, atten_source=None):
         if not hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK and globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             return x
 
@@ -928,7 +842,11 @@ class OffsetBlock(nn.Module):
         out_dis = self.displace(out_pre, transformer_source=transformer_source)
 
         if self.atten_displace is not None:
-            out_atten = self.atten_displace(x)
+            if self.independent_atten_source:
+                assert atten_source is not None
+            else:
+                atten_source = x
+            out_atten = self.atten_displace(atten_source)
             out_dis = out_dis * out_atten
         else:
             out_atten = None
@@ -945,78 +863,7 @@ class OffsetBlock(nn.Module):
 
         out_final = self.relu(self.bn(out_skip))
 
-        update_transformer = bool(self.training and globalvars.main_context.exp.transformer_optimizer and globalvars.main_context.exp.update_transformer)
-
-        if hparams.MODEL.LOSS_FEATSTAB and update_transformer:
-            device = out_post.device
-            if out_post.device not in globalvars.offsetblock_output:
-                globalvars.offsetblock_output[device] = list()
-            globalvars.offsetblock_output[device].append(out_post)
-
-        if hparams.MODEL.LOSS_FEATSTAB_V2 and update_transformer:
-            scale = globalvars.featstab_v2_data["scale"]
-            rotate = globalvars.featstab_v2_data["rotate"]
-            feat_trans = globalvars.featstab_v2_data["feat_trans"]
-            mask_img_trans = globalvars.featstab_v2_data["mask_trans"]
-            out_pre_trans = transform_maps(out_pre.detach(), scale, rotate, None)
-            out_atten_trans = transform_maps(out_atten.detach(), scale, rotate, None)
-            out_dis_trans_calc = self.displace(out_pre_trans, transformer_source=feat_trans) * out_atten_trans
-            out_dis_trans = transform_maps(out_dis.detach(), scale, rotate, None)
-
-            with torch.autograd.no_grad():
-                mask_dis_trans = transform_maps(self.displace(torch.ones_like(out_pre), transformer_source=transformer_source), scale, rotate, None)
-                mask_dis_trans_calc = self.displace(torch.ones_like(out_pre_trans), transformer_source=feat_trans)
-                mask_dis = ((mask_dis_trans + mask_dis_trans_calc) > 1.9).float()
-
-            if mask_img_trans.size() != out_dis_trans.size()[-2:]:
-                mask_img_trans = F.interpolate(mask_img_trans, size=out_dis_trans.size()[-2:], mode="area")
-
-            globalvars.featstab_v2_loss.append(((out_dis_trans - out_dis_trans_calc).pow(2) * mask_img_trans * mask_dis).mean())
-
         return out_final
-
-class Bottleneck(nn.Module):
-    expansion = 4
-
-    def __init__(self, inplanes, planes, inshape_factor, res_index, block_index, stride=1, dilation=1, downsample=None):
-        super(Bottleneck, self).__init__()
-        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
-        self.inplanes = inplanes
-        self.bn1 = globalvars.BatchNorm2dImpl(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
-                               padding=dilation, dilation=dilation, bias=False)
-        self.bn2 = globalvars.BatchNorm2dImpl(planes)
-        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
-        self.bn3 = globalvars.BatchNorm2dImpl(planes * 4)
-        self.relu = nn.ReLU(inplace=True)
-        self.downsample = downsample
-        self.stride = stride
-        self.inshape_factor = inshape_factor
-        self.res_index = res_index
-        self.block_index = block_index
-
-    def forward(self, x):
-        residual = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out = self.relu(out)
-
-        out = self.conv3(out)
-        out = self.bn3(out)
-
-        if self.downsample is not None:
-            residual = self.downsample(x)
-
-        out = out + residual
-
-        out = self.relu(out)
-
-        return out
 
 class MyPose(nn.Module):
     def __init__(self, num_class):
@@ -1033,88 +880,30 @@ class MyPose(nn.Module):
         else:
             transform_features = None
         prediction = self.estimator(x, transform_features)
-        if len(globalvars.offsetblock_output) > 0:
-            block_outputs = globalvars.offsetblock_output[x.device]
-            globalvars.offsetblock_output[x.device] = list()
-        else:
-            block_outputs = []
-        return (prediction, *block_outputs)
+        return prediction
 
 class TransformFeature(nn.Module):
-    OUTPUT_CHANS = 256
     def __init__(self):
         super(TransformFeature, self).__init__()
-        self.inplanes = 64
-        self.inshape_factor = 1
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
-                               bias=False)
-        self.inshape_factor *= 2
-        self.bn1 = globalvars.BatchNorm2dImpl(64)
-        self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.inshape_factor *= 2
-        self.layer1 = self._make_layer(Bottleneck, 64, 3, res_index=0)
-
-    def _make_layer(self, block, planes, blocks, res_index, stride=1):
-        downsample = None
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            downsample = nn.Sequential(
-                nn.Conv2d(self.inplanes, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False),
-                globalvars.BatchNorm2dImpl(planes * block.expansion),
-            )
-
-        layers = []
-
-        layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=0, stride=stride, dilation=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.DILATION, downsample=downsample))
-        if stride != 1:
-            self.inshape_factor *= 2
-        self.inplanes = planes * block.expansion
-
-        _strided_factor = 1
-
-        stride = 2 if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.IDP_USE_STRIDE else 1
-        for i in range(1, blocks):
-            downsample = None
-            if stride != 1:
-                downsample = nn.Sequential(
-                    nn.Conv2d(self.inplanes, self.inplanes,
-                            kernel_size=1, stride=stride, bias=False),
-                    globalvars.BatchNorm2dImpl(self.inplanes),
-                )
-            layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=i, stride=stride, dilation=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.DILATION, downsample=downsample))
-            if stride != 1:
-                self.inshape_factor *= stride
-                _strided_factor *= stride
-
-        if _strided_factor > 1:
-            log_i("Transformer strided by " + str(_strided_factor))
-
-        return nn.Sequential(*layers)
+        self.pre = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
+        self.offblk = OffsetBlock(
+            hparams.MODEL.INP_SHAPE[1] // 4,
+            hparams.MODEL.INP_SHAPE[0] // 4,
+            64,
+            hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE,
+            hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_OFFSET,
+            use_transformer=False,
+            use_atten=False)
+        self.bn_relu = nn.Sequential(
+            nn.BatchNorm2d(hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE),
+            nn.ReLU(inplace=True))
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
-        x1 = self.layer1(x)
-
-        return x1
-
-class SequentialForOffsetBlockTransformer(nn.Sequential):
-    def forward(self, input, extra):
-        for module in self._modules.values():
-            if isinstance(module, OffsetBlock):
-                if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
-                    assert extra is not None
-                    input = module(input, transformer_source=extra)
-                else:
-                    assert extra is None
-                    input = module(input, transformer_source=input)
-            else:
-                input = module(input)
-        return input
+        return self.bn_relu(self.offblk(self.pre(x)))
 
 class RegressPredictor(nn.Module):
     def __init__(self, height, width):
@@ -1135,76 +924,48 @@ class RegressPredictor(nn.Module):
         return torch.stack([x, y], dim=-1)
 
 class SimpleEstimator(nn.Module):
+    CHANNELS = 256
     def __init__(self, num_class):
         super(SimpleEstimator, self).__init__()
-        self.inplanes = 64
-        self.inshape_factor = 1
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
-                               bias=False)
-        self.inshape_factor *= 2
-        self.bn1 = globalvars.BatchNorm2dImpl(64)
-        self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.inshape_factor *= 2
-        self.layer1 = self._make_layer(Bottleneck, 64, 3, res_index=0)
 
-        self.predictor = self._make_predictor(256, num_class)
-
-    def _add_offset_block(self, layers):
-        if hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK:
-            layers.append(OffsetBlock(
-                hparams.MODEL.INP_SHAPE[1] // self.inshape_factor,
-                hparams.MODEL.INP_SHAPE[0] // self.inshape_factor,
-                self.inplanes,
-                self.inplanes,
-                int(self.inplanes * hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[globalvars.offsetblock_counter])))
-            globalvars.offsetblock_counter += 1
-
-    def _make_layer(self, block, planes, blocks, res_index, stride=1):
-        downsample = None
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            downsample = nn.Sequential(
-                nn.Conv2d(self.inplanes, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False),
-                globalvars.BatchNorm2dImpl(planes * block.expansion),
-            )
-
-        layers = []
-
-        self._add_offset_block(layers)
-        layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=0, stride=stride, downsample=downsample))
-        if stride != 1:
-            self.inshape_factor *= 2
-        self.inplanes = planes * block.expansion
-        for i in range(1, blocks):
-            self._add_offset_block(layers)
-            layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=i))
-
-        return SequentialForOffsetBlockTransformer(*layers)
+        self.pre = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
+        self.offblk = OffsetBlock(
+            hparams.MODEL.INP_SHAPE[1] // 4,
+            hparams.MODEL.INP_SHAPE[0] // 4,
+            64,
+            SimpleEstimator.CHANNELS,
+            hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET,
+            use_atten=hparams.MODEL.LEARNABLE_OFFSET.ENABLE_ATTEN,
+            independent_atten_source=True,
+            use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE)
+        self.bn_relu = nn.Sequential(
+            nn.BatchNorm2d(SimpleEstimator.CHANNELS),
+            nn.ReLU(inplace=True))
+        self.predictor = self._make_predictor(SimpleEstimator.CHANNELS, num_class)
 
     def _make_predictor(self, planes, num_class):
         layers = []
         layers.append(nn.Conv2d(planes, planes,
             kernel_size=1, stride=1, bias=False))
-        layers.append(globalvars.BatchNorm2dImpl(planes))
+        layers.append(nn.BatchNorm2d(planes))
         layers.append(nn.ReLU(inplace=True))
 
         layers.append(nn.Conv2d(planes, num_class,
-            kernel_size=3, stride=1, padding=1, bias=False))
+            kernel_size=1, stride=1, bias=False))
         layers.append(nn.BatchNorm2d(num_class))
 
         return nn.Sequential(*layers)
 
     def forward(self, x, transform_features):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
         if not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
             assert transform_features is None
         else:
             assert transform_features is not None
-        x1 = self.layer1(x, transform_features)
 
-        return self.predictor(x1)
+        off = self.offblk(self.pre(x), transformer_source=transform_features, atten_source=transform_features)
+
+        return self.predictor(self.bn_relu(off))
