@@ -753,18 +753,14 @@ class SequentialForOffsetBlockTransformer(nn.Sequential):
     def forward(self, input, extra):
         for module in self._modules.values():
             if isinstance(module, OffsetBlock):
-                if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
-                    assert extra is not None
-                    input = module(input, transformer_source=extra, atten_source=extra)
-                else:
-                    assert extra is None
-                    input = module(input, transformer_source=input, atten_source=input)
+                input = module(input, transformer_source=extra)
             else:
                 input = module(input)
         return input
 
 class OffsetBlock(nn.Module):
-    def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1, use_transformer=False, use_atten=False, use_post_atten=False, independent_atten_source=False):
+    def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1,
+            use_transformer=False, use_atten=False, atten_source="input", atten_space_norm=False, use_post_atten=False, post_atten_source="input", post_atten_space_norm=False):
         super(OffsetBlock, self).__init__()
         self.height = height
         self.width = width
@@ -814,19 +810,44 @@ class OffsetBlock(nn.Module):
         globalvars.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
         self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
+
+        self._atten_source = atten_source
         if use_atten:
+            if atten_source == "input":
+                atten_inplanes = self.inplanes
+            elif atten_source == "transformer":
+                assert use_transformer and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT
+                atten_inplanes = hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE
+            else:
+                raise ValueError("Unknown atten_source = '{}'".format(atten_source))
             self.atten_displace = Attention(
-                self.inplanes if not independent_atten_source else hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE,
+                atten_inplanes,
                 self.displace_planes,
                 input_shape=(self.height, self.width),
                 bias_planes=0,
                 bias_factor=0,
-                space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN_SPACE_NORM,
+                space_norm=atten_space_norm,
                 stride=stride)
         else:
             self.atten_displace = None
+
+        self._post_atten_source = post_atten_source
         if use_post_atten:
-            self.atten_post = Attention(self.inplanes, self.inplanes, input_shape=(self.out_height, self.out_width), bias_planes=0, bias_factor=0, space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN_SPACE_NORM, stride=stride)
+            if post_atten_source == "input":
+                post_atten_inplanes = self.inplanes
+            elif post_atten_source == "transformer":
+                assert use_transformer and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT
+                post_atten_inplanes = hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE
+            else:
+                raise ValueError("Unknown post_atten_source = '{}'".format(post_atten_source))
+            self.atten_post = Attention(
+                post_atten_inplanes,
+                self.inplanes,
+                input_shape=(self.out_height, self.out_width),
+                bias_planes=0,
+                bias_factor=0,
+                space_norm=post_atten_space_norm,
+                stride=stride)
         else:
             self.atten_post = None
         self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.TRAIN.OFFSET.MOMENTUM_BN)
@@ -842,7 +863,12 @@ class OffsetBlock(nn.Module):
         else:
             self.dpool = None
 
-    def forward(self, x, transformer_source=None, atten_source=None):
+    def forward(self, x, transformer_source=None):
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+            assert transformer_source is not None
+        else:
+            assert transformer_source is None
+
         if not hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK and globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             return x
 
@@ -852,9 +878,19 @@ class OffsetBlock(nn.Module):
         if self.dpool:
             out_pre = self.dpool(out_pre)
 
-        out_dis = self.displace(out_pre, transformer_source=transformer_source)
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+            actual_transformer_source = x
+        else:
+            actual_transformer_source = transformer_source
+
+        out_dis = self.displace(out_pre, transformer_source=actual_transformer_source)
 
         if self.atten_displace is not None:
+            if self._atten_source == "input":
+                atten_source = x
+            elif self._atten_source == "transformer":
+                assert transformer_source is not None
+                atten_source = transformer_source
             out_atten = self.atten_displace(atten_source)
             out_dis = out_dis * out_atten
         else:
@@ -863,7 +899,12 @@ class OffsetBlock(nn.Module):
         out_post = self.post_offset(out_dis)
 
         if self.atten_post is not None:
-            out_post = out_post * self.atten_post(x)
+            if self._post_atten_source == "input":
+                post_atten_source = x
+            elif self._post_atten_source == "transformer":
+                assert transformer_source is not None
+                post_atten_source = transformer_source
+            out_post = out_post * self.atten_post(post_atten_source)
 
         if self.downsample is not None:
             shortcut = self.downsample(x)
@@ -905,8 +946,13 @@ class TransformFeature(nn.Module):
             64,
             hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE,
             hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_OFFSET,
-            use_transformer=False,
-            use_atten=False)
+            use_atten=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ATTEN.ENABLE,
+            atten_source=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ATTEN.SOURCE,
+            atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ATTEN.SPACE_NORM,
+            use_post_atten=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.ENABLE,
+            post_atten_source=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.SOURCE,
+            post_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.SPACE_NORM,
+            use_transformer=False)
 
     def forward(self, x):
         return self.offblk(self.pre(x))
@@ -949,8 +995,12 @@ class SimpleEstimator(nn.Module):
                     channels,
                     SimpleEstimator.CHANNELS,
                     hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET,
-                    use_atten=hparams.MODEL.LEARNABLE_OFFSET.ENABLE_ATTEN,
-                    independent_atten_source=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE,
+                    use_atten=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.ENABLE,
+                    atten_source=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SOURCE,
+                    atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SPACE_NORM,
+                    use_post_atten=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.ENABLE,
+                    post_atten_source=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.SOURCE,
+                    post_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.SPACE_NORM,
                     use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE))
             channels = SimpleEstimator.CHANNELS
         self.offblk = SequentialForOffsetBlockTransformer(*offblks)
