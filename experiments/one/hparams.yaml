@@ -45,7 +45,7 @@ model:
     inp_shape: [192, 256] # W, H
     out_shape: [48, 64] # W, H
     gaussian_kernel: 1.4
-    regress_predict: true
+    regress_predict: false
     loss_dpool_cof: 1.e-6
     detail:
         disable_displace: false
@@ -57,6 +57,7 @@ model:
         init_stride: 0
         num_blk: 1
         num_offset: 256
+        num_out_channel: 512
         bind_chan: 1
         reuse_offset: false
         half_reversed_offset: false

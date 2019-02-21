@@ -978,7 +978,6 @@ class RegressPredictor(nn.Module):
         return torch.stack([x, y], dim=-1)
 
 class SimpleEstimator(nn.Module):
-    CHANNELS = 256
     def __init__(self, num_class):
         super(SimpleEstimator, self).__init__()
 
@@ -987,15 +986,16 @@ class SimpleEstimator(nn.Module):
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
-        channels = 64
+        cur_num_channel = 64
+        num_out_channel = hparams.MODEL.LEARNABLE_OFFSET.NUM_OUT_CHANNEL
         offblks = []
         for i in range(hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK):
             offblks.append(
                 OffsetBlock(
                     hparams.MODEL.INP_SHAPE[1] // 4,
                     hparams.MODEL.INP_SHAPE[0] // 4,
-                    channels,
-                    SimpleEstimator.CHANNELS,
+                    cur_num_channel,
+                    num_out_channel,
                     hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET,
                     use_atten=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.ENABLE,
                     atten_source=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SOURCE,
@@ -1004,10 +1004,10 @@ class SimpleEstimator(nn.Module):
                     post_atten_source=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.SOURCE,
                     post_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.SPACE_NORM,
                     use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE))
-            channels = SimpleEstimator.CHANNELS
+            cur_num_channel = num_out_channel
         self.offblk = SequentialForOffsetBlockTransformer(*offblks)
         
-        self.predictor = self._make_predictor(SimpleEstimator.CHANNELS, num_class)
+        self.predictor = self._make_predictor(num_out_channel, num_class)
 
     def _make_predictor(self, planes, num_class):
         layers = []
