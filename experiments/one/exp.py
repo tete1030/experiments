@@ -779,6 +779,7 @@ class OffsetBlock(nn.Module):
             log_i("Displace plane number rounded from {} to {}".format(displace_planes, displace_planes_new))
             displace_planes = displace_planes_new
         self.displace_planes = displace_planes
+        self.use_transformer = use_transformer
         if use_transformer:
             offset_transformer = OffsetTransformer(
                 hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT else self.inplanes,
@@ -864,10 +865,16 @@ class OffsetBlock(nn.Module):
             self.dpool = None
 
     def forward(self, x, transformer_source=None):
-        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
-            assert transformer_source is not None
+        if self.use_transformer:
+            if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+                assert transformer_source is not None
+                actual_transformer_source = transformer_source
+            else:
+                assert transformer_source is None
+                actual_transformer_source = x
         else:
             assert transformer_source is None
+            actual_transformer_source = None
 
         if not hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK and globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             return x
@@ -877,11 +884,6 @@ class OffsetBlock(nn.Module):
 
         if self.dpool:
             out_pre = self.dpool(out_pre)
-
-        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
-            actual_transformer_source = x
-        else:
-            actual_transformer_source = transformer_source
 
         out_dis = self.displace(out_pre, transformer_source=actual_transformer_source)
 

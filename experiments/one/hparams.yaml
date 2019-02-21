@@ -64,16 +64,16 @@ model:
         atten:
             enable: true
             space_norm: false
-            source: input
+            source: transformer
         post_atten:
             enable: false
             space_norm: false
-            source: input
+            source: transformer
         dpool_size: 15
         transformer:
             num_offset: 256
             num_feature: 256
-            enable: false
+            enable: true
             independent: true
             bottleneck: null
             absolute_regressor: true
