@@ -45,7 +45,7 @@ model:
     inp_shape: [192, 256] # W, H
     out_shape: [48, 64] # W, H
     gaussian_kernel: 1.4
-    regress_predict: false
+    regress_predict: true
     loss_dpool_cof: 1.e-6
     detail:
         disable_displace: false
@@ -64,11 +64,11 @@ model:
         atten:
             enable: true
             space_norm: false
-            source: input
+            source: transformer
         post_atten:
             enable: false
             space_norm: false
-            source: input
+            source: transformer
         dpool_size: 15
         transformer:
             num_offset: 256
