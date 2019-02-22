@@ -760,7 +760,7 @@ class SequentialForOffsetBlockTransformer(nn.Sequential):
 
 class OffsetBlock(nn.Module):
     def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1,
-            use_transformer=False, use_atten=False, atten_source="input", atten_space_norm=False, use_post_atten=False, post_atten_source="input", post_atten_space_norm=False):
+            use_transformer=False, use_atten=False, atten_source="input", atten_space_norm=False, use_post_atten=False, post_atten_source="input", post_atten_space_norm=False, post_groups=1):
         super(OffsetBlock, self).__init__()
         self.height = height
         self.width = width
@@ -810,7 +810,7 @@ class OffsetBlock(nn.Module):
 
         globalvars.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
-        self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
+        self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1, groups=post_groups)
 
         self._atten_source = atten_source
         if use_atten:
@@ -1003,6 +1003,7 @@ class SimpleEstimator(nn.Module):
                     use_post_atten=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.ENABLE,
                     post_atten_source=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.SOURCE,
                     post_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.SPACE_NORM,
+                    post_groups=hparams.MODEL.LEARNABLE_OFFSET.POST_GROUPS[i],
                     use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE))
             cur_num_channel = num_out_channel
         self.offblk = SequentialForOffsetBlockTransformer(*offblks)

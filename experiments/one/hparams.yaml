@@ -57,7 +57,8 @@ model:
     learnable_offset:
         init_stride: 0
         num_blk: 2
-        num_offset: [192, 64]
+        num_offset: [64, 192]
+        post_groups: [1, 2]
         num_out_channel: 128
         bind_chan: 1
         reuse_offset: false
