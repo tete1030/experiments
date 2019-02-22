@@ -996,7 +996,7 @@ class SimpleEstimator(nn.Module):
                     hparams.MODEL.INP_SHAPE[0] // 4,
                     cur_num_channel,
                     num_out_channel,
-                    hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET,
+                    hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET[i],
                     use_atten=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.ENABLE,
                     atten_source=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SOURCE,
                     atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SPACE_NORM,
