@@ -1011,10 +1011,11 @@ class SimpleEstimator(nn.Module):
 
     def _make_predictor(self, planes, num_class):
         layers = []
-        layers.append(nn.Conv2d(planes, planes,
-            kernel_size=1, stride=1, bias=False))
-        layers.append(nn.BatchNorm2d(planes))
-        layers.append(nn.ReLU(inplace=True))
+        if hparams.MODEL.FC:
+            layers.append(nn.Conv2d(planes, planes,
+                kernel_size=1, stride=1, bias=False))
+            layers.append(nn.BatchNorm2d(planes))
+            layers.append(nn.ReLU(inplace=True))
 
         layers.append(nn.Conv2d(planes, num_class,
             kernel_size=1, stride=1, bias=False))

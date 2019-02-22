@@ -47,6 +47,7 @@ model:
     gaussian_kernel: 1.4
     regress_predict: false
     loss_dpool_cof: 1.e-6
+    fc: false
     detail:
         disable_displace: false
         learnable_offset: true
