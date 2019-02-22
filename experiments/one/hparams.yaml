@@ -58,7 +58,7 @@ model:
         init_stride: 0
         num_blk: 2
         num_offset: [64, 192]
-        post_groups: [1, 2]
+        post_groups: [1, 4]
         num_out_channel: 128
         bind_chan: 1
         reuse_offset: false
