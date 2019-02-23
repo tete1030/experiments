@@ -15,11 +15,11 @@ train:
         train_min_step: 2785
         sep_train_iter: 0
         always_train_block: true
-        lr: 1.e-3
+        lr: 5.e-4
         lr_regressor: 1.e-3
         lr_transformer: 5.e-4
         lr_dpool_sigma: 5.e-4
-        gamma_lr: 0.3
+        gamma_lr: 0.6
         decay_step_lr: 100000 # 15 * 6543
         transformer_grow_iter: 2785
         momentum_bn: 0.1
@@ -67,11 +67,11 @@ model:
         atten:
             enable: true
             space_norm: false
-            source: input
+            source: transformer
         post_atten:
             enable: false
             space_norm: false
-            source: input
+            source: transformer
         dpool_size: 15
         transformer:
             num_blk: 2
