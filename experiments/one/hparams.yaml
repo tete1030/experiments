@@ -67,11 +67,11 @@ model:
         atten:
             enable: true
             space_norm: false
-            source: transformer
+            source: input
         post_atten:
             enable: false
             space_norm: false
-            source: transformer
+            source: input
         dpool_size: 15
         transformer:
             num_blk: 2
