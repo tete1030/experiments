@@ -942,19 +942,27 @@ class TransformFeature(nn.Module):
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
-        self.offblk = OffsetBlock(
-            hparams.MODEL.INP_SHAPE[1] // 4,
-            hparams.MODEL.INP_SHAPE[0] // 4,
-            64,
-            hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE,
-            hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_OFFSET,
-            use_atten=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ATTEN.ENABLE,
-            atten_source=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ATTEN.SOURCE,
-            atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ATTEN.SPACE_NORM,
-            use_post_atten=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.ENABLE,
-            post_atten_source=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.SOURCE,
-            post_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.SPACE_NORM,
-            use_transformer=False)
+
+        cur_num_channel = 64
+        num_out_channel = hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE
+        offblks = []
+        for i in range(hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_BLK):
+            offblks.append(
+                OffsetBlock(
+                    hparams.MODEL.INP_SHAPE[1] // 4,
+                    hparams.MODEL.INP_SHAPE[0] // 4,
+                    cur_num_channel,
+                    num_out_channel,
+                    hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_OFFSET[i],
+                    use_atten=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ATTEN.ENABLE,
+                    atten_source=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ATTEN.SOURCE,
+                    atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ATTEN.SPACE_NORM,
+                    use_post_atten=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.ENABLE,
+                    post_atten_source=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.SOURCE,
+                    post_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.SPACE_NORM,
+                    use_transformer=False))
+            cur_num_channel = num_out_channel
+        self.offblk = nn.Sequential(*offblks)
 
     def forward(self, x):
         return self.offblk(self.pre(x))
