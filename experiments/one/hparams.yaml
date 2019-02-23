@@ -15,11 +15,11 @@ train:
         train_min_step: 2785
         sep_train_iter: 0
         always_train_block: true
-        lr: 5.e-4
+        lr: 1.e-3
         lr_regressor: 1.e-3
         lr_transformer: 5.e-4
         lr_dpool_sigma: 5.e-4
-        gamma_lr: 0.6
+        gamma_lr: 0.3
         decay_step_lr: 100000 # 15 * 6543
         transformer_grow_iter: 2785
         momentum_bn: 0.1
@@ -46,7 +46,7 @@ model:
     out_shape: [48, 64] # W, H
     gaussian_kernel: 1.4
     regress_predict: false
-    loss_dpool_cof: 1.e-6
+    loss_dpool_cof: 5.e-6
     fc: true
     detail:
         disable_displace: false
