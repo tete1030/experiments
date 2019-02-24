@@ -46,7 +46,7 @@ model:
     out_shape: [48, 64] # W, H
     gaussian_kernel: 1.4
     regress_predict: false
-    loss_dpool_cof: 5.e-6
+    loss_dpool_cof: 5.e-5
     fc: true
     detail:
         disable_displace: false
