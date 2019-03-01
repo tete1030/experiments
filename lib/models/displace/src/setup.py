@@ -14,7 +14,8 @@ setup(
             sources=[
                 "displace.cpp",
                 "displace_kernel.cu",
-                "displace_pos_kernel.cu"
+                "displace_pos_kernel.cu",
+                "displace_gaus_kernel.cu"
             ],
             extra_compile_args={"cxx": [],
                                 "nvcc": ["-gencode=arch=compute_{},code=sm_{}".format(CC, CC), "--ptxas-options=-v"]})

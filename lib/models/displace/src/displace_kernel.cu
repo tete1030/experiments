@@ -1,4 +1,5 @@
 #include "kernel.cuh"
+#include "displace_kernel.h"
 
 template <typename Dtype>
 __launch_bounds__(CUDA_NUM_THREADS)

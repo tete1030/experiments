@@ -3,13 +3,14 @@ from torch.nn import Module
 import torch.nn.functional as F
 from torch.autograd import Function
 from torch._thnn import type2backend
+import numpy as np
 
 from torch.nn.modules.utils import _pair
 from . import displace_cuda
 # These functions are not exported in pytorch python bindings, so we borrow displace_cuda to export them
 from .displace_cuda import cudnn_convolution_backward_input, cudnn_convolution_backward_weight, cudnn_convolution_backward_bias
 
-__all__ = ["DisplaceCUDA", "Displace", "DisplaceFracCUDA", "CustomizedGradConv2dCUDNN", "CustomizedGradDepthwiseConv2d", "CustomizedGradConv2dCUDNN2", "CustomizedGradDepthwiseConv2d2", "PositionalDisplace"]
+__all__ = ["DisplaceCUDA", "Displace", "DisplaceFracCUDA", "CustomizedGradConv2dCUDNN", "CustomizedGradDepthwiseConv2d", "CustomizedGradConv2dCUDNN2", "CustomizedGradDepthwiseConv2d2", "PositionalDisplace", "PositionalGaussianDisplace"]
 
 class CustomizedGradConv2dCUDNN(Function):
     @staticmethod
@@ -314,31 +315,58 @@ class Displace(Function):
 
 class PositionalDisplace(Function):
     @staticmethod
-    def forward(ctx, inp, offsets, chan_per_pos, blur_kernel=None):
+    def forward(ctx, inp, offsets_x, offsets_y, chan_per_pos, blur_kernel=None):
         ctx.chan_per_pos = chan_per_pos
         ctx._backend = type2backend[inp.type()]
-        ctx.save_for_backward(inp, offsets, blur_kernel)
+        ctx.save_for_backward(inp, offsets_x, offsets_y, blur_kernel)
         out = torch.empty_like(inp)
-        displace_cuda.displace_pos_forward(ctx._backend.library_state,
-            inp, offsets, chan_per_pos, out)
+        displace_cuda.displace_pos_sep_forward(ctx._backend.library_state,
+            inp, offsets_x, offsets_y, chan_per_pos, out)
 
         return out
 
     @staticmethod
     def backward(ctx, grad_out):
-        import numpy as np
-        inp, offsets, blur_kernel = ctx.saved_tensors
+        inp, offsets_x, offsets_y, blur_kernel = ctx.saved_tensors
         grad_inp = torch.zeros_like(grad_out)
-        grad_offsets = torch.zeros_like(offsets)
+        grad_offsets_x = torch.zeros_like(offsets_x)
+        grad_offsets_y = torch.zeros_like(offsets_y)
         if blur_kernel is None:
-            displace_cuda.displace_pos_backward(ctx._backend.library_state,
-                inp, grad_inp, offsets, grad_offsets, ctx.chan_per_pos, grad_out)
+            displace_cuda.displace_pos_sep_backward(ctx._backend.library_state,
+                inp, grad_inp, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.chan_per_pos, grad_out)
         else:
-            displace_cuda.displace_pos_backward_data(ctx._backend.library_state,
-                grad_inp, offsets, ctx.chan_per_pos, grad_out)
+            displace_cuda.displace_pos_sep_backward_data(ctx._backend.library_state,
+                grad_inp, offsets_x, offsets_y, ctx.chan_per_pos, grad_out)
             inp_blur = F.conv2d(inp, blur_kernel, padding=(blur_kernel.size(2) // 2, blur_kernel.size(3) // 2), groups=blur_kernel.size(0))
             # grad_out_blur = F.conv2d(grad_out, blur_kernel, padding=(blur_kernel.size(2) // 2, blur_kernel.size(3) // 2), groups=blur_kernel.size(0))
-            displace_cuda.displace_pos_backward_offset(ctx._backend.library_state,
-                inp_blur, offsets, grad_offsets, ctx.chan_per_pos, grad_out)
+            displace_cuda.displace_pos_sep_backward_offset(ctx._backend.library_state,
+                inp_blur, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.chan_per_pos, grad_out)
 
-        return grad_inp, grad_offsets, None, None
+        return grad_inp, grad_offsets_x, grad_offsets_y, None, None
+
+class PositionalGaussianDisplace(Function):
+    @staticmethod
+    def forward(ctx, inp, offsets_x, offsets_y, channel_per_off, angles, scales, gaus_weight, fill=0):
+        ctx.channel_per_off = channel_per_off
+        ctx._backend = type2backend[inp.type()]
+        ctx.save_for_backward(inp, offsets_x, offsets_y, angles, scales, gaus_weight)
+        ctx.fill = fill
+        out = torch.empty_like(inp)
+        displace_cuda.displace_gaus_forward(ctx._backend.library_state,
+            inp, offsets_x, offsets_y, channel_per_off, out, angles, scales, gaus_weight, fill)
+
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        inp, offsets_x, offsets_y, angles, scales, gaus_weight = ctx.saved_tensors
+        grad_inp = torch.zeros_like(grad_out)
+        grad_offsets_x = torch.zeros_like(offsets_x)
+        grad_offsets_y = torch.zeros_like(offsets_y)
+        grad_gaus_weight = torch.zeros_like(gaus_weight)
+
+        displace_cuda.displace_gaus_backward(ctx._backend.library_state,
+            inp, grad_inp, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
+            angles, scales, gaus_weight, grad_gaus_weight, ctx.fill)
+
+        return grad_inp, grad_offsets_x, grad_offsets_y, None, None, None, grad_gaus_weight, None

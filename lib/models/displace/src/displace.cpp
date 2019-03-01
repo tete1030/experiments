@@ -1,100 +1,4 @@
-#include <torch/extension.h>
-#include <THC/THC.h>
-#include <THC/THCGeneral.hpp>
-#include <cuda.h>
-#include <cuda_runtime.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-#include <torch/csrc/DynamicTypes.h>
-#include <torch/csrc/autograd/python_variable.h>
-#include <torch/csrc/utils/python_tuples.h>
-#include <torch/csrc/utils/python_numbers.h>
-
-
-#define CHECK_CUDA(x) AT_ASSERTM(x.type().is_cuda(), #x " must be a CUDA tensor")
-#define CHECK_CONTIGUOUS(x) AT_ASSERTM(x.is_contiguous(), #x " must be contiguous")
-#define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
-
-void displace_forward_cuda(
-    cudaStream_t stream,
-    const at::Tensor data_in,
-    const at::Tensor offsets,
-    const int64_t channel_per_offset,
-    at::Tensor data_out);
-
-void displace_backward_cuda(
-    cudaStream_t stream,
-    at::Tensor grad_in,
-    const at::Tensor offsets,
-    const int64_t channel_per_offset,
-    const at::Tensor grad_out);
-
-void displace_frac_forward_cuda(
-    cudaStream_t stream,
-    const at::Tensor data_in,
-    const at::Tensor offsets,
-    const int64_t channel_per_offset,
-    at::Tensor data_out);
-
-void displace_frac_backward_cuda(
-    cudaStream_t stream,
-    at::Tensor grad_in,
-    const at::Tensor offsets,
-    const int64_t channel_per_offset,
-    const at::Tensor grad_out);
-
-void displace_frac_offset_backward_cuda(
-    cudaStream_t stream,
-    const at::Tensor data_in,
-    const at::Tensor offsets,
-    at::Tensor grad_offsets,
-    const int64_t channel_per_offset,
-    const at::Tensor grad_out);
-
-void displace_pos_forward_cuda(
-    cudaStream_t stream,
-    const at::Tensor data_in,
-    const at::Tensor offsets,
-    const int64_t channel_per_offset,
-    at::Tensor data_out);
-
-void displace_pos_backward_cuda(
-    cudaStream_t stream,
-    const at::Tensor data_in, at::Tensor grad_in,
-    const at::Tensor offsets,
-    at::Tensor grad_offsets,
-    const int64_t channel_per_offset,
-    const at::Tensor grad_out);
-
-void displace_pos_backward_data_cuda(
-    cudaStream_t stream,
-    at::Tensor grad_in,
-    const at::Tensor offsets,
-    const int64_t channel_per_offset,
-    const at::Tensor grad_out);
-
-void displace_pos_backward_offset_cuda(
-    cudaStream_t stream,
-    const at::Tensor data_in,
-    const at::Tensor offsets,
-    at::Tensor grad_offsets,
-    const int64_t channel_per_offset,
-    const at::Tensor grad_out);
-
-void offset_mask_frac_cuda(
-    cudaStream_t stream,
-    const at::Tensor input,
-    const at::Tensor offsets,
-    const int64_t channel_per_offset,
-    at::Tensor output);
-
-void offset_mask_cuda(
-    cudaStream_t stream,
-    const at::Tensor input,
-    const at::Tensor offsets,
-    const int64_t channel_per_offset,
-    at::Tensor output,
-    const at::IntList side_thickness);
+#include "displace.h"
 
 void displace_forward(
     const int64_t state,
@@ -212,6 +116,24 @@ void displace_pos_forward(
   displace_pos_forward_cuda(stream, data_in, offsets, channel_per_offset, data_out);
 }
 
+void displace_pos_sep_forward(
+    const int64_t state,
+    const at::Tensor data_in,
+    const at::Tensor offsets_x,
+    const at::Tensor offsets_y,
+    const int64_t channel_per_offset,
+    at::Tensor data_out) {
+
+  CHECK_INPUT(data_in);
+  CHECK_INPUT(data_out);
+  CHECK_INPUT(offsets_x);
+  CHECK_INPUT(offsets_y);
+  AT_ASSERTM(offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float, "dtype of offsets must be float");
+  auto stream = THCState_getCurrentStream((THCState*)state);
+  
+  displace_pos_forward_cuda(stream, data_in, offsets_x, offsets_y, channel_per_offset, data_out);
+}
+
 void displace_pos_backward(
     const int64_t state,
     const at::Tensor data_in, at::Tensor grad_in,
@@ -232,6 +154,30 @@ void displace_pos_backward(
   displace_pos_backward_cuda(stream, data_in, grad_in, offsets, grad_offsets, channel_per_offset, grad_out);
 }
 
+void displace_pos_sep_backward(
+    const int64_t state,
+    const at::Tensor data_in, at::Tensor grad_in,
+    const at::Tensor offsets_x,
+    const at::Tensor offsets_y,
+    at::Tensor grad_offsets_x,
+    at::Tensor grad_offsets_y,
+    const int64_t channel_per_offset,
+    const at::Tensor grad_out) {
+
+  CHECK_INPUT(data_in);
+  CHECK_INPUT(grad_in);
+  CHECK_INPUT(grad_out);
+  CHECK_INPUT(offsets_x);
+  CHECK_INPUT(offsets_y);
+  CHECK_INPUT(grad_offsets_x);
+  CHECK_INPUT(grad_offsets_y);
+  AT_ASSERTM(offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float, "dtype of offsets must be float");
+  AT_ASSERTM(grad_offsets_x.dtype() == at::ScalarType::Float && grad_offsets_y.dtype() == at::ScalarType::Float, "dtype of grad_offsets must be float");
+  auto stream = THCState_getCurrentStream((THCState*)state);
+  
+  displace_pos_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out);
+}
+
 void displace_pos_backward_data(
     const int64_t state,
     at::Tensor grad_in,
@@ -246,6 +192,24 @@ void displace_pos_backward_data(
   auto stream = THCState_getCurrentStream((THCState*)state);
 
   displace_pos_backward_data_cuda(stream, grad_in, offsets, channel_per_offset, grad_out);
+}
+
+void displace_pos_sep_backward_data(
+    const int64_t state,
+    at::Tensor grad_in,
+    const at::Tensor offsets_x,
+    const at::Tensor offsets_y,
+    const int64_t channel_per_offset,
+    const at::Tensor grad_out) {
+
+  CHECK_INPUT(grad_in);
+  CHECK_INPUT(grad_out);
+  CHECK_INPUT(offsets_x);
+  CHECK_INPUT(offsets_y);
+  AT_ASSERTM(offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float, "dtype of offsets must be float");
+  auto stream = THCState_getCurrentStream((THCState*)state);
+
+  displace_pos_backward_data_cuda(stream, grad_in, offsets_x, offsets_y, channel_per_offset, grad_out);
 }
 
 void displace_pos_backward_offset(
@@ -267,6 +231,29 @@ void displace_pos_backward_offset(
   displace_pos_backward_offset_cuda(stream, data_in, offsets, grad_offsets, channel_per_offset, grad_out);
 }
 
+void displace_pos_sep_backward_offset(
+    const int64_t state,
+    const at::Tensor data_in,
+    const at::Tensor offsets_x,
+    const at::Tensor offsets_y,
+    at::Tensor grad_offsets_x,
+    at::Tensor grad_offsets_y,
+    const int64_t channel_per_offset,
+    const at::Tensor grad_out) {
+
+  CHECK_INPUT(data_in);
+  CHECK_INPUT(grad_out);
+  CHECK_INPUT(offsets_x);
+  CHECK_INPUT(offsets_y);
+  CHECK_INPUT(grad_offsets_x);
+  CHECK_INPUT(grad_offsets_y);
+  AT_ASSERTM(offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float, "dtype of offsets must be float");
+  AT_ASSERTM(grad_offsets_x.dtype() == at::ScalarType::Float && grad_offsets_y.dtype() == at::ScalarType::Float, "dtype of grad_offsets must be float");
+  auto stream = THCState_getCurrentStream((THCState*)state);
+  
+  displace_pos_backward_offset_cuda(stream, data_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out);
+}
+
 void offset_mask_frac(
     const int64_t state,
     const at::Tensor input,
@@ -283,6 +270,60 @@ void offset_mask_frac(
   offset_mask_frac_cuda(stream, input, offsets, channel_per_offset, output);
 }
 
+void displace_gaus_forward(
+    const int64_t state,
+    const at::Tensor data_in,
+    const at::Tensor offsets_x,
+    const at::Tensor offsets_y,
+    const int64_t channel_per_offset,
+    at::Tensor data_out,
+    const at::Tensor gaus_angles, const at::Tensor gaus_scales, const at::Tensor gaus_weight,
+    // dtype
+    float fill) {
+
+  CHECK_INPUT(data_in);
+  CHECK_INPUT(data_out);
+  CHECK_INPUT(offsets_x);
+  CHECK_INPUT(offsets_y);
+  CHECK_INPUT(gaus_angles);
+  CHECK_INPUT(gaus_scales);
+  CHECK_INPUT(gaus_weight);
+  AT_ASSERTM(offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float, "dtype of offsets must be float");
+  auto stream = THCState_getCurrentStream((THCState*)state);
+  
+  displace_gaus_forward_cuda(stream, data_in, offsets_x, offsets_y, channel_per_offset, data_out, gaus_angles, gaus_scales, gaus_weight, fill);
+}
+
+void displace_gaus_backward(
+    const int64_t state,
+    const at::Tensor data_in, at::Tensor grad_in,
+    const at::Tensor offsets_x, const at::Tensor offsets_y,
+    at::Tensor grad_offsets_x, at::Tensor grad_offsets_y,
+    const int64_t channel_per_offset,
+    const at::Tensor grad_out,
+    const at::Tensor gaus_angles, const at::Tensor gaus_scales,
+    const at::Tensor gaus_weight, at::Tensor grad_gaus_weight,
+    // dtype
+    float fill) {
+
+  CHECK_INPUT(data_in);
+  CHECK_INPUT(grad_in);
+  CHECK_INPUT(grad_out);
+  CHECK_INPUT(offsets_x);
+  CHECK_INPUT(offsets_y);
+  CHECK_INPUT(grad_offsets_x);
+  CHECK_INPUT(grad_offsets_y);
+  CHECK_INPUT(gaus_angles);
+  CHECK_INPUT(gaus_scales);
+  CHECK_INPUT(gaus_weight);
+  CHECK_INPUT(grad_gaus_weight);
+  AT_ASSERTM(offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float, "dtype of offsets must be float");
+  AT_ASSERTM(grad_offsets_x.dtype() == at::ScalarType::Float && grad_offsets_y.dtype() == at::ScalarType::Float, "dtype of grad_offsets must be float");
+  auto stream = THCState_getCurrentStream((THCState*)state);
+  
+  displace_gaus_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, fill);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("displace_forward", &displace_forward, "displace forward");
   m.def("displace_backward", &displace_backward, "displace backward");
@@ -295,6 +336,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("displace_pos_backward", &displace_pos_backward, "positional displace backward");
   m.def("displace_pos_backward_data", &displace_pos_backward_data, "positional displace backward for data");
   m.def("displace_pos_backward_offset", &displace_pos_backward_offset, "positional displace backward for offset");
+  m.def("displace_pos_sep_forward", &displace_pos_sep_forward, "positional displace forward");
+  m.def("displace_pos_sep_backward", &displace_pos_sep_backward, "positional displace backward");
+  m.def("displace_pos_sep_backward_data", &displace_pos_sep_backward_data, "positional displace backward for data");
+  m.def("displace_pos_sep_backward_offset", &displace_pos_sep_backward_offset, "positional displace backward for offset");
+  m.def("displace_gaus_forward", &displace_gaus_forward, "positional displace with gaussian backward for offset");
+  m.def("displace_gaus_backward", &displace_gaus_backward, "positional displace with gaussian backward for offset");
   m.def("cudnn_convolution_backward_input", &at::cudnn_convolution_backward_input, "cudnn convolution backward for input");
   m.def("cudnn_convolution_backward_weight", &at::cudnn_convolution_backward_weight, "cudnn convolution backward for weight");
   m.def("cudnn_convolution_backward_bias", &at::cudnn_convolution_backward_bias, "cudnn convolution backward for bias");
