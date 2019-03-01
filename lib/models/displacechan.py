@@ -1,13 +1,16 @@
 import math
+import numbers
 import torch
 from torch import nn
 from torch.autograd import Function
+from torch.distributions import Normal
 from utils.globals import config, globalvars
 from utils.log import log_i
 import torch.nn.functional as F
 import numpy as np
-from .displace import DisplaceFracCUDA, PositionalDisplace
+from .displace import DisplaceFracCUDA, PositionalDisplace, PositionalGaussianDisplace
 from lib.utils.lambdalayer import Lambda
+import math
 
 class Weighted(nn.Module):
     def __init__(self, num_channels, init=0.):
@@ -197,14 +200,64 @@ class OffsetTransformer(nn.Module):
             new_offsets_x = new_offsets_x * self.effect_scale + offsets_x * (1-self.effect_scale)
             new_offsets_y = new_offsets_y * self.effect_scale + offsets_y * (1-self.effect_scale)
 
-        new_offsets = torch.stack([new_offsets_x, new_offsets_y], dim=-1)
-        return new_offsets
+        return new_offsets_x, new_offsets_y
+
+class PositionalGaussianDisplaceModule(nn.Module):
+    def __init__(self, num_offset, num_sample, angle_std, scale_std, min_angle_std=math.atan2(0.5, 1.) / 2, max_angle_std=np.pi, min_scale_std=0.3, max_scale_std=5., fill=0):
+        super().__init__()
+        self.num_offset = num_offset
+        self.num_sample = num_sample
+
+        if isinstance(angle_std, numbers.Number):
+            angle_std = torch.tensor([angle_std], dtype=torch.float)
+        elif not isinstance(angle_std, torch.Tensor) or not angle_std.dtype != torch.float:
+            raise TypeError("angle_std should be number or torch tensor")
+        if angle_std.dim() == 0 or angle_std.size() != (num_offset,):
+            angle_std = angle_std.repeat(num_offset)
+        assert angle_std.size() == (num_offset,)
+        assert ((min_angle_std < angle_std) & (angle_std < max_angle_std)).all(), angle_std
+        angle_std_norm = (angle_std - min_angle_std) / (max_angle_std - min_angle_std)
+        self._angle_std = nn.Parameter(torch.log(angle_std_norm/(1-angle_std_norm)))
+        self.max_angle_std = max_angle_std
+        self.min_angle_std = min_angle_std
+
+        if isinstance(scale_std, numbers.Number):
+            scale_std = torch.tensor([scale_std], dtype=torch.float)
+        elif not isinstance(scale_std, torch.Tensor) or not scale_std.dtype != torch.float:
+            raise TypeError("scale_std should be number or torch tensor")
+        if scale_std.dim() == 0 or scale_std.size() != (num_offset,):
+            scale_std = scale_std.repeat(num_offset)
+        assert scale_std.size() == (num_offset,)
+        assert ((min_scale_std < scale_std) & (scale_std < max_scale_std)).all(), scale_std
+        scale_std_norm = (scale_std - min_scale_std) / (max_scale_std - min_scale_std)
+        self._scale_std = nn.Parameter(torch.log(scale_std_norm/(1-scale_std_norm)))
+        self.max_scale_std = max_scale_std
+        self.min_scale_std = min_scale_std
+
+        self.fill = fill
+
+    def angle_std(self):
+        return self._angle_std.sigmoid() * (self.max_angle_std - self.min_angle_std) + self.min_angle_std
+
+    def scale_std(self):
+        return self._scale_std.sigmoid() * (self.max_scale_std - self.min_scale_std) + self.min_scale_std
+
+    def forward(self, x, offsets_x, offsets_y, channel_per_off):
+        angle_std = self.angle_std()
+        scale_std = self.scale_std()
+        angles = Normal(loc=0, scale=angle_std).sample(sample_shape=(self.num_sample,)).t().contiguous()
+        scales = Normal(loc=0, scale=scale_std).sample(sample_shape=(self.num_sample,)).t().contiguous()
+        weight = (- angles.pow(2) / 2 / (angle_std.pow(2)[:, None] + np.finfo(np.float32).eps.item())).exp() * (- scales.pow(2) / 2 / (scale_std.pow(2)[:, None] + np.finfo(np.float32).eps.item())).exp()
+        weight = weight / (weight.sum(dim=1, keepdim=True) + np.finfo(np.float32).eps.item())
+
+        return PositionalGaussianDisplace.apply(x, offsets_x, offsets_y, channel_per_off, angles, scales, weight, self.fill)
 
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, num_channels, num_offsets,
                  disable_displace=False, learnable_offset=False, offset_scale=None,
                  regress_offset=False, transformer=None,
-                 half_reversed_offset=False, previous_dischan=None):
+                 half_reversed_offset=False, previous_dischan=None,
+                 arc_gaussian=False):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -216,7 +269,11 @@ class DisplaceChannel(nn.Module):
         self.half_reversed_offset = half_reversed_offset
         self.regress_offset = regress_offset
         self.offset_transformer = transformer
-
+        if arc_gaussian:
+            assert self.offset_transformer is not None
+            self.arc_gaussian_displacer = PositionalGaussianDisplaceModule(self.num_offsets, 16, np.pi, 3., fill=1)
+        else:
+            self.arc_gaussian_displacer = None
         if not disable_displace:
             self.previous_dischan = previous_dischan
             num_offsets_prev = 0
@@ -299,33 +356,42 @@ class DisplaceChannel(nn.Module):
                 offset_regressed_abs = self.offset_regressor(inp, None)
                 offset_abs = offset_abs + offset_regressed_abs
 
-            if self.offset_transformer is not None:
-                offset_abs = self.offset_transformer(inp if transformer_source is None else transformer_source, offset_abs, inp.size()[-2:])
-
-            offset_dim = offset_abs.dim()
-
             bind_chan = num_channels // self.num_offsets
-            if self.half_reversed_offset:
-                assert bind_chan % 2 == 0
-                bind_chan = bind_chan // 2
-                if offset_dim in [2, 3]:
-                    offset_abs = torch.cat([offset_abs, -offset_abs], dim=-2)
-                elif offset_dim == 5:
-                    offset_abs = torch.cat([offset_abs, -offset_abs], dim=1)
+            if self.offset_transformer is not None:
+                offset_abs_x, offset_abs_y = self.offset_transformer(inp if transformer_source is None else transformer_source, offset_abs, inp.size()[-2:])
+                
+                if self.half_reversed_offset:
+                    assert bind_chan % 2 == 0
+                    bind_chan = bind_chan // 2
+                    offset_abs_x = torch.cat([offset_abs_x, -offset_abs_x], dim=1)
+                    offset_abs_y = torch.cat([offset_abs_y, -offset_abs_y], dim=1)
+                
+                if detach_offset:
+                    offset_abs_x = offset_abs_x.detach()
+                    offset_abs_y = offset_abs_y.detach()
+                if self.arc_gaussian_displacer is None:
+                    out = PositionalDisplace.apply(inp, offset_abs_x, offset_abs_y, bind_chan)
+                else:
+                    out = (self.arc_gaussian_displacer(inp.clamp(max=88.722835).exp(), offset_abs_x, offset_abs_y, bind_chan) + np.finfo(np.float32).eps.item()).log()
+            else:
+                offset_dim = offset_abs.dim()
+                if self.half_reversed_offset:
+                    assert bind_chan % 2 == 0
+                    bind_chan = bind_chan // 2
+                    if offset_dim in [2, 3]:
+                        offset_abs = torch.cat([offset_abs, -offset_abs], dim=-2)
+                    else:
+                        raise ValueError()
+
+                if detach_offset:
+                    offset_abs = offset_abs.detach()
+
+                if offset_dim == 2:
+                    out = DisplaceFracCUDA.apply(inp, offset_abs, bind_chan)
+                elif offset_dim == 3:
+                    out = DisplaceFracCUDA.apply(inp.view(1, -1, height, width), offset_abs.view(-1, 2), bind_chan).view(batch_size, -1, height, width)
                 else:
                     raise ValueError()
-
-            if detach_offset:
-                offset_abs = offset_abs.detach()
-
-            if offset_dim == 2:
-                out = DisplaceFracCUDA.apply(inp, offset_abs, bind_chan)
-            elif offset_dim == 3:
-                out = DisplaceFracCUDA.apply(inp.view(1, -1, height, width), offset_abs.view(-1, 2), bind_chan).view(batch_size, -1, height, width)
-            elif offset_dim == 5:
-                out = PositionalDisplace.apply(inp, offset_abs, bind_chan)
-            else:
-                raise ValueError()
 
         else:
             out = inp
