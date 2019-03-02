@@ -4,9 +4,9 @@
 
 #define CUDA_NUM_THREADS 1024
 #define CUDA_KERNEL_LOOP(i, n) \
-  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < (n); i += blockDim.x * gridDim.x)
+  for (int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x; i < (n); i += (int64_t)blockDim.x * gridDim.x)
 
-inline int GET_BLOCKS(const int N)
+inline int64_t GET_BLOCKS(const int64_t N)
 {
     return (N + CUDA_NUM_THREADS - 1) / CUDA_NUM_THREADS;
 }

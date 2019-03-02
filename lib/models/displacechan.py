@@ -3,7 +3,7 @@ import numbers
 import torch
 from torch import nn
 from torch.autograd import Function
-from torch.distributions import Normal
+from torch.distributions import Normal, Uniform
 from utils.globals import config, globalvars
 from utils.log import log_i
 import torch.nn.functional as F
@@ -203,7 +203,7 @@ class OffsetTransformer(nn.Module):
         return new_offsets_x, new_offsets_y
 
 class PositionalGaussianDisplaceModule(nn.Module):
-    def __init__(self, num_offset, num_sample, angle_std, scale_std, min_angle_std=math.atan2(0.5, 1.) / 2, max_angle_std=np.pi, min_scale_std=0.3, max_scale_std=5., fill=0):
+    def __init__(self, num_offset, num_sample, angle_std, scale_std, min_angle_std=math.atan2(0.5, 1.) / 2, max_angle_std=np.pi, min_scale_std=0.3, max_scale_std=5., fill=0, sampler="gaussian"):
         super().__init__()
         self.num_offset = num_offset
         self.num_sample = num_sample
@@ -235,6 +235,8 @@ class PositionalGaussianDisplaceModule(nn.Module):
         self.min_scale_std = min_scale_std
 
         self.fill = fill
+        assert sampler in ["gaussian", "uniform"]
+        self.sampler = sampler
 
     def angle_std(self):
         return self._angle_std.sigmoid() * (self.max_angle_std - self.min_angle_std) + self.min_angle_std
@@ -245,8 +247,14 @@ class PositionalGaussianDisplaceModule(nn.Module):
     def forward(self, x, offsets_x, offsets_y, channel_per_off):
         angle_std = self.angle_std()
         scale_std = self.scale_std()
-        angles = Normal(loc=0, scale=angle_std).sample(sample_shape=(self.num_sample,)).t().contiguous()
-        scales = Normal(loc=0, scale=scale_std).sample(sample_shape=(self.num_sample,)).t().contiguous()
+        if self.sampler == "gaussian":
+            angle_sampler = Normal(loc=0, scale=angle_std)
+            scale_sampler = Normal(loc=0, scale=scale_std)
+        elif self.sampler == "uniform":
+            angle_sampler = Uniform(low=-angle_std * 3, high=angle_std * 3)
+            scale_sampler = Uniform(low=-scale_std * 3, high=scale_std * 3)
+        angles = angle_sampler.sample(sample_shape=(self.num_sample,)).t().contiguous()
+        scales = scale_sampler.sample(sample_shape=(self.num_sample,)).t().contiguous()
         weight = (- angles.pow(2) / 2 / (angle_std.pow(2)[:, None] + np.finfo(np.float32).eps.item())).exp() * (- scales.pow(2) / 2 / (scale_std.pow(2)[:, None] + np.finfo(np.float32).eps.item())).exp()
         weight = weight / (weight.sum(dim=1, keepdim=True) + np.finfo(np.float32).eps.item())
 

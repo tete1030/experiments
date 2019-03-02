@@ -351,7 +351,7 @@ class PositionalGaussianDisplace(Function):
         ctx._backend = type2backend[inp.type()]
         ctx.save_for_backward(inp, offsets_x, offsets_y, angles, scales, gaus_weight)
         ctx.fill = fill
-        out = torch.empty_like(inp)
+        out = torch.zeros_like(inp)
         displace_cuda.displace_gaus_forward(ctx._backend.library_state,
             inp, offsets_x, offsets_y, channel_per_off, out, angles, scales, gaus_weight, fill)
 
