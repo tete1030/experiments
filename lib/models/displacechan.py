@@ -203,46 +203,80 @@ class OffsetTransformer(nn.Module):
         return new_offsets_x, new_offsets_y
 
 class PositionalGaussianDisplaceModule(nn.Module):
-    def __init__(self, num_offset, num_sample, angle_std, scale_std, min_angle_std=math.atan2(0.5, 1.) / 2, max_angle_std=np.pi, min_scale_std=0.3, max_scale_std=5., fill=0, sampler="gaussian"):
+    NUM_TOTAL_SAMPLE = 32
+    def __init__(self, num_offset, num_sample, angle_std, scale_std, min_angle_std=math.atan2(0.5, 10) / 2, max_angle_std=np.pi, min_scale_std=0.2, max_scale_std=5., learnable_sigma=True, transform_sigma=True, fill=0, sampler="uniform", weight_dist="gaussian"):
         super().__init__()
         self.num_offset = num_offset
         self.num_sample = num_sample
 
-        if isinstance(angle_std, numbers.Number):
-            angle_std = torch.tensor([angle_std], dtype=torch.float)
-        elif not isinstance(angle_std, torch.Tensor) or not angle_std.dtype != torch.float:
-            raise TypeError("angle_std should be number or torch tensor")
-        if angle_std.dim() == 0 or angle_std.size() != (num_offset,):
-            angle_std = angle_std.repeat(num_offset)
-        assert angle_std.size() == (num_offset,)
-        assert ((min_angle_std < angle_std) & (angle_std < max_angle_std)).all(), angle_std
-        angle_std_norm = (angle_std - min_angle_std) / (max_angle_std - min_angle_std)
-        self._angle_std = nn.Parameter(torch.log(angle_std_norm/(1-angle_std_norm)))
+        self.learnable_sigma = learnable_sigma
+        self.transform_sigma = transform_sigma
         self.max_angle_std = max_angle_std
         self.min_angle_std = min_angle_std
-
-        if isinstance(scale_std, numbers.Number):
-            scale_std = torch.tensor([scale_std], dtype=torch.float)
-        elif not isinstance(scale_std, torch.Tensor) or not scale_std.dtype != torch.float:
-            raise TypeError("scale_std should be number or torch tensor")
-        if scale_std.dim() == 0 or scale_std.size() != (num_offset,):
-            scale_std = scale_std.repeat(num_offset)
-        assert scale_std.size() == (num_offset,)
-        assert ((min_scale_std < scale_std) & (scale_std < max_scale_std)).all(), scale_std
-        scale_std_norm = (scale_std - min_scale_std) / (max_scale_std - min_scale_std)
-        self._scale_std = nn.Parameter(torch.log(scale_std_norm/(1-scale_std_norm)))
         self.max_scale_std = max_scale_std
         self.min_scale_std = min_scale_std
 
+        self.set_angle_std(angle_std)
+        self.set_scale_std(scale_std)
+
         self.fill = fill
         assert sampler in ["gaussian", "uniform"]
+        assert weight_dist in ["gaussian", "uniform"]
+        assert (weight_dist == "gaussian") or not learnable_sigma
         self.sampler = sampler
+        self.weight_dist = weight_dist
+
+    def _set_std(self, stdname, stdval, device=None):
+        stdmin = getattr(self, "min_" + stdname + "_std")
+        stdmax = getattr(self, "max_" + stdname + "_std")
+        if isinstance(stdval, numbers.Number):
+            stdval = torch.tensor([stdval], dtype=torch.float)
+        elif not isinstance(stdval, torch.Tensor) or not stdval.dtype != torch.float:
+            raise TypeError(stdname + "_std should be number or torch tensor")
+        if device is not None:
+            stdval = stdval.to(device=device, non_blocking=True)
+        elif hasattr(self, "_" + stdname + "_std"):
+            stdval = stdval.to(device=getattr(self, "_" + stdname + "_std").device, non_blocking=True)
+
+        if stdval.dim() == 0 or stdval.size() != (self.num_offset,):
+            stdval = stdval.repeat(self.num_offset)
+        assert stdval.size() == (self.num_offset,)
+        assert ((stdmin < stdval) & (stdval < stdmax)).all(), stdval
+
+        if self.learnable_sigma:
+            if self.transform_sigma:
+                stdnorm = (stdval - stdmin) / (stdmax - stdmin)
+                stdval = torch.log(stdnorm/(1-stdnorm))
+            if hasattr(self, "_" + stdname + "_std"):
+                getattr(self, "_" + stdname + "_std").copy_(stdval, non_blocking=True)
+            else:
+                setattr(self, "_" + stdname + "_std", nn.Parameter(stdval))
+        else:
+            if hasattr(self, "_" + stdname + "_std"):
+                getattr(self, "_" + stdname + "_std").copy_(stdval, non_blocking=True)
+            else:
+                self.register_buffer("_" + stdname + "_std", stdval)
+
+    def _get_std(self, stdname):
+        stdval = getattr(self, "_" + stdname + "_std")
+        minval = getattr(self, "min_" + stdname + "_std")
+        maxval = getattr(self, "max_" + stdname + "_std")
+        if self.learnable_sigma and self.transform_sigma:
+            return stdval.sigmoid() * (maxval - minval) + minval
+        else:
+            return stdval
+
+    def set_angle_std(self, angle_std):
+        self._set_std("angle", angle_std)
+
+    def set_scale_std(self, scale_std):
+        self._set_std("scale", scale_std)
 
     def angle_std(self):
-        return self._angle_std.sigmoid() * (self.max_angle_std - self.min_angle_std) + self.min_angle_std
+        return self._get_std("angle")
 
     def scale_std(self):
-        return self._scale_std.sigmoid() * (self.max_scale_std - self.min_scale_std) + self.min_scale_std
+        return self._get_std("scale")
 
     def forward(self, x, offsets_x, offsets_y, channel_per_off):
         angle_std = self.angle_std()
@@ -251,12 +285,26 @@ class PositionalGaussianDisplaceModule(nn.Module):
             angle_sampler = Normal(loc=0, scale=angle_std)
             scale_sampler = Normal(loc=0, scale=scale_std)
         elif self.sampler == "uniform":
-            angle_sampler = Uniform(low=-angle_std * 3, high=angle_std * 3)
+            _3angle_std_clamped = (angle_std * 3).clamp(max=np.pi)
+            angle_sampler = Uniform(low=-_3angle_std_clamped, high=_3angle_std_clamped)
+            # angle_sampler = Uniform(low=-angle_std * 3, high=angle_std * 3)
             scale_sampler = Uniform(low=-scale_std * 3, high=scale_std * 3)
-        angles = angle_sampler.sample(sample_shape=(self.num_sample,)).t().contiguous()
-        scales = scale_sampler.sample(sample_shape=(self.num_sample,)).t().contiguous()
-        weight = (- angles.pow(2) / 2 / (angle_std.pow(2)[:, None] + np.finfo(np.float32).eps.item())).exp() * (- scales.pow(2) / 2 / (scale_std.pow(2)[:, None] + np.finfo(np.float32).eps.item())).exp()
-        weight = weight / (weight.sum(dim=1, keepdim=True) + np.finfo(np.float32).eps.item())
+        
+        if self.weight_dist == "gaussian":
+            angles = angle_sampler.sample(sample_shape=(max(self.num_sample, PositionalGaussianDisplaceModule.NUM_TOTAL_SAMPLE),)).t().contiguous()
+            scales = scale_sampler.sample(sample_shape=(max(self.num_sample, PositionalGaussianDisplaceModule.NUM_TOTAL_SAMPLE),)).t().contiguous()
+            weight = (- angles.pow(2) / 2 / (angle_std.pow(2)[:, None] + np.finfo(np.float32).eps.item()) - scales.pow(2) / 2 / (scale_std.pow(2)[:, None] + np.finfo(np.float32).eps.item())).exp()
+            # weight * 3\sigma_1 x 3\sigma_2 / N / sqrt(2PI)\sigma_1 / sqrt(2PI)\sigma_2
+            # weight = weight * (9. / (2. * np.pi * self.num_sample))
+            # if self.sampler == "uniform":
+            #     weight = weight * (_3angle_std_clamped / 3 / angle_std)[:, None]
+            weight = weight / (weight.sum(dim=1, keepdim=True) + np.finfo(np.float32).eps.item())
+            if self.num_sample < PositionalGaussianDisplaceModule.NUM_TOTAL_SAMPLE:
+                weight = weight[:, :self.num_sample] * (PositionalGaussianDisplaceModule.NUM_TOTAL_SAMPLE / float(self.num_sample))
+        elif self.weight_dist == "uniform":
+            angles = angle_sampler.sample(sample_shape=(self.num_sample,)).t().contiguous()
+            scales = scale_sampler.sample(sample_shape=(self.num_sample,)).t().contiguous()
+            weight = torch.ones_like(angles) / self.num_sample
 
         return PositionalGaussianDisplace.apply(x, offsets_x, offsets_y, channel_per_off, angles, scales, weight, self.fill)
 

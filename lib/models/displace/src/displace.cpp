@@ -278,6 +278,7 @@ void displace_gaus_forward(
     const int64_t channel_per_offset,
     at::Tensor data_out,
     const at::Tensor gaus_angles, const at::Tensor gaus_scales, const at::Tensor gaus_weight,
+    const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
     // dtype
     float fill) {
 
@@ -288,10 +289,12 @@ void displace_gaus_forward(
   CHECK_INPUT(gaus_angles);
   CHECK_INPUT(gaus_scales);
   CHECK_INPUT(gaus_weight);
+  CHECK_INPUT(gaus_cos_angles);
+  CHECK_INPUT(gaus_sin_angles);
   AT_ASSERTM(offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float, "dtype of offsets must be float");
   auto stream = THCState_getCurrentStream((THCState*)state);
   
-  displace_gaus_forward_cuda(stream, data_in, offsets_x, offsets_y, channel_per_offset, data_out, gaus_angles, gaus_scales, gaus_weight, fill);
+  displace_gaus_forward_cuda(stream, data_in, offsets_x, offsets_y, channel_per_offset, data_out, gaus_angles, gaus_scales, gaus_weight, gaus_cos_angles, gaus_sin_angles, fill);
 }
 
 void displace_gaus_backward(
@@ -302,7 +305,8 @@ void displace_gaus_backward(
     const int64_t channel_per_offset,
     const at::Tensor grad_out,
     const at::Tensor gaus_angles, const at::Tensor gaus_scales,
-    const at::Tensor gaus_weight, at::Tensor grad_gaus_weight,
+    const at::Tensor gaus_weight, at::optional<at::Tensor> grad_gaus_weight,
+    const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
     // dtype
     float fill) {
 
@@ -316,12 +320,16 @@ void displace_gaus_backward(
   CHECK_INPUT(gaus_angles);
   CHECK_INPUT(gaus_scales);
   CHECK_INPUT(gaus_weight);
-  CHECK_INPUT(grad_gaus_weight);
+  if (grad_gaus_weight) {
+    CHECK_INPUT(grad_gaus_weight.value());
+  }
+  CHECK_INPUT(gaus_cos_angles);
+  CHECK_INPUT(gaus_sin_angles);
   AT_ASSERTM(offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float, "dtype of offsets must be float");
   AT_ASSERTM(grad_offsets_x.dtype() == at::ScalarType::Float && grad_offsets_y.dtype() == at::ScalarType::Float, "dtype of grad_offsets must be float");
   auto stream = THCState_getCurrentStream((THCState*)state);
   
-  displace_gaus_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, fill);
+  displace_gaus_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

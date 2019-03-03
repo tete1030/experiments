@@ -349,24 +349,28 @@ class PositionalGaussianDisplace(Function):
     def forward(ctx, inp, offsets_x, offsets_y, channel_per_off, angles, scales, gaus_weight, fill=0):
         ctx.channel_per_off = channel_per_off
         ctx._backend = type2backend[inp.type()]
-        ctx.save_for_backward(inp, offsets_x, offsets_y, angles, scales, gaus_weight)
+        cos_angles = torch.cos(angles)
+        sin_angles = torch.sin(angles)
+        ctx.save_for_backward(inp, offsets_x, offsets_y, angles, scales, gaus_weight, cos_angles, sin_angles)
         ctx.fill = fill
         out = torch.zeros_like(inp)
         displace_cuda.displace_gaus_forward(ctx._backend.library_state,
-            inp, offsets_x, offsets_y, channel_per_off, out, angles, scales, gaus_weight, fill)
-
+            inp, offsets_x, offsets_y, channel_per_off, out, angles, scales, gaus_weight, cos_angles, sin_angles, fill)
         return out
 
     @staticmethod
     def backward(ctx, grad_out):
-        inp, offsets_x, offsets_y, angles, scales, gaus_weight = ctx.saved_tensors
+        inp, offsets_x, offsets_y, angles, scales, gaus_weight, cos_angles, sin_angles = ctx.saved_tensors
         grad_inp = torch.zeros_like(grad_out)
         grad_offsets_x = torch.zeros_like(offsets_x)
         grad_offsets_y = torch.zeros_like(offsets_y)
-        grad_gaus_weight = torch.zeros_like(gaus_weight)
+        if gaus_weight.requires_grad:
+            grad_gaus_weight = torch.zeros_like(gaus_weight)
+        else:
+            grad_gaus_weight = None
 
         displace_cuda.displace_gaus_backward(ctx._backend.library_state,
             inp, grad_inp, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
-            angles, scales, gaus_weight, grad_gaus_weight, ctx.fill)
+            angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill)
 
         return grad_inp, grad_offsets_x, grad_offsets_y, None, None, None, grad_gaus_weight, None
