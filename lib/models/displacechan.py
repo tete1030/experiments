@@ -211,7 +211,8 @@ class PositionalGaussianDisplaceModule(nn.Module):
             min_scale_std=0.2, max_scale_std=5.,
             learnable_sigma=True, transform_sigma=True,
             sampler="uniform", weight_dist="gaussian",
-            fill=0):
+            fill=0,
+            simple=False):
         super().__init__()
         self.num_offset = num_offset
         self.num_sample = num_sample
@@ -226,12 +227,15 @@ class PositionalGaussianDisplaceModule(nn.Module):
         self.set_angle_std(angle_std)
         self.set_scale_std(scale_std)
 
-        self.fill = fill
         assert sampler in ["gaussian", "uniform"]
         assert weight_dist in ["gaussian", "uniform"]
         assert (weight_dist == "gaussian") or not learnable_sigma
         self.sampler = sampler
         self.weight_dist = weight_dist
+
+        self.fill = fill
+        self.simple = simple
+        assert not self.simple or (self.fill == 0)
 
     def _set_std(self, stdname, stdval, device=None):
         stdmin = getattr(self, "min_" + stdname + "_std")
@@ -314,7 +318,7 @@ class PositionalGaussianDisplaceModule(nn.Module):
             weight = torch.ones_like(angles) / self.num_sample
 
         return PositionalGaussianDisplace.apply(
-            x, offsets_x, offsets_y, channel_per_off, angles, scales, weight, self.fill)
+            x, offsets_x, offsets_y, channel_per_off, angles, scales, weight, self.fill, )
 
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, num_channels, num_offsets,

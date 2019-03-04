@@ -346,31 +346,51 @@ class PositionalDisplace(Function):
 
 class PositionalGaussianDisplace(Function):
     @staticmethod
-    def forward(ctx, inp, offsets_x, offsets_y, channel_per_off, angles, scales, gaus_weight, fill=0):
-        ctx.channel_per_off = channel_per_off
+    def forward(ctx, inp, offsets_x, offsets_y, channel_per_off, angles, scales, gaus_weight, fill=0, simple=False):
         ctx._backend = type2backend[inp.type()]
-        cos_angles = torch.cos(angles)
-        sin_angles = torch.sin(angles)
-        ctx.save_for_backward(inp, offsets_x, offsets_y, angles, scales, gaus_weight, cos_angles, sin_angles)
+        ctx.channel_per_off = channel_per_off
         ctx.fill = fill
+        ctx.simple = simple
         out = torch.zeros_like(inp)
-        displace_cuda.displace_gaus_forward(ctx._backend.library_state,
-            inp, offsets_x, offsets_y, channel_per_off, out, angles, scales, gaus_weight, cos_angles, sin_angles, fill)
+        if not simple:
+            cos_angles = torch.cos(angles)
+            sin_angles = torch.sin(angles)
+            displace_cuda.displace_gaus_forward(ctx._backend.library_state,
+                inp, offsets_x, offsets_y, channel_per_off, out, angles, scales, gaus_weight, cos_angles, sin_angles, fill)
+            ctx.save_for_backward(inp, offsets_x, offsets_y, angles, scales, gaus_weight, cos_angles, sin_angles)
+        else:
+            assert fill == 0
+            offsets_x_rounded = offsets_x.round().int()
+            offsets_y_rounded = offsets_y.round().int()
+            displace_cuda.displace_pos_sep_forward(ctx._backend.library_state,
+                inp, offsets_x_rounded, offsets_y_rounded, channel_per_off, out)
+            ctx.save_for_backward(inp, offsets_x, offsets_y, angles, scales, gaus_weight, offsets_x_rounded, offsets_y_rounded)
         return out
 
     @staticmethod
     def backward(ctx, grad_out):
-        inp, offsets_x, offsets_y, angles, scales, gaus_weight, cos_angles, sin_angles = ctx.saved_tensors
-        grad_inp = torch.zeros_like(grad_out)
+        inp, offsets_x, offsets_y, angles, scales, gaus_weight = ctx.saved_tensors[:6]
+        grad_inp = torch.zeros_like(inp)
         grad_offsets_x = torch.zeros_like(offsets_x)
         grad_offsets_y = torch.zeros_like(offsets_y)
         if gaus_weight.requires_grad:
             grad_gaus_weight = torch.zeros_like(gaus_weight)
         else:
             grad_gaus_weight = None
+        if not ctx.simple:
+            cos_angles, sin_angles = ctx.saved_tensors[6:]
 
-        displace_cuda.displace_gaus_backward(ctx._backend.library_state,
-            inp, grad_inp, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
-            angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill)
+            displace_cuda.displace_gaus_backward(ctx._backend.library_state,
+                inp, grad_inp, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
+                angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill)
+        else:
+            offsets_x_rounded, offsets_y_rounded = ctx.saved_tensors[6:]
+            displace_cuda.displace_pos_sep_backward(ctx._backend.library_state,
+                None, grad_inp, offsets_x_rounded, offsets_y_rounded, None, None, ctx.chan_per_pos, grad_out)
+            cos_angles = torch.cos(angles)
+            sin_angles = torch.sin(angles)
+            displace_cuda.displace_gaus_backward(ctx._backend.library_state,
+                inp, None, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
+                angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill)
 
-        return grad_inp, grad_offsets_x, grad_offsets_y, None, None, None, grad_gaus_weight, None
+        return grad_inp, grad_offsets_x, grad_offsets_y, None, None, None, grad_gaus_weight, None, None

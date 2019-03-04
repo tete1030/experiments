@@ -156,7 +156,7 @@ void displace_gaus_forward_cuda(
   gpuErrchk(cudaGetLastError());
 }
 
-template <typename Dtype>
+template <bool UseGradIn, bool UseGradWeight, typename Dtype>
 __launch_bounds__(CUDA_NUM_THREADS)
 __global__ void displace_gaus_backward_cuda_kernel(
     const int64_t n, const int64_t num_channel,
@@ -189,7 +189,9 @@ __global__ void displace_gaus_backward_cuda_kernel(
     gaus_angles += gaus_index;
     gaus_scales += gaus_index;
     gaus_weight += gaus_index;
-    grad_gaus_weight += gaus_index;
+    if (UseGradWeight) {
+      grad_gaus_weight += gaus_index;
+    }
     gaus_cos_angles += gaus_index;
     gaus_sin_angles += gaus_index;
 
@@ -260,10 +262,12 @@ __global__ void displace_gaus_backward_cuda_kernel(
 
       if (inside) {
         int64_t in_index = ((i_samp * num_channel + i_channel) * height_in + h_in) * width_in + w_in;
-        atomicAdd(
-          grad_in + in_index,
-          val_grad_out * val_gaus_weight
-        );
+        if (UseGradIn) {
+          atomicAdd(
+            grad_in + in_index,
+            val_grad_out * val_gaus_weight
+          );
+        }
         cur_grad_gaus_weight = val_grad_out * data_in[in_index];
       } else {
         all_in = false;
@@ -272,10 +276,12 @@ __global__ void displace_gaus_backward_cuda_kernel(
       // ***temp: exclude data_in
       // cur_grad_gaus_weight = *grad_out;
 
-      atomicAdd(
-        grad_gaus_weight + i_gau,
-        cur_grad_gaus_weight
-      );
+      if (UseGradWeight) {
+        atomicAdd(
+          grad_gaus_weight + i_gau,
+          cur_grad_gaus_weight
+        );
+      }
 
       // // Use offset different
       // float offoff_x = new_offset_x - val_offset_x;
@@ -311,171 +317,43 @@ __global__ void displace_gaus_backward_cuda_kernel(
 #else
     } while (0);
 #endif
-
-    atomicAdd(grad_offsets_x, grad_x);
-    atomicAdd(grad_offsets_y, grad_y);
+    if (channel_per_offset != 1) {
+      atomicAdd(grad_offsets_x, grad_x);
+      atomicAdd(grad_offsets_y, grad_y);
+    } else {
+      *grad_offsets_x = grad_x;
+      *grad_offsets_y = grad_y;
+    }
     
   }
 }
 
-template <typename Dtype>
-__launch_bounds__(CUDA_NUM_THREADS)
-__global__ void displace_gaus_backward_without_weight_cuda_kernel(
-    const int64_t n, const int64_t num_channel,
-    const Dtype* __restrict__ data_in, Dtype* __restrict__ grad_in,
-    const int64_t height_in, const int64_t width_in,
-    const float* __restrict__ offsets_x, const float* __restrict__ offsets_y,
-    float* __restrict__ grad_offsets_x, float* __restrict__ grad_offsets_y,
-    const int64_t channel_per_offset,
-    const Dtype* __restrict__ grad_out, const int64_t height_out, const int64_t width_out,
-    const float* __restrict__ gaus_angles, const float* __restrict__ gaus_scales, const Dtype* __restrict__ gaus_weight,
-    const float* __restrict__ gaus_cos_angles, const float* __restrict__ gaus_sin_angles,
-    const int64_t num_gaus, float fill) {
-  CUDA_KERNEL_LOOP(index, n) {
-#ifdef SEP_SAMPLE
-    int64_t i_gau = index % num_gaus;
-    index /= num_gaus;
-#endif
-    grad_out += index;
-    int64_t w_out = index % width_out;
-    index /= width_out;
-    int64_t h_out = index % height_out;
-    index /= height_out;
-    int64_t i_channel = index % num_channel;
-    int64_t i_samp = index / num_channel;
-    int64_t i_offset = i_channel / channel_per_offset;
-    int64_t num_offset = num_channel / channel_per_offset;
-
-    int64_t gaus_index = i_offset * num_gaus;
-    gaus_angles += gaus_index;
-    gaus_scales += gaus_index;
-    gaus_weight += gaus_index;
-    gaus_cos_angles += gaus_index;
-    gaus_sin_angles += gaus_index;
-
-    int64_t offset_index = ((i_samp * num_offset + i_offset) * height_out + h_out) * width_out + w_out;
-    offsets_x += offset_index;
-    offsets_y += offset_index;
-    grad_offsets_x += offset_index;
-    grad_offsets_y += offset_index;
-
-    float val_offset_x = *offsets_x;
-    float val_offset_y = *offsets_y;
-    float val_offset_scale = hypotf(val_offset_x, val_offset_y);
-    if (val_offset_scale == 0) {
-      val_offset_y = 1e-5;
-      val_offset_scale = 1e-5;
-    }
-
-    float grad_y = 0, grad_x = 0;
-    bool all_in = true;
-#ifndef SEP_SAMPLE
-    for (int64_t i_gau = 0; i_gau < num_gaus; i_gau++) {
-#else
-    do {
-#endif // #ifndef SEP_SAMPLE
-      float gaus_angle = gaus_angles[i_gau];
-      float gaus_scale = gaus_scales[i_gau];
-      float gaus_scale_ratio = 1 + gaus_scale / val_offset_scale;
-#ifdef FILTER_BOTH
-  #ifdef FILTER_SCALE_BOTH
-      if (gaus_angle > CUDART_PI_F || gaus_angle < -CUDART_PI_F || abs(gaus_scale) > val_offset_scale) {
-        continue;
-      }
-  #else
-      if (gaus_angle > CUDART_PI_F || gaus_angle < -CUDART_PI_F || gaus_scale_ratio < 0) {
-        continue;
-      }
-  #endif
-#elif FILTER_ANGLE
-      if (gaus_angle > CUDART_PI_F || gaus_angle < -CUDART_PI_F) {
-        continue;
-      }
-#elif FILTER_SCALE
-  #ifdef FILTER_SCALE_BOTH
-      if (abs(gaus_scale) > val_offset_scale) {
-        continue;
-      }
-  #else
-      if (gaus_scale_ratio < 0) {
-        continue;
-      }
-  #endif
-#endif
-      float gaus_angle_cos = gaus_cos_angles[i_gau], gaus_angle_sin = gaus_sin_angles[i_gau];
-      float new_offset_x = (gaus_angle_cos * val_offset_x - gaus_angle_sin * val_offset_y) * gaus_scale_ratio;
-      float new_offset_y = (gaus_angle_sin * val_offset_x + gaus_angle_cos * val_offset_y) * gaus_scale_ratio;
-
-      int64_t w_in = w_out - lrintf(new_offset_x);
-      int64_t h_in = h_out - lrintf(new_offset_y);
-      bool inside = (h_in >= 0 && h_in < height_in && w_in >= 0 && w_in < width_in);
-
-      Dtype cur_grad_gaus_weight = 0.;
-      Dtype val_gaus_weight = gaus_weight[i_gau];
-#ifdef USE_BACKWARD_SIDE_BALANCE
-      Dtype val_grad_out = *grad_out * abs(val_offset_scale + gaus_scale) / max(val_offset_scale, 1.0);
-#else
-      Dtype val_grad_out = *grad_out;
-#endif
-
-      if (inside) {
-        int64_t in_index = ((i_samp * num_channel + i_channel) * height_in + h_in) * width_in + w_in;
-        atomicAdd(
-          grad_in + in_index,
-          val_grad_out * val_gaus_weight
-        );
-        cur_grad_gaus_weight = val_grad_out * data_in[in_index];
-      } else {
-        all_in = false;
-        cur_grad_gaus_weight = val_grad_out * fill;
-      }
-      // ***temp: exclude data_in
-      // cur_grad_gaus_weight = *grad_out;
-
-      // // Use offset different
-      // float offoff_x = new_offset_x - val_offset_x;
-      // float offoff_y = new_offset_y - val_offset_y;
-      // float anglescale_norm = hypot(gaus_angle * val_offset_scale, gaus_scale);
-      // float cur_grad_off_base = cur_grad_gaus_weight * val_gaus_weight * anglescale_norm / hypot(offoff_x, offoff_y);
-      // grad_x += cur_grad_off_base * offoff_x;
-      // grad_y += cur_grad_off_base * offoff_y;
-
-      // Use angle and scale
-      float cur_grad_off_base = cur_grad_gaus_weight * val_gaus_weight;
-      grad_x += cur_grad_off_base *
-        (gaus_scale * val_offset_x / val_offset_scale + gaus_angle * (-val_offset_y));
-      grad_y += cur_grad_off_base *
-        (gaus_scale * val_offset_y / val_offset_scale + gaus_angle * val_offset_x);
-
-      // // Use scale-only
-      // float cur_grad_off_base = cur_grad_gaus_weight * val_gaus_weight;
-      // grad_x += cur_grad_off_base *
-      //   (gaus_scale * val_offset_x / val_offset_scale);
-      // grad_y += cur_grad_off_base *
-      //   (gaus_scale * val_offset_y / val_offset_scale);
-
-      // // Use angle-only
-      // float cur_grad_off_base = cur_grad_gaus_weight * val_gaus_weight;
-      // grad_x += cur_grad_off_base *
-      //   (gaus_angle * (-val_offset_y));
-      // grad_y += cur_grad_off_base *
-      //   (gaus_angle * val_offset_x);
-
-#ifndef SEP_SAMPLE
-    }
-#else
-    } while (0);
-#endif
-
-    atomicAdd(grad_offsets_x, grad_x);
-    atomicAdd(grad_offsets_y, grad_y);
-    
-  }
-}
+#define DISPATCH_TWO_BOOLS(O1NAME, O1VAL, O2NAME, O2VAL, ...) \
+  [&] { \
+    if(O1VAL) { \
+      constexpr bool O1NAME = true; \
+      if(O2VAL) { \
+        constexpr bool O2NAME = true; \
+        return __VA_ARGS__(); \
+      } else { \
+        constexpr bool O2NAME = false; \
+        return __VA_ARGS__(); \
+      } \
+    } else { \
+      constexpr bool O1NAME = false; \
+      if(O2VAL) { \
+        constexpr bool O2NAME = true; \
+        return __VA_ARGS__(); \
+      } else { \
+        constexpr bool O2NAME = false; \
+        return __VA_ARGS__(); \
+      } \
+    } \
+  }()
 
 void displace_gaus_backward_cuda(
     cudaStream_t stream,
-    const at::Tensor data_in, at::Tensor grad_in,
+    const at::Tensor data_in, at::optional<at::Tensor> grad_in,
     const at::Tensor offsets_x, const at::Tensor offsets_y,
     at::Tensor grad_offsets_x, at::Tensor grad_offsets_y,
     const int64_t channel_per_offset,
@@ -497,33 +375,21 @@ void displace_gaus_backward_cuda(
   int64_t num_kernel = batch_size * num_channel * height_out * width_out * gaus_weight.size(1);
 #endif
 
-  if (grad_gaus_weight) {
+  DISPATCH_TWO_BOOLS(GRAD_IN_HAS_VALUE, grad_in.has_value(), GRAD_GAUS_WEIGHT_HAS_VALUE, grad_gaus_weight.has_value(), ([&] {
     AT_DISPATCH_FLOATING_TYPES(data_in.type(), "displace_gaus_backward_cuda", ([&] {
-      displace_gaus_backward_cuda_kernel <<<GET_BLOCKS(num_kernel), CUDA_NUM_THREADS, 0, stream>>> (
+      displace_gaus_backward_cuda_kernel<GRAD_IN_HAS_VALUE, GRAD_GAUS_WEIGHT_HAS_VALUE> <<<GET_BLOCKS(num_kernel), CUDA_NUM_THREADS, 0, stream>>> (
         num_kernel, num_channel,
-        data_in.data<scalar_t>(), grad_in.data<scalar_t>(),
+        data_in.data<scalar_t>(), GRAD_IN_HAS_VALUE ? grad_in.value().data<scalar_t>() : nullptr,
         height_in, width_in,
         offsets_x.data<float>(), offsets_y.data<float>(), grad_offsets_x.data<float>(), grad_offsets_y.data<float>(),
         channel_per_offset,
         grad_out.data<scalar_t>(), height_out, width_out,
         gaus_angles.data<float>(), gaus_scales.data<float>(),
-        gaus_weight.data<scalar_t>(), grad_gaus_weight.value().data<scalar_t>(),
+        gaus_weight.data<scalar_t>(), GRAD_GAUS_WEIGHT_HAS_VALUE ? grad_gaus_weight.value().data<scalar_t>() : nullptr,
         gaus_cos_angles.data<float>(), gaus_sin_angles.data<float>(), 
         gaus_weight.size(1), fill);
     }));
-  } else {
-    AT_DISPATCH_FLOATING_TYPES(data_in.type(), "displace_gaus_backward_without_weight_cuda", ([&] {
-      displace_gaus_backward_without_weight_cuda_kernel <<<GET_BLOCKS(num_kernel), CUDA_NUM_THREADS, 0, stream>>> (
-        num_kernel, num_channel,
-        data_in.data<scalar_t>(), grad_in.data<scalar_t>(),
-        height_in, width_in,
-        offsets_x.data<float>(), offsets_y.data<float>(), grad_offsets_x.data<float>(), grad_offsets_y.data<float>(),
-        channel_per_offset,
-        grad_out.data<scalar_t>(), height_out, width_out,
-        gaus_angles.data<float>(), gaus_scales.data<float>(), gaus_weight.data<scalar_t>(),
-        gaus_cos_angles.data<float>(), gaus_sin_angles.data<float>(), 
-        gaus_weight.size(1), fill);
-    }));
-  }
+  }));
+
   gpuErrchk(cudaGetLastError());
 }

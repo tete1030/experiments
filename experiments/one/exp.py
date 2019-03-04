@@ -820,7 +820,8 @@ class OffsetBlock(nn.Module):
                 max_scale_std=5.1,
                 sampler=hparams.MODEL.LEARNABLE_OFFSET.ARC.SAMPLER,
                 weight_dist=hparams.MODEL.LEARNABLE_OFFSET.ARC.WEIGHT_DIST,
-                learnable_sigma=False, transform_sigma=False)
+                learnable_sigma=False, transform_sigma=False,
+                simple=hparams.MODEL.LEARNABLE_OFFSET.ARC.SIMPLE)
             globalvars.arc_displacers.append(arc_displacer)
         else:
             arc_displacer = None

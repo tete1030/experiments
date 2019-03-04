@@ -94,6 +94,7 @@ model:
                 source: input
         arc:
             enable: true
+            simple: true
             num_sample: 4
             angle_std: 20
             min_angle_std: 3

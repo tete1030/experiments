@@ -128,7 +128,10 @@ void displace_pos_sep_forward(
   CHECK_INPUT(data_out);
   CHECK_INPUT(offsets_x);
   CHECK_INPUT(offsets_y);
-  AT_ASSERTM(offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float, "dtype of offsets must be float");
+  AT_ASSERTM( \
+    (offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float) || \
+    (offsets_x.dtype() == at::ScalarType::Int && offsets_y.dtype() == at::ScalarType::Int), \
+    "dtype of offsets must be float or int");
   auto stream = THCState_getCurrentStream((THCState*)state);
   
   displace_pos_forward_cuda(stream, data_in, offsets_x, offsets_y, channel_per_offset, data_out);
@@ -156,23 +159,33 @@ void displace_pos_backward(
 
 void displace_pos_sep_backward(
     const int64_t state,
-    const at::Tensor data_in, at::Tensor grad_in,
+    const at::optional<at::Tensor> data_in, at::Tensor grad_in,
     const at::Tensor offsets_x,
     const at::Tensor offsets_y,
-    at::Tensor grad_offsets_x,
-    at::Tensor grad_offsets_y,
+    at::optional<at::Tensor> grad_offsets_x,
+    at::optional<at::Tensor> grad_offsets_y,
     const int64_t channel_per_offset,
     const at::Tensor grad_out) {
 
-  CHECK_INPUT(data_in);
+  if (data_in) {
+    CHECK_INPUT(data_in.value());
+  }
   CHECK_INPUT(grad_in);
   CHECK_INPUT(grad_out);
   CHECK_INPUT(offsets_x);
   CHECK_INPUT(offsets_y);
-  CHECK_INPUT(grad_offsets_x);
-  CHECK_INPUT(grad_offsets_y);
-  AT_ASSERTM(offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float, "dtype of offsets must be float");
-  AT_ASSERTM(grad_offsets_x.dtype() == at::ScalarType::Float && grad_offsets_y.dtype() == at::ScalarType::Float, "dtype of grad_offsets must be float");
+  if (grad_offsets_x) {
+    CHECK_INPUT(grad_offsets_x.value());
+    CHECK_INPUT(grad_offsets_y.value());
+  }
+  AT_ASSERTM( \
+    (offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float) || \
+    (offsets_x.dtype() == at::ScalarType::Int && offsets_y.dtype() == at::ScalarType::Int), \
+    "dtype of offsets must be float or int");
+  if (offsets_x.dtype() == at::ScalarType::Int) {
+    AT_ASSERTM(data_in && grad_offsets_x && grad_offsets_y, "data_in, grad_offsets_x, grad_offsets_y must have value")
+    AT_ASSERTM(grad_offsets_x.value().dtype() == at::ScalarType::Float && grad_offsets_y.value().dtype() == at::ScalarType::Float, "dtype of grad_offsets must be float");
+  }
   auto stream = THCState_getCurrentStream((THCState*)state);
   
   displace_pos_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out);
@@ -299,7 +312,7 @@ void displace_gaus_forward(
 
 void displace_gaus_backward(
     const int64_t state,
-    const at::Tensor data_in, at::Tensor grad_in,
+    const at::Tensor data_in, at::optional<at::Tensor> grad_in,
     const at::Tensor offsets_x, const at::Tensor offsets_y,
     at::Tensor grad_offsets_x, at::Tensor grad_offsets_y,
     const int64_t channel_per_offset,
@@ -311,7 +324,9 @@ void displace_gaus_backward(
     float fill) {
 
   CHECK_INPUT(data_in);
-  CHECK_INPUT(grad_in);
+  if (grad_in) {
+    CHECK_INPUT(grad_in.value());
+  }
   CHECK_INPUT(grad_out);
   CHECK_INPUT(offsets_x);
   CHECK_INPUT(offsets_y);
