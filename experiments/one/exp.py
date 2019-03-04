@@ -474,8 +474,8 @@ class Experiment(BaseExperiment):
                     sigma_data[sigma_data.abs() > dp.max_sigma] = dp.max_sigma
             
             if hparams.TRAIN.OFFSET.ARC_SIGMA_DEC_ITER > 0:
-                angle_step = float(1) / hparams.TRAIN.OFFSET.ARC_SIGMA_DEC_ITER * hparams.MODEL.LEARNABLE_OFFSET.ARC.ANGLE_STD
-                scale_step = float(1) / hparams.TRAIN.OFFSET.ARC_SIGMA_DEC_ITER * hparams.MODEL.LEARNABLE_OFFSET.ARC.SCALE_STD
+                angle_step = float(hparams.MODEL.LEARNABLE_OFFSET.ARC.ANGLE_STD - hparams.MODEL.LEARNABLE_OFFSET.ARC.MIN_ANGLE_STD) / 180 * np.pi / hparams.TRAIN.OFFSET.ARC_SIGMA_DEC_ITER
+                scale_step = float(hparams.MODEL.LEARNABLE_OFFSET.ARC.SCALE_STD - hparams.MODEL.LEARNABLE_OFFSET.ARC.MIN_SCALE_STD) / hparams.TRAIN.OFFSET.ARC_SIGMA_DEC_ITER
                 for arc in globalvars.arc_displacers:
                     arc.set_angle_std(arc.angle_std().add(-angle_step).clamp(min=arc.min_angle_std, max=arc.max_angle_std))
                     arc.set_scale_std(arc.scale_std().add(-scale_step).clamp(min=arc.min_scale_std, max=arc.max_scale_std))
@@ -805,6 +805,8 @@ class OffsetBlock(nn.Module):
                 hparams.MODEL.LEARNABLE_OFFSET.ARC.NUM_SAMPLE,
                 float(hparams.MODEL.LEARNABLE_OFFSET.ARC.ANGLE_STD) / 180 * np.pi,
                 hparams.MODEL.LEARNABLE_OFFSET.ARC.SCALE_STD,
+                min_angle_std=float(hparams.MODEL.LEARNABLE_OFFSET.ARC.MIN_ANGLE_STD) / 180 * np.pi,
+                min_scale_std=hparams.MODEL.LEARNABLE_OFFSET.ARC.MIN_SCALE_STD,
                 max_scale_std=5.1,
                 sampler=hparams.MODEL.LEARNABLE_OFFSET.ARC.SAMPLER,
                 weight_dist=hparams.MODEL.LEARNABLE_OFFSET.ARC.WEIGHT_DIST,

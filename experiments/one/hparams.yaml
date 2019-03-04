@@ -95,7 +95,9 @@ model:
             enable: true
             num_sample: 4
             angle_std: 10
+            min_angle_std: 3
             scale_std: 1
+            min_scale_std: 0.5
             sampler: gaussian
             weight_dist: uniform
 dataset:
