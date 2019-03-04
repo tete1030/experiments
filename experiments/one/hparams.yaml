@@ -24,6 +24,7 @@ train:
         transformer_grow_iter: 2785
         momentum_bn: 0.1
         momentum: 0.0
+        arc_sigma_dec_iter: 50000
 
 eval:
     parse_threshold: 0.1
@@ -56,6 +57,7 @@ model:
 
     learnable_offset:
         init_stride: 0
+        init_random_scale: 2.
         num_blk: 2
         num_offset: [64, 192]
         post_groups: [1, 1]
@@ -89,7 +91,13 @@ model:
                 enable: false
                 space_norm: false
                 source: input
-
+        arc:
+            enable: true
+            num_sample: 4
+            angle_std: 90
+            scale_std: 5
+            sampler: gaussian
+            weight_dist: uniform
 dataset:
     profile: coco
     subset: 0.3

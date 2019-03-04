@@ -20,7 +20,7 @@ import lib.datasets as datasets
 from lib.utils.transforms import fliplr_pts, kpt_affine
 from lib.utils.evaluation import accuracy, OffsetCycleAverageMeter, parse_map, generate_ans, generate_mpii_ans
 from lib.utils.imutils import batch_resize
-from lib.models.displacechan import DisplaceChannel, OffsetTransformer
+from lib.models.displacechan import DisplaceChannel, OffsetTransformer, PositionalGaussianDisplaceModule
 from lib.models.spacenorm import SpaceNormalization
 from utils.globals import config, hparams, globalvars
 from utils.log import log_i
@@ -77,6 +77,7 @@ class Experiment(BaseExperiment):
     def init_model(self):
         globalvars.displace_mods = list()
         globalvars.dpools = list()
+        globalvars.arc_displacers = list()
 
         self.model = nn.DataParallel(MyPose(self.num_parts).cuda())
         if hparams.MODEL.REGRESS_PREDICT:
@@ -471,6 +472,13 @@ class Experiment(BaseExperiment):
                 for idp, dp in enumerate(globalvars.dpools):
                     sigma_data = dp.sigma.data
                     sigma_data[sigma_data.abs() > dp.max_sigma] = dp.max_sigma
+            
+            if hparams.TRAIN.OFFSET.ARC_SIGMA_DEC_ITER > 0:
+                angle_step = float(1) / hparams.TRAIN.OFFSET.ARC_SIGMA_DEC_ITER * hparams.MODEL.LEARNABLE_OFFSET.ARC.ANGLE_STD
+                scale_step = float(1) / hparams.TRAIN.OFFSET.ARC_SIGMA_DEC_ITER * hparams.MODEL.LEARNABLE_OFFSET.ARC.SCALE_STD
+                for arc in globalvars.arc_displacers:
+                    arc.set_angle_std(arc.angle_std().add(-angle_step).clamp(min=arc.min_angle_std, max=arc.max_angle_std))
+                    arc.set_scale_std(arc.scale_std().add(-scale_step).clamp(min=arc.min_scale_std, max=arc.max_scale_std))
         if optimize_transformer:
             self.transformer_optimizer.step()
             for dm in globalvars.displace_mods:
@@ -780,25 +788,42 @@ class OffsetBlock(nn.Module):
             displace_planes = displace_planes_new
         self.displace_planes = displace_planes
         self.use_transformer = use_transformer
+        num_offset = self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN
         if use_transformer:
             offset_transformer = OffsetTransformer(
                 hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT else self.inplanes,
-                self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN,
+                num_offset,
                 bottleneck=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.BOTTLENECK,
                 single_regress=False,
                 scale_grow_step=1 / hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None,
                 absolute_regressor=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ABSOLUTE_REGRESSOR)
         else:
             offset_transformer = None
+        if hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE:
+            arc_displacer = PositionalGaussianDisplaceModule(
+                num_offset,
+                hparams.MODEL.LEARNABLE_OFFSET.ARC.NUM_SAMPLE,
+                float(hparams.MODEL.LEARNABLE_OFFSET.ARC.ANGLE_STD) / 180 * np.pi,
+                hparams.MODEL.LEARNABLE_OFFSET.ARC.SCALE_STD,
+                max_scale_std=5.1,
+                sampler=hparams.MODEL.LEARNABLE_OFFSET.ARC.SAMPLER,
+                weight_dist=hparams.MODEL.LEARNABLE_OFFSET.ARC.WEIGHT_DIST,
+                learnable_sigma=False, transform_sigma=False)
+            globalvars.arc_displacers.append(arc_displacer)
+        else:
+            arc_displacer = None
         self.displace = DisplaceChannel(
             self.out_height, self.out_width,
-            self.displace_planes, self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN,
+            self.displace_planes, num_offset,
             disable_displace=hparams.MODEL.DETAIL.DISABLE_DISPLACE,
             learnable_offset=hparams.MODEL.DETAIL.LEARNABLE_OFFSET,
             regress_offset=hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET,
             transformer=offset_transformer,
             half_reversed_offset=hparams.MODEL.LEARNABLE_OFFSET.HALF_REVERSED_OFFSET,
-            previous_dischan=globalvars.displace_mods[-1] if hparams.MODEL.LEARNABLE_OFFSET.REUSE_OFFSET and len(globalvars.displace_mods) > 0 else None)
+            previous_dischan=globalvars.displace_mods[-1] if hparams.MODEL.LEARNABLE_OFFSET.REUSE_OFFSET and len(globalvars.displace_mods) > 0 else None,
+            arc_gaussian=arc_displacer)
+
+        assert not (hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE > 0 and hparams.MODEL.LEARNABLE_OFFSET.INIT_RANDOM_SCALE > 0)
         if hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE > 0:
             width_span = hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE * (init_num_x - 1)
             height_span = hparams.MODEL.LEARNABLE_OFFSET.INIT_STRIDE * (init_num_y - 1)
@@ -807,6 +832,8 @@ class OffsetBlock(nn.Module):
                     ichan = (iy * init_num_x + ix) * channels_per_off
                     self.displace.offset.data[ichan:ichan+channels_per_off, 0] = off_x / self.displace.offset_scale
                     self.displace.offset.data[ichan:ichan+channels_per_off, 1] = off_y / self.displace.offset_scale
+        if hparams.MODEL.LEARNABLE_OFFSET.INIT_RANDOM_SCALE > 0:
+            self.displace.offset.data.normal_(mean=0, std=hparams.MODEL.LEARNABLE_OFFSET.INIT_RANDOM_SCALE)
 
         globalvars.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
