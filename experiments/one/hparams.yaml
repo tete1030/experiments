@@ -93,7 +93,7 @@ model:
                 source: input
         arc:
             enable: true
-            num_sample: 4
+            num_sample: 16
             angle_std: 90
             scale_std: 5
             sampler: gaussian
