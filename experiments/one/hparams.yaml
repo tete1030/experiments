@@ -24,7 +24,7 @@ train:
         transformer_grow_iter: 2785
         momentum_bn: 0.1
         momentum: 0.0
-        arc_sigma_dec_iter: 50000
+        arc_sigma_dec_iter: 100000
 
 eval:
     parse_threshold: 0.1
@@ -95,7 +95,7 @@ model:
         arc:
             enable: true
             simple: true
-            num_sample: 4
+            num_sample: 16
             angle_std: 20
             min_angle_std: 3
             scale_std: 2
