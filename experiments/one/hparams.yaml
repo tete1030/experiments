@@ -57,7 +57,7 @@ model:
 
     learnable_offset:
         init_stride: 0
-        init_random_scale: 2.
+        init_random_scale: 0
         num_blk: 2
         num_offset: [64, 192]
         post_groups: [1, 1]
@@ -94,8 +94,8 @@ model:
         arc:
             enable: true
             num_sample: 4
-            angle_std: 90
-            scale_std: 5
+            angle_std: 3
+            scale_std: 1
             sampler: gaussian
             weight_dist: uniform
 dataset:
