@@ -24,7 +24,7 @@ train:
         transformer_grow_iter: 2785
         momentum_bn: 0.1
         momentum: 0.0
-        arc_sigma_dec_iter: 30000
+        arc_sigma_dec_iter: 500000
 
 eval:
     parse_threshold: 0.1
@@ -57,7 +57,7 @@ model:
 
     learnable_offset:
         init_stride: 0
-        init_random_scale: 2.
+        init_random_scale: 0.
         num_blk: 2
         num_offset: [64, 192]
         post_groups: [1, 1]
@@ -94,7 +94,7 @@ model:
         arc:
             enable: true
             num_sample: 4
-            angle_std: 3
+            angle_std: 10
             scale_std: 1
             sampler: gaussian
             weight_dist: uniform
