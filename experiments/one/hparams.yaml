@@ -57,7 +57,7 @@ model:
 
     learnable_offset:
         init_stride: 0
-        init_random_scale: 0
+        init_random_scale: 2.
         num_blk: 2
         num_offset: [64, 192]
         post_groups: [1, 1]
