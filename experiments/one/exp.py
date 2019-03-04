@@ -767,8 +767,18 @@ class SequentialForOffsetBlockTransformer(nn.Sequential):
         return input
 
 class OffsetBlock(nn.Module):
-    def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1,
-            use_transformer=False, use_atten=False, atten_source="input", atten_space_norm=False, use_post_atten=False, post_atten_source="input", post_atten_space_norm=False, post_groups=1):
+    def __init__(
+            self, height, width, inplanes, outplanes, displace_planes,
+            stride=1,
+            use_transformer=False,
+            use_atten=False,
+            atten_source="input",
+            atten_space_norm=False,
+            use_post_atten=False,
+            post_atten_source="input",
+            post_atten_space_norm=False,
+            post_groups=1,
+            disable_arc=False):
         super(OffsetBlock, self).__init__()
         self.height = height
         self.width = width
@@ -799,7 +809,7 @@ class OffsetBlock(nn.Module):
                 absolute_regressor=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ABSOLUTE_REGRESSOR)
         else:
             offset_transformer = None
-        if hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE:
+        if hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE and not disable_arc:
             arc_displacer = PositionalGaussianDisplaceModule(
                 num_offset,
                 hparams.MODEL.LEARNABLE_OFFSET.ARC.NUM_SAMPLE,
@@ -989,7 +999,8 @@ class TransformFeature(nn.Module):
                     use_post_atten=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.ENABLE,
                     post_atten_source=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.SOURCE,
                     post_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.SPACE_NORM,
-                    use_transformer=False))
+                    use_transformer=False,
+                    disable_arc=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.DISABLE_ARC))
             cur_num_channel = num_out_channel
         self.offblk = nn.Sequential(*offblks)
 
