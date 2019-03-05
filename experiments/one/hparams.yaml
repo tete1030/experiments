@@ -95,7 +95,7 @@ model:
         arc:
             enable: true
             simple: true
-            num_sample: 4
+            num_sample: 32
             angle_std: 30
             min_angle_std: 3
             scale_std: 3
