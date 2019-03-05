@@ -387,7 +387,7 @@ class PositionalGaussianDisplace(Function):
 
             displace_cuda.displace_gaus_backward(ctx._backend.library_state,
                 inp, grad_inp, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
-                angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill)
+                angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill, ctx.simple)
         else:
             offsets_x_rounded, offsets_y_rounded = ctx.saved_tensors[6:]
             displace_cuda.displace_pos_sep_backward(ctx._backend.library_state,
