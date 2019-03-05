@@ -2,7 +2,7 @@
 #include "displace_gaus_kernel.h"
 #include <math_constants.h>
 
-#define SEP_SAMPLE
+// #define SEP_SAMPLE
 // #define USE_FORWARD_SIDE_BALANCE
 // #define USE_BACKWARD_SIDE_BALANCE
 
@@ -156,7 +156,7 @@ void displace_gaus_forward_cuda(
   gpuErrchk(cudaGetLastError());
 }
 
-template <bool UseGradIn, bool UseGradWeight, bool UseGradOffsets, typename Dtype>
+template <bool UseGradIn, bool UseGradWeight, bool UseGradOffsets, bool MinusCenter, typename Dtype>
 __launch_bounds__(CUDA_NUM_THREADS)
 __global__ void displace_gaus_backward_cuda_kernel(
     const int64_t n, const int64_t num_channel,
@@ -209,6 +209,18 @@ __global__ void displace_gaus_backward_cuda_kernel(
     if (val_offset_scale == 0) {
       val_offset_y = 1e-5;
       val_offset_scale = 1e-5;
+    }
+
+    float center_value = 0.;
+    if (MinusCenter) {
+      int64_t w_in_center = w_out - lrintf(val_offset_x);
+      int64_t h_in_center = h_out - lrintf(val_offset_y);
+      if (h_in_center >= 0 && h_in_center < height_in && w_in_center >= 0 && w_in_center < width_in) {
+        int64_t in_center_index = ((i_samp * num_channel + i_channel) * height_in + h_in_center) * width_in + w_in_center;
+        center_value = data_in[in_center_index];
+      } else {
+        center_value = fill;
+      }
     }
 
     float grad_y = 0, grad_x = 0;
@@ -270,11 +282,19 @@ __global__ void displace_gaus_backward_cuda_kernel(
           );
         }
         if (UseGradWeight || UseGradOffsets) {
-          cur_grad_gaus_weight = val_grad_out * data_in[in_index];
+          if (MinusCenter) {
+            cur_grad_gaus_weight = val_grad_out * (data_in[in_index] - center_value);
+          } else {
+            cur_grad_gaus_weight = val_grad_out * data_in[in_index];
+          }
         }
       } else {
         if (UseGradWeight || UseGradOffsets) {
-          cur_grad_gaus_weight = val_grad_out * fill;
+          if (MinusCenter) {
+            cur_grad_gaus_weight = val_grad_out * (fill - center_value);
+          } else {
+            cur_grad_gaus_weight = val_grad_out * fill;
+          }
         }
       }
       // ***temp: exclude data_in
@@ -298,9 +318,9 @@ __global__ void displace_gaus_backward_cuda_kernel(
 
         // Use angle and scale
         float cur_grad_off_base = cur_grad_gaus_weight * val_gaus_weight;
-        grad_x += cur_grad_off_base *
+        grad_x += cur_grad_off_base /
           (gaus_scale * val_offset_x / val_offset_scale + gaus_angle * (-val_offset_y));
-        grad_y += cur_grad_off_base *
+        grad_y += cur_grad_off_base /
           (gaus_scale * val_offset_y / val_offset_scale + gaus_angle * val_offset_x);
 
         // // Use scale-only
@@ -368,7 +388,7 @@ void displace_gaus_backward_cuda(
     DISPATCH_BOOL(GRAD_OFFSETS_HAS_VALUE, grad_offsets_x.has_value(), ([&] {
       if (GRAD_IN_HAS_VALUE || GRAD_GAUS_WEIGHT_HAS_VALUE || GRAD_OFFSETS_HAS_VALUE) {
         AT_DISPATCH_FLOATING_TYPES(data_in.type(), "displace_gaus_backward_cuda", ([&] {
-          displace_gaus_backward_cuda_kernel<GRAD_IN_HAS_VALUE, GRAD_GAUS_WEIGHT_HAS_VALUE, GRAD_OFFSETS_HAS_VALUE> <<<GET_BLOCKS(num_kernel), CUDA_NUM_THREADS, 0, stream>>> (
+          displace_gaus_backward_cuda_kernel<GRAD_IN_HAS_VALUE, GRAD_GAUS_WEIGHT_HAS_VALUE, GRAD_OFFSETS_HAS_VALUE, false> <<<GET_BLOCKS(num_kernel), CUDA_NUM_THREADS, 0, stream>>> (
             num_kernel, num_channel,
             data_in.data<scalar_t>(), GRAD_IN_HAS_VALUE ? grad_in.value().data<scalar_t>() : nullptr,
             height_in, width_in,
@@ -384,6 +404,53 @@ void displace_gaus_backward_cuda(
         }));
       }
     }));
+  }));
+
+  gpuErrchk(cudaGetLastError());
+}
+
+void displace_gaus_simple_backward_cuda(
+    cudaStream_t stream,
+    const at::Tensor data_in,
+    const at::Tensor offsets_x, const at::Tensor offsets_y,
+    at::optional<at::Tensor> grad_offsets_x, at::optional<at::Tensor> grad_offsets_y,
+    const int64_t channel_per_offset,
+    const at::Tensor grad_out,
+    const at::Tensor gaus_angles, const at::Tensor gaus_scales,
+    const at::Tensor gaus_weight, at::optional<at::Tensor> grad_gaus_weight,
+    const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
+    // dtype
+    float fill) {
+  int64_t batch_size = grad_out.size(0);
+  int64_t num_channel = grad_out.size(1);
+  int64_t height_out = grad_out.size(2);
+  int64_t width_out = grad_out.size(3);
+  int64_t height_in = data_in.size(2);
+  int64_t width_in = data_in.size(3);
+#ifndef SEP_SAMPLE
+  int64_t num_kernel = batch_size * num_channel * height_out * width_out;
+#else
+  int64_t num_kernel = batch_size * num_channel * height_out * width_out * gaus_weight.size(1);
+#endif
+
+  DISPATCH_TWO_BOOLS(GRAD_GAUS_WEIGHT_HAS_VALUE, grad_gaus_weight.has_value(), GRAD_OFFSETS_HAS_VALUE, grad_offsets_x.has_value(), ([&] {
+    if (GRAD_GAUS_WEIGHT_HAS_VALUE || GRAD_OFFSETS_HAS_VALUE) {
+      AT_DISPATCH_FLOATING_TYPES(data_in.type(), "displace_gaus_simple_backward_cuda", ([&] {
+        displace_gaus_backward_cuda_kernel<false, GRAD_GAUS_WEIGHT_HAS_VALUE, GRAD_OFFSETS_HAS_VALUE, true> <<<GET_BLOCKS(num_kernel), CUDA_NUM_THREADS, 0, stream>>> (
+          num_kernel, num_channel,
+          data_in.data<scalar_t>(), (scalar_t*)nullptr,
+          height_in, width_in,
+          offsets_x.data<float>(), offsets_y.data<float>(),
+          GRAD_OFFSETS_HAS_VALUE? grad_offsets_x.value().data<float>() : nullptr,
+          GRAD_OFFSETS_HAS_VALUE? grad_offsets_y.value().data<float>() : nullptr,
+          channel_per_offset,
+          grad_out.data<scalar_t>(), height_out, width_out,
+          gaus_angles.data<float>(), gaus_scales.data<float>(),
+          gaus_weight.data<scalar_t>(), GRAD_GAUS_WEIGHT_HAS_VALUE ? grad_gaus_weight.value().data<scalar_t>() : nullptr,
+          gaus_cos_angles.data<float>(), gaus_sin_angles.data<float>(), 
+          gaus_weight.size(1), fill);
+      }));
+    }
   }));
 
   gpuErrchk(cudaGetLastError());

@@ -3,7 +3,7 @@ exp:
     id: 11
 
 train:
-    learning_rate: 1.e-3
+    learning_rate: 5.e-4
     gamma_lr: 0.5
     num_epoch: 100
     schedule: []
@@ -24,7 +24,7 @@ train:
         transformer_grow_iter: 2785
         momentum_bn: 0.1
         momentum: 0.0
-        arc_sigma_dec_iter: 150000
+        arc_sigma_dec_iter: 50000
 
 eval:
     parse_threshold: 0.1

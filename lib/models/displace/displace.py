@@ -397,6 +397,6 @@ class PositionalGaussianDisplace(Function):
                 sin_angles = torch.sin(angles)
                 displace_cuda.displace_gaus_backward(ctx._backend.library_state,
                     inp, None, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
-                    angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill)
+                    angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill, ctx.simple)
 
         return grad_inp, grad_offsets_x, grad_offsets_y, None, None, None, grad_gaus_weight, None, None

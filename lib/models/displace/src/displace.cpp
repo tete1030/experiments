@@ -321,7 +321,7 @@ void displace_gaus_backward(
     const at::Tensor gaus_weight, at::optional<at::Tensor> grad_gaus_weight,
     const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
     // dtype
-    float fill) {
+    float fill, bool simple) {
 
   CHECK_INPUT(data_in);
   if (grad_in) {
@@ -350,7 +350,11 @@ void displace_gaus_backward(
   }
   auto stream = THCState_getCurrentStream((THCState*)state);
   
-  displace_gaus_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill);
+  if (!simple) {
+    displace_gaus_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill);
+  } else {
+    displace_gaus_simple_backward_cuda(stream, data_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill);
+  }
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
