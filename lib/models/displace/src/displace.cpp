@@ -182,7 +182,7 @@ void displace_pos_sep_backward(
     (offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float) || \
     (offsets_x.dtype() == at::ScalarType::Int && offsets_y.dtype() == at::ScalarType::Int), \
     "dtype of offsets must be float or int");
-  if (offsets_x.dtype() == at::ScalarType::Int) {
+  if (offsets_x.dtype() == at::ScalarType::Float) {
     AT_ASSERTM(data_in && grad_offsets_x && grad_offsets_y, "data_in, grad_offsets_x, grad_offsets_y must have value")
     AT_ASSERTM(grad_offsets_x.value().dtype() == at::ScalarType::Float && grad_offsets_y.value().dtype() == at::ScalarType::Float, "dtype of grad_offsets must be float");
   }
@@ -314,7 +314,7 @@ void displace_gaus_backward(
     const int64_t state,
     const at::Tensor data_in, at::optional<at::Tensor> grad_in,
     const at::Tensor offsets_x, const at::Tensor offsets_y,
-    at::Tensor grad_offsets_x, at::Tensor grad_offsets_y,
+    at::optional<at::Tensor> grad_offsets_x, at::optional<at::Tensor> grad_offsets_y,
     const int64_t channel_per_offset,
     const at::Tensor grad_out,
     const at::Tensor gaus_angles, const at::Tensor gaus_scales,
@@ -330,8 +330,12 @@ void displace_gaus_backward(
   CHECK_INPUT(grad_out);
   CHECK_INPUT(offsets_x);
   CHECK_INPUT(offsets_y);
-  CHECK_INPUT(grad_offsets_x);
-  CHECK_INPUT(grad_offsets_y);
+  if (grad_offsets_x) {
+    CHECK_INPUT(grad_offsets_x.value());
+    CHECK_INPUT(grad_offsets_y.value());
+  } else {
+    AT_ASSERTM(!grad_offsets_y.has_value(), "grad_offsets_x and grad_offsets_y's existence should be same");
+  }
   CHECK_INPUT(gaus_angles);
   CHECK_INPUT(gaus_scales);
   CHECK_INPUT(gaus_weight);
@@ -341,7 +345,9 @@ void displace_gaus_backward(
   CHECK_INPUT(gaus_cos_angles);
   CHECK_INPUT(gaus_sin_angles);
   AT_ASSERTM(offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float, "dtype of offsets must be float");
-  AT_ASSERTM(grad_offsets_x.dtype() == at::ScalarType::Float && grad_offsets_y.dtype() == at::ScalarType::Float, "dtype of grad_offsets must be float");
+  if (grad_offsets_x) {
+    AT_ASSERTM(grad_offsets_x.value().dtype() == at::ScalarType::Float && grad_offsets_y.value().dtype() == at::ScalarType::Float, "dtype of grad_offsets must be float");
+  }
   auto stream = THCState_getCurrentStream((THCState*)state);
   
   displace_gaus_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill);

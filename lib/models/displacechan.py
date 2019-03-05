@@ -318,7 +318,7 @@ class PositionalGaussianDisplaceModule(nn.Module):
             weight = torch.ones_like(angles) / self.num_sample
 
         return PositionalGaussianDisplace.apply(
-            x, offsets_x, offsets_y, channel_per_off, angles, scales, weight, self.fill, )
+            x, offsets_x, offsets_y, channel_per_off, angles, scales, weight, self.fill, self.simple)
 
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, num_channels, num_offsets,

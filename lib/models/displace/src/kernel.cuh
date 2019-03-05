@@ -20,3 +20,37 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
         if (abort) exit(code);
     }
 }
+
+#define DISPATCH_TWO_BOOLS(O1NAME, O1VAL, O2NAME, O2VAL, ...) \
+  [&] { \
+    if(O1VAL) { \
+      constexpr bool O1NAME = true; \
+      if(O2VAL) { \
+        constexpr bool O2NAME = true; \
+        return __VA_ARGS__(); \
+      } else { \
+        constexpr bool O2NAME = false; \
+        return __VA_ARGS__(); \
+      } \
+    } else { \
+      constexpr bool O1NAME = false; \
+      if(O2VAL) { \
+        constexpr bool O2NAME = true; \
+        return __VA_ARGS__(); \
+      } else { \
+        constexpr bool O2NAME = false; \
+        return __VA_ARGS__(); \
+      } \
+    } \
+  }()
+
+#define DISPATCH_BOOL(OPTNAME, OPTVAL, ...) \
+  [&] { \
+    if(OPTVAL) { \
+      constexpr bool OPTNAME = true; \
+      return __VA_ARGS__(); \
+    } else { \
+      constexpr bool OPTNAME = false; \
+      return __VA_ARGS__(); \
+    } \
+  }()

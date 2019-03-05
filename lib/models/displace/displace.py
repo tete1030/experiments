@@ -371,12 +371,17 @@ class PositionalGaussianDisplace(Function):
     def backward(ctx, grad_out):
         inp, offsets_x, offsets_y, angles, scales, gaus_weight = ctx.saved_tensors[:6]
         grad_inp = torch.zeros_like(inp)
-        grad_offsets_x = torch.zeros_like(offsets_x)
-        grad_offsets_y = torch.zeros_like(offsets_y)
         if gaus_weight.requires_grad:
             grad_gaus_weight = torch.zeros_like(gaus_weight)
         else:
             grad_gaus_weight = None
+        if offsets_x.requires_grad or offsets_y.requires_grad:
+            grad_offsets_x = torch.zeros_like(offsets_x)
+            grad_offsets_y = torch.zeros_like(offsets_y)
+        else:
+            grad_offsets_x = None
+            grad_offsets_y = None
+
         if not ctx.simple:
             cos_angles, sin_angles = ctx.saved_tensors[6:]
 
@@ -386,11 +391,12 @@ class PositionalGaussianDisplace(Function):
         else:
             offsets_x_rounded, offsets_y_rounded = ctx.saved_tensors[6:]
             displace_cuda.displace_pos_sep_backward(ctx._backend.library_state,
-                None, grad_inp, offsets_x_rounded, offsets_y_rounded, None, None, ctx.chan_per_pos, grad_out)
-            cos_angles = torch.cos(angles)
-            sin_angles = torch.sin(angles)
-            displace_cuda.displace_gaus_backward(ctx._backend.library_state,
-                inp, None, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
-                angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill)
+                None, grad_inp, offsets_x_rounded, offsets_y_rounded, None, None, ctx.channel_per_off, grad_out)
+            if not (grad_gaus_weight is None and grad_offsets_x is None and grad_offsets_y is None):
+                cos_angles = torch.cos(angles)
+                sin_angles = torch.sin(angles)
+                displace_cuda.displace_gaus_backward(ctx._backend.library_state,
+                    inp, None, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
+                    angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill)
 
         return grad_inp, grad_offsets_x, grad_offsets_y, None, None, None, grad_gaus_weight, None, None

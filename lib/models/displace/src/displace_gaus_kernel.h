@@ -18,7 +18,7 @@ void displace_gaus_backward_cuda(
     cudaStream_t stream,
     const at::Tensor data_in, at::optional<at::Tensor> grad_in,
     const at::Tensor offsets_x, const at::Tensor offsets_y,
-    at::Tensor grad_offsets_x, at::Tensor grad_offsets_y,
+    at::optional<at::Tensor> grad_offsets_x, at::optional<at::Tensor> grad_offsets_y,
     const int64_t channel_per_offset,
     const at::Tensor grad_out,
     const at::Tensor gaus_angles, const at::Tensor gaus_scales,

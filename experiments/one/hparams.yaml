@@ -1,9 +1,9 @@
 exp:
     name: oneoff
-    id: 10
+    id: 11
 
 train:
-    learning_rate: 2.e-3
+    learning_rate: 5.e-4
     gamma_lr: 0.5
     num_epoch: 100
     schedule: []
@@ -24,7 +24,7 @@ train:
         transformer_grow_iter: 2785
         momentum_bn: 0.1
         momentum: 0.0
-        arc_sigma_dec_iter: 100000
+        arc_sigma_dec_iter: 50000
 
 eval:
     parse_threshold: 0.1
@@ -95,10 +95,10 @@ model:
         arc:
             enable: true
             simple: true
-            num_sample: 16
-            angle_std: 18
+            num_sample: 4
+            angle_std: 20
             min_angle_std: 3
-            scale_std: 3
+            scale_std: 2
             min_scale_std: 0.5
             sampler: gaussian
             weight_dist: uniform
