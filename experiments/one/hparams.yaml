@@ -100,8 +100,8 @@ model:
             min_angle_std: 3
             scale_std: 2
             min_scale_std: 0.5
-            sampler: gaussian
-            weight_dist: uniform
+            sampler: uniform
+            weight_dist: gaussian
 dataset:
     profile: coco
     subset: 0.3
