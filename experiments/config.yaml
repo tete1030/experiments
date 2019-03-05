@@ -24,6 +24,7 @@ default: &DEFAULT
     train_drop_last: false
     detect_anomaly: false
     nvprof: false
+    save_runs: true
 
 profile: &PROFILE
     <<: *DEFAULT
@@ -51,10 +52,12 @@ fast: &FAST
     fast_pass_valid: 1
     check: true
     detect_anomaly: true
+    save_runs: false
 
 fastresume:
     <<: *FAST
     resume: true
+    save_runs: true
 
 resume: &RESUME
     <<: *DEFAULT

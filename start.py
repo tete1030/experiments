@@ -286,9 +286,9 @@ def cleanup(resume_run_id, caught_exception, exit_exception):
 
         do_trash = False
         if resume_run_id is None:
-            if isinstance(exit_exception, ExitWithDelete):
-                do_trash = True
-            elif not ask("Save run and checkpoint?", posstr="y", negstr="trash", ansretry=2, ansdefault=True, timeout_sec=60 if caught_exception is None else None):
+            if isinstance(exit_exception, ExitWithDelete) or \
+                    not config.save_runs or \
+                    not ask("Save run and checkpoint?", posstr="y", negstr="trash", ansretry=2, ansdefault=True, timeout_sec=60 if caught_exception is None else None):
                 do_trash = True
 
         if do_trash:

@@ -3,7 +3,7 @@ exp:
     id: 10
 
 train:
-    learning_rate: 5.e-4
+    learning_rate: 1.e-3
     gamma_lr: 0.5
     num_epoch: 100
     schedule: []
@@ -100,8 +100,8 @@ model:
             min_angle_std: 3
             scale_std: 2
             min_scale_std: 0.5
-            sampler: uniform
-            weight_dist: gaussian
+            sampler: gaussian
+            weight_dist: uniform
 dataset:
     profile: coco
     subset: 0.3
