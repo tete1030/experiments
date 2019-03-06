@@ -321,7 +321,7 @@ void displace_gaus_backward(
     const at::Tensor gaus_weight, at::optional<at::Tensor> grad_gaus_weight,
     const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
     // dtype
-    float fill, bool simple) {
+    float fill, bool simple=false, bool divide_distance=true) {
 
   CHECK_INPUT(data_in);
   if (grad_in) {
@@ -351,12 +351,13 @@ void displace_gaus_backward(
   auto stream = THCState_getCurrentStream((THCState*)state);
   
   if (!simple) {
-    displace_gaus_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill);
+    displace_gaus_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill, divide_distance);
   } else {
-    displace_gaus_simple_backward_cuda(stream, data_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill);
+    displace_gaus_simple_backward_cuda(stream, data_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill, divide_distance);
   }
 }
 
+namespace py = pybind11;
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("displace_forward", &displace_forward, "displace forward");
   m.def("displace_backward", &displace_backward, "displace backward");
@@ -374,7 +375,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("displace_pos_sep_backward_data", &displace_pos_sep_backward_data, "positional displace backward for data");
   m.def("displace_pos_sep_backward_offset", &displace_pos_sep_backward_offset, "positional displace backward for offset");
   m.def("displace_gaus_forward", &displace_gaus_forward, "positional displace with gaussian backward for offset");
-  m.def("displace_gaus_backward", &displace_gaus_backward, "positional displace with gaussian backward for offset");
+  m.def("displace_gaus_backward", &displace_gaus_backward, "positional displace with gaussian backward for offset",
+    py::arg("state"),
+    py::arg("data_in"), py::arg("grad_in"),
+    py::arg("offsets_x"), py::arg("offsets_y"),
+    py::arg("grad_offsets_x"), py::arg("grad_offsets_y"),
+    py::arg("channel_per_offset"),
+    py::arg("grad_out"),
+    py::arg("gaus_angles"), py::arg("gaus_scales"),
+    py::arg("gaus_weight"), py::arg("grad_gaus_weight"),
+    py::arg("gaus_cos_angles"), py::arg("gaus_sin_angles"),
+    py::arg("fill"),
+    py::arg("simple") = false, py::arg("divide_distance") = true);
   m.def("cudnn_convolution_backward_input", &at::cudnn_convolution_backward_input, "cudnn convolution backward for input");
   m.def("cudnn_convolution_backward_weight", &at::cudnn_convolution_backward_weight, "cudnn convolution backward for weight");
   m.def("cudnn_convolution_backward_bias", &at::cudnn_convolution_backward_bias, "cudnn convolution backward for bias");
