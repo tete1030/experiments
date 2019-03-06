@@ -60,7 +60,7 @@ model:
         init_random_scale: 0.
         num_blk: 2
         num_offset: [64, 192]
-        post_groups: [1, 1]
+        post_groups: [16, 16]
         num_out_channel: 128
         bind_chan: 1
         reuse_offset: false
@@ -96,9 +96,9 @@ model:
             enable: true
             simple: true
             num_sample: 32
-            angle_std: 50
+            angle_std: 30
             min_angle_std: 3
-            scale_std: 5
+            scale_std: 3
             min_scale_std: 0.5
             sampler: gaussian
             weight_dist: uniform
