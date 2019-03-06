@@ -156,7 +156,7 @@ __global__ void displace_pos_forward_cuda_kernel(
     offsets_y += offset_index;
 
     int w_in_int = w_out - *offsets_x;
-    int h_in_int = w_out - *offsets_x;
+    int h_in_int = h_out - *offsets_y;
 
     data_in += ((i_samp * num_channel + i_channel) * height_in + h_in_int) * width_in + w_in_int;
     if (h_in_int >= 0 && h_in_int < height_in && w_in_int >= 0 && w_in_int < width_in) {
@@ -392,7 +392,7 @@ __global__ void displace_pos_backward_cuda_kernel(
     offsets_y += offset_index;
 
     int w_in_int = w_out - *offsets_x;
-    int h_in_int = w_out - *offsets_x;
+    int h_in_int = h_out - *offsets_y;
 
     if (h_in_int >= 0 && h_in_int < height_in && w_in_int >= 0 && w_in_int < width_in) {
       int64_t data_in_index = ((i_samp * num_channel + i_channel) * height_in + h_in_int) * width_in + w_in_int;

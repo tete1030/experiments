@@ -308,34 +308,19 @@ __global__ void displace_gaus_backward_cuda_kernel(
       }
 
       if (UseGradOffsets) {
-        // // Use offset different
-        // float offoff_x = new_offset_x - val_offset_x;
-        // float offoff_y = new_offset_y - val_offset_y;
-        // float anglescale_norm = hypot(gaus_angle * val_offset_scale, gaus_scale);
-        // float cur_grad_off_base = cur_grad_gaus_weight * val_gaus_weight * anglescale_norm / hypot(offoff_x, offoff_y);
-        // grad_x += cur_grad_off_base * offoff_x;
-        // grad_y += cur_grad_off_base * offoff_y;
-
+        // // Use offset difference
+        // float cur_grad_x_dis = new_offset_x - val_offset_x;
+        // float cur_grad_y_dis = new_offset_y - val_offset_y;
         // Use angle and scale
-        float cur_grad_off_base = cur_grad_gaus_weight * val_gaus_weight;
-        grad_x += cur_grad_off_base /
-          (gaus_scale * val_offset_x / val_offset_scale + gaus_angle * (-val_offset_y));
-        grad_y += cur_grad_off_base /
-          (gaus_scale * val_offset_y / val_offset_scale + gaus_angle * val_offset_x);
+        float cur_grad_x_dis = gaus_scale * val_offset_x / val_offset_scale + gaus_angle * (-val_offset_y);
+        float cur_grad_y_dis = gaus_scale * val_offset_y / val_offset_scale + gaus_angle * val_offset_x;
+        // (delta_value with respect to delta_dis) * (delta_dis with respect to delta_x)
+        // (valdis / cur_grad_off_dis) * (cur_grad_x_dis / cur_grad_off_dis);
+        float cur_grad_off_dis_square = max(0.25, cur_grad_x_dis * cur_grad_x_dis + cur_grad_y_dis * cur_grad_y_dis);
+        float cur_grad_off_base = cur_grad_gaus_weight * val_gaus_weight / cur_grad_off_dis_square;
+        grad_x += cur_grad_off_base * cur_grad_x_dis;
+        grad_y += cur_grad_off_base * cur_grad_y_dis;
 
-        // // Use scale-only
-        // float cur_grad_off_base = cur_grad_gaus_weight * val_gaus_weight;
-        // grad_x += cur_grad_off_base *
-        //   (gaus_scale * val_offset_x / val_offset_scale);
-        // grad_y += cur_grad_off_base *
-        //   (gaus_scale * val_offset_y / val_offset_scale);
-
-        // // Use angle-only
-        // float cur_grad_off_base = cur_grad_gaus_weight * val_gaus_weight;
-        // grad_x += cur_grad_off_base *
-        //   (gaus_angle * (-val_offset_y));
-        // grad_y += cur_grad_off_base *
-        //   (gaus_angle * val_offset_x);
       }
 
 #ifndef SEP_SAMPLE
