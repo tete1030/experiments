@@ -96,9 +96,9 @@ model:
             enable: true
             simple: true
             num_sample: 32
-            angle_std: 20
+            angle_std: 30
             min_angle_std: 3
-            scale_std: 2
+            scale_std: 3
             min_scale_std: 0.5
             sampler: gaussian
             weight_dist: uniform
