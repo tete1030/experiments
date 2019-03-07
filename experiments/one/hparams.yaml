@@ -60,6 +60,7 @@ model:
         init_random_scale: 0.
         num_blk: 2
         num_offset: [64, 192]
+        num_transform: [16, 48]
         post_groups: [1, 1]
         num_out_channel: 128
         bind_chan: 1

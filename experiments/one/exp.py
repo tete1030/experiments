@@ -778,6 +778,7 @@ class OffsetBlock(nn.Module):
             post_atten_source="input",
             post_atten_space_norm=False,
             post_groups=1,
+            num_transform=None,
             disable_arc=False):
         super(OffsetBlock, self).__init__()
         self.height = height
@@ -804,7 +805,7 @@ class OffsetBlock(nn.Module):
                 hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT else self.inplanes,
                 num_offset,
                 bottleneck=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.BOTTLENECK,
-                single_regress=False,
+                num_regress=num_transform,
                 scale_grow_step=1 / hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None,
                 absolute_regressor=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ABSOLUTE_REGRESSOR)
         else:
@@ -1046,6 +1047,7 @@ class SimpleEstimator(nn.Module):
                     cur_num_channel,
                     num_out_channel,
                     hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET[i],
+                    num_transform=hparams.MODEL.LEARNABLE_OFFSET.NUM_TRANSFORM[i] if hparams.MODEL.LEARNABLE_OFFSET.NUM_TRANSFORM else None,
                     use_atten=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.ENABLE,
                     atten_source=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SOURCE,
                     atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SPACE_NORM,

@@ -64,16 +64,15 @@ class TransformCoordinate(Function):
         return grad_offsets_x, grad_offsets_y, grad_angle_ksin, grad_angle_kcos
 
 class OffsetTransformer(nn.Module):
-    def __init__(self, inplanes, num_offsets, bottleneck=None, single_regress=True, scale_grow_step=None, absolute_regressor=False):
+    def __init__(self, inplanes, num_offsets, bottleneck=None, num_regress=None, scale_grow_step=None, absolute_regressor=False):
         super(OffsetTransformer, self).__init__()
         self.inplanes = inplanes
         self.num_offsets = num_offsets
         self.bottleneck = bottleneck
-        self.single_regress = single_regress
+        self.num_regress = num_regress
         self.use_absolute_regressor = absolute_regressor
-        # assert not bottleneck or not single_regress, "single_regress should not be specified when using bottleneck"
         if not self.use_absolute_regressor:
-            first_layer_channels = (1 if self.single_regress else num_offsets) if bottleneck is None else bottleneck
+            first_layer_channels = (self.num_regress if self.num_regress else num_offsets) if bottleneck is None else bottleneck
             use_bias = False if bottleneck is None else True
 
             scale_regressor_mods = []
@@ -91,7 +90,7 @@ class OffsetTransformer(nn.Module):
             self.angle_regressor = nn.Sequential(*angle_regressor_mods)
         else:
             num_last_inp_channels = inplanes if bottleneck is None else bottleneck
-            num_last_out_channels = (1 if self.single_regress else num_offsets) if bottleneck is None else num_offsets
+            num_last_out_channels = (self.num_regress if self.num_regress else num_offsets) if bottleneck is None else num_offsets
 
             scale_regressor_mods = []
             if bottleneck is not None:
@@ -169,8 +168,8 @@ class OffsetTransformer(nn.Module):
 
             scale = 1 + scale
             angle = angle * np.pi
-            angle_ksin = (angle.sin() * scale).expand(-1, offset_size[-2], -1, -1)
-            angle_kcos = (angle.cos() * scale).expand(-1, offset_size[-2], -1, -1)
+            angle_ksin = angle.sin() * scale
+            angle_kcos = angle.cos() * scale
 
             scale_size = scale.size()
         else:
@@ -187,6 +186,12 @@ class OffsetTransformer(nn.Module):
 
             offsets_x, offsets_y = TransformCoordinate.apply(offsets_x, offsets_y, angle_bias_sin, angle_bias_cos)
             scale_size = scale.size()
+
+        if angle_ksin.size(1) != offset_size[-2]:
+            assert offset_size[-2] % angle_ksin.size(1) == 0, "Number of offsets should be interger times of number of regress results"
+            expand_size = offset_size[-2] // angle_ksin.size(1)
+            angle_ksin = angle_ksin[:, :, None].repeat(1, 1, expand_size, 1, 1).view(angle_ksin.size(0), -1, angle_ksin.size(2), angle_ksin.size(3))
+            angle_kcos = angle_kcos[:, :, None].repeat(1, 1, expand_size, 1, 1).view(angle_kcos.size(0), -1, angle_kcos.size(2), angle_kcos.size(3))
 
         if offset_dim == 2:
             offsets_x = offsets_x.view(1, -1, 1, 1).expand(scale_size[0], -1, scale_size[2], scale_size[3])
