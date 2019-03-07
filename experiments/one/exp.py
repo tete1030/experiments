@@ -934,6 +934,13 @@ class OffsetBlock(nn.Module):
             elif self._atten_source == "transformer":
                 assert transformer_source is not None
                 atten_source = transformer_source
+                if atten_source.size()[-2:] != out_dis.size()[-2:]:
+                    height_new = out_dis.size(-2)
+                    width_new = out_dis.size(-1)
+                    height_ori = atten_source.size(-2)
+                    width_ori = atten_source.size(-1)
+                    assert height_new / height_ori == width_new / width_ori and height_new > height_ori
+                    atten_source = F.interpolate(atten_source, size=(height_new, width_new), mode="bilinear", align_corners=True)
             out_atten = self.atten_displace(atten_source)
             out_dis = out_dis * out_atten
         else:
@@ -947,6 +954,13 @@ class OffsetBlock(nn.Module):
             elif self._post_atten_source == "transformer":
                 assert transformer_source is not None
                 post_atten_source = transformer_source
+                if post_atten_source.size()[-2:] != out_post.size()[-2:]:
+                    height_new = out_post.size(-2)
+                    width_new = out_post.size(-1)
+                    height_ori = post_atten_source.size(-2)
+                    width_ori = post_atten_source.size(-1)
+                    assert height_new / height_ori == width_new / width_ori and height_new > height_ori
+                    post_atten_source = F.interpolate(post_atten_source, size=(height_new, width_new), mode="bilinear", align_corners=True)
             out_post = out_post * self.atten_post(post_atten_source)
 
         if self.downsample is not None:
@@ -987,14 +1001,16 @@ class TransformFeature(nn.Module):
         cur_num_channel = 64
         num_out_channel = hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE
         offblks = []
+        shape_factor = 4
         for i in range(hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_BLK):
             offblks.append(
                 OffsetBlock(
-                    hparams.MODEL.INP_SHAPE[1] // 4,
-                    hparams.MODEL.INP_SHAPE[0] // 4,
+                    hparams.MODEL.INP_SHAPE[1] // shape_factor,
+                    hparams.MODEL.INP_SHAPE[0] // shape_factor,
                     cur_num_channel,
                     num_out_channel,
                     hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_OFFSET[i],
+                    stride=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.STRIDE[i],
                     use_atten=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ATTEN.ENABLE,
                     atten_source=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ATTEN.SOURCE,
                     atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ATTEN.SPACE_NORM,
@@ -1003,6 +1019,7 @@ class TransformFeature(nn.Module):
                     post_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.POST_ATTEN.SPACE_NORM,
                     use_transformer=False,
                     disable_arc=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.DISABLE_ARC))
+            shape_factor *= 2
             cur_num_channel = num_out_channel
         self.offblk = nn.Sequential(*offblks)
 
