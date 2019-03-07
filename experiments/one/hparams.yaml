@@ -3,7 +3,7 @@ exp:
     id: 11
 
 train:
-    learning_rate: 2.e-3
+    learning_rate: 1.e-3
     gamma_lr: 0.5
     num_epoch: 100
     schedule: []
@@ -19,7 +19,7 @@ train:
         lr_regressor: 1.e-3
         lr_transformer: 1.e-3
         lr_dpool_sigma: 5.e-4
-        gamma_lr: 0.3
+        gamma_lr: 0.9
         decay_step_lr: 100000 # 15 * 6543
         transformer_grow_iter: 2785
         momentum_bn: 0.1
