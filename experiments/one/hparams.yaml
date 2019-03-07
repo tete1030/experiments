@@ -3,7 +3,7 @@ exp:
     id: 11
 
 train:
-    learning_rate: 5.e-4
+    learning_rate: 1.e-3
     gamma_lr: 0.5
     num_epoch: 100
     schedule: []
@@ -60,7 +60,7 @@ model:
         init_random_scale: 0.
         num_blk: 2
         num_offset: [64, 192]
-        post_groups: [16, 16]
+        post_groups: [1, 1]
         num_out_channel: 128
         bind_chan: 1
         reuse_offset: false
