@@ -78,6 +78,19 @@ class Experiment(BaseExperiment):
                 hparams.MODEL.OUT_SHAPE[1],
                 hparams.MODEL.OUT_SHAPE[0]).cuda()
 
+        transformer_load = hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.LOAD
+        if transformer_load and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE:
+            if not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+                log_i("Loading of transformer is disabled due to non-independent transformer")
+            else:
+                TRANSFORMER_PREFIX = "module.transformer."
+                state_dict = torch.load(transformer_load)["state_dict"]
+                state_dict = dict(
+                    map(lambda x: (x[0][len(TRANSFORMER_PREFIX):], x[1]),
+                        filter(lambda x: x[0].startswith(TRANSFORMER_PREFIX), state_dict.items())))
+                log_i("Loading transformer")
+                self.model.module.transformer.load_state_dict(state_dict)
+
     def init_optimizer(self):
         def _print_parameters(para_groups, all_para_pair):
             print("Parameter groups:")
@@ -553,7 +566,7 @@ class Experiment(BaseExperiment):
         for output_map in output_maps:
             if not hparams.MODEL.REGRESS_PREDICT:
                 loss_map = loss_map + ((output_map - det_map_gt_cuda).pow(2) * \
-                    masking_final).mean()
+                    masking_final).mean().sqrt()
             else:
                 kp_pred_reg = self.pose_regressor(output_map)
                 loss_map = loss_map + ((kp_pred_reg - keypoint_cuda[:, :, :2]).norm(dim=-1)[:, :, None, None] * masking_final).mean()

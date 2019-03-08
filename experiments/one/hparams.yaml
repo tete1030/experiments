@@ -45,7 +45,7 @@ log:
 model:
     inp_shape: [192, 256] # W, H
     out_shape: [48, 64] # W, H
-    multi_predict: true
+    multi_predict: false
     gaussian_kernel: 1.4
     regress_predict: false
     loss_dpool_cof: 1.e-6
@@ -78,6 +78,7 @@ model:
             source: transformer
         dpool_size: 7
         transformer:
+            load: checkpoint/oneoff_11/Mar07_140125/checkpoint_77.pth.tar
             num_blk: 2
             num_offset: [64, 192]
             stride: [1, 1]
