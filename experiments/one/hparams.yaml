@@ -45,6 +45,7 @@ log:
 model:
     inp_shape: [192, 256] # W, H
     out_shape: [48, 64] # W, H
+    multi_predict: true
     gaussian_kernel: 1.4
     regress_predict: false
     loss_dpool_cof: 1.e-6

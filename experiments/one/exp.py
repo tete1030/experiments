@@ -553,12 +553,17 @@ class Experiment(BaseExperiment):
         else:
             assert False
 
-        if not hparams.MODEL.REGRESS_PREDICT:
-            loss_map = ((output_maps - det_map_gt_cuda).pow(2) * \
-                masking_final).mean().sqrt()
-        else:
-            kp_pred_reg = self.pose_regressor(output_maps)
-            loss_map = ((kp_pred_reg - keypoint_cuda[:, :, :2]).norm(dim=-1)[:, :, None, None] * masking_final).mean()
+        if not hparams.MODEL.MULTI_PREDICT:
+            output_maps = [output_maps]
+
+        loss_map = 0
+        for output_map in output_maps:
+            if not hparams.MODEL.REGRESS_PREDICT:
+                loss_map = loss_map + ((output_map - det_map_gt_cuda).pow(2) * \
+                    masking_final).mean().sqrt()
+            else:
+                kp_pred_reg = self.pose_regressor(output_map)
+                loss_map = loss_map + ((kp_pred_reg - keypoint_cuda[:, :, :2]).norm(dim=-1)[:, :, None, None] * masking_final).mean()
 
         epoch_ctx.set_iter_data("loss_map", loss_map)
 
@@ -578,7 +583,7 @@ class Experiment(BaseExperiment):
         epoch_ctx.set_iter_data("loss", loss)
 
         if not train or config.vis:
-            kp_pred, score = parse_map(output_maps, thres=hparams.EVAL.PARSE_THRESHOLD)
+            kp_pred, score = parse_map(output_maps[-1], thres=hparams.EVAL.PARSE_THRESHOLD)
             kp_pred_affined = kp_pred.copy()
             for samp_i in range(batch_size):
                 kp_pred_affined[samp_i, :, :2] = kpt_affine(kp_pred_affined[samp_i, :, :2] * FACTOR, np.linalg.pinv(transform_mat[samp_i])[:2])
@@ -595,7 +600,7 @@ class Experiment(BaseExperiment):
                 if not hasattr(epoch_ctx, "store_counter"):
                     epoch_ctx.store_counter = 0
                 if epoch_ctx.store_counter < 30:
-                    epoch_ctx.add_store("pred", {"image_index": image_ids, "img": np.ascontiguousarray(self.train_dataset.restore_image(img.data.cpu().numpy())), "gt": det_maps_gt, "pred": output_maps})
+                    epoch_ctx.add_store("pred", {"image_index": image_ids, "img": np.ascontiguousarray(self.train_dataset.restore_image(img.data.cpu().numpy())), "gt": det_maps_gt, "pred": output_maps[-1]})
                 epoch_ctx.store_counter += 1
 
         if config.vis and False:
@@ -620,7 +625,7 @@ class Experiment(BaseExperiment):
                 for i in range(min(1, batch_size)):
                     nrows = 3; ncols = 6
 
-                    pred_resized = batch_resize((output_maps[i].data.cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8) , img.size()[-2:])
+                    pred_resized = batch_resize((output_maps[-1][i].data.cpu().numpy().clip(0, 1) * 255).round().astype(np.uint8) , img.size()[-2:])
                     
                     fig, axes = plt.subplots(nrows, ncols, squeeze=False)
                     for ax in axes.flat:
@@ -758,13 +763,22 @@ class DynamicPooling(nn.Module):
         return pooled
 
 class SequentialForOffsetBlockTransformer(nn.Sequential):
-    def forward(self, input, extra):
+    def forward(self, input_, extra, collect_outputs=False):
+        if collect_outputs:
+            outputs = []
+        out = input_
         for module in self._modules.values():
             if isinstance(module, OffsetBlock):
-                input = module(input, transformer_source=extra)
+                out = module(out, transformer_source=extra)
             else:
-                input = module(input)
-        return input
+                out = module(out)
+
+            if collect_outputs:
+                outputs.append(out)
+        if collect_outputs:
+            return outputs
+        else:
+            return out
 
 class OffsetBlock(nn.Module):
     def __init__(
@@ -1056,6 +1070,7 @@ class SimpleEstimator(nn.Module):
         cur_num_channel = 64
         num_out_channel = hparams.MODEL.LEARNABLE_OFFSET.NUM_OUT_CHANNEL
         offblks = []
+        predictors = []
         for i in range(hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK):
             offblks.append(
                 OffsetBlock(
@@ -1074,9 +1089,14 @@ class SimpleEstimator(nn.Module):
                     post_groups=hparams.MODEL.LEARNABLE_OFFSET.POST_GROUPS[i],
                     use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE))
             cur_num_channel = num_out_channel
+            if hparams.MODEL.MULTI_PREDICT:
+                predictors.append(self._make_predictor(cur_num_channel, num_class))
         self.offblk = SequentialForOffsetBlockTransformer(*offblks)
         
-        self.predictor = self._make_predictor(num_out_channel, num_class)
+        if hparams.MODEL.MULTI_PREDICT:
+            self.predictor = nn.ModuleList(predictors)
+        else:
+            self.predictor = self._make_predictor(num_out_channel, num_class)
 
     def _make_predictor(self, planes, num_class):
         layers = []
@@ -1098,6 +1118,9 @@ class SimpleEstimator(nn.Module):
         else:
             assert transform_features is not None
 
-        off = self.offblk(self.pre(x), transform_features)
+        off = self.offblk(self.pre(x), transform_features, collect_outputs=hparams.MODEL.MULTI_PREDICT)
 
-        return self.predictor(off)
+        if hparams.MODEL.MULTI_PREDICT:
+            return list(map(lambda px: px[0](px[1]), zip(self.predictor, off)))
+        else:
+            return self.predictor(off)
