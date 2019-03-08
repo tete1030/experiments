@@ -560,7 +560,7 @@ class Experiment(BaseExperiment):
         for output_map in output_maps:
             if not hparams.MODEL.REGRESS_PREDICT:
                 loss_map = loss_map + ((output_map - det_map_gt_cuda).pow(2) * \
-                    masking_final).mean().sqrt()
+                    masking_final).mean()
             else:
                 kp_pred_reg = self.pose_regressor(output_map)
                 loss_map = loss_map + ((kp_pred_reg - keypoint_cuda[:, :, :2]).norm(dim=-1)[:, :, None, None] * masking_final).mean()
