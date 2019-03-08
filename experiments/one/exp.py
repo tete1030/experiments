@@ -71,6 +71,11 @@ class Experiment(BaseExperiment):
         globalvars.displace_mods = list()
         globalvars.dpools = list()
         globalvars.arc_displacers = list()
+        self.train_transformer_pointer = bool(hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.LOSS_POINTER_COF > 0)
+        if self.train_transformer_pointer:
+            assert hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE
+            assert hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ABSOLUTE_REGRESSOR
+            assert hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT
 
         self.model = nn.DataParallel(MyPose(self.num_parts).cuda())
         if hparams.MODEL.REGRESS_PREDICT:
@@ -543,7 +548,11 @@ class Experiment(BaseExperiment):
         if config.vis:
             globalvars.cur_img = img_cuda
 
-        output_maps = self.model(img_cuda)
+        output_maps, pointer_loss = self.model(img_cuda, keypoints=keypoint_cuda)
+
+        if pointer_loss is not None:
+            pointer_loss = pointer_loss * hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.LOSS_POINTER_COF
+            epoch_ctx.set_iter_data("loss_pointer", pointer_loss)
 
         mask_notlabeled = (keypoint_cuda[:, :, 2] <= 0.1)
         mask_labeled = (~mask_notlabeled)
@@ -585,6 +594,8 @@ class Experiment(BaseExperiment):
             globalvars.cur_img = None
 
         loss = loss_map + loss_dpool
+        if pointer_loss is not None:
+            loss = loss + pointer_loss
 
         epoch_ctx.set_iter_data("loss", loss)
 
@@ -653,12 +664,19 @@ class Experiment(BaseExperiment):
         else:
             loss_dpool_val = None
 
+        if "loss_pointer" in epoch_ctx.iter_data:
+            loss_pointer_val = epoch_ctx.iter_data["loss_pointer"].item()
+        else:
+            loss_pointer_val = None
+
         loss_map_val = epoch_ctx.iter_data["loss_map"].item()
         loss_val = epoch_ctx.iter_data["loss"].item()
         if train and tb_writer is not None:
             tb_writer.add_scalar("loss/map", loss_map_val, progress["step"])
             if loss_dpool_val is not None:
                 tb_writer.add_scalar("loss/dpool", loss_dpool_val, progress["step"])
+            if loss_pointer_val is not None:
+                tb_writer.add_scalar("loss/pointer", loss_pointer_val, progress["step"])
             tb_writer.add_scalar("loss/all_train", loss_val, progress["step"])
 
         epoch_ctx.add_scalar("loss", loss_val)

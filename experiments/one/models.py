@@ -298,22 +298,57 @@ class OffsetBlock(nn.Module):
 
         return out_final
 
+class PointerLoss(nn.Module):
+    def __init__(self, num_channels, num_class, bipointer=None):
+        super().__init__()
+        if bipointer:
+            raise NotImplementedError()
+        self.num_class = num_class
+        self.regressor = nn.Sequential(
+            nn.Conv2d(num_channels, num_channels, kernel_size=1),
+            nn.BatchNorm2d(num_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(num_channels, num_class*3, kernel_size=1),
+            nn.BatchNorm2d(num_class*3))
+
+    def forward(self, inp, keypoints):
+        offx, offy, scale = self.regressor(inp).split(self.num_class, dim=1)
+        scale = F.relu(scale)
+        norm = ((offx.pow(2) + offy.pow(2)).sqrt() + np.finfo(np.float).eps.item()) / (scale +  + np.finfo(np.float).eps.item())
+        offx = offx / norm
+        offy = offy / norm
+        # mask = mask.sigmoid()
+        # mask = mask / mask.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
+        Y = torch.arange(inp.size(2)).to(offy, non_blocking=True)[None, None, :, None].expand_as(offy)
+        X = torch.arange(inp.size(3)).to(offx, non_blocking=True)[None, None, None, :].expand_as(offx)
+        return (((X + offx - keypoints[:, :, None, None, 0]).pow(2) + (Y + offy - keypoints[:, :, None, None, 1]).pow(2)).mean(dim=-1).mean(dim=-1) * (keypoints[:, :, 2] > 0).float()).mean()
+
 class MyPose(nn.Module):
     def __init__(self, num_class):
         super(MyPose, self).__init__()
+        pointer_loss = None
         if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
             self.transformer = TransformFeature()
+            if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.LOSS_POINTER_COF > 0:
+                pointer_loss = PointerLoss(
+                    hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE,
+                    num_class)
         else:
             self.transformer = None
         self.estimator = SimpleEstimator(num_class)
+        self.pointer_loss = pointer_loss
 
-    def forward(self, x):
+    def forward(self, x, keypoints=None):
+        pointer_loss = None
         if self.transformer is not None:
             transform_features = self.transformer(x)
+            if self.pointer_loss:
+                assert keypoints is not None
+                pointer_loss = self.pointer_loss(transform_features, keypoints)
         else:
             transform_features = None
         prediction = self.estimator(x, transform_features)
-        return prediction
+        return prediction, pointer_loss
 
 class TransformFeature(nn.Module):
     def __init__(self):
