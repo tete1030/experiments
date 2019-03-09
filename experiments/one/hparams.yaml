@@ -79,7 +79,7 @@ model:
         dpool_size: 7
         transformer:
             load: null
-            loss_pointer_cof: 1.e-5
+            loss_pointer_cof: 0
             num_blk: 2
             num_offset: [64, 192]
             stride: [1, 1]
@@ -101,9 +101,9 @@ model:
             enable: true
             simple: true
             num_sample: 32
-            angle_std: 30
+            angle_std: 60
             min_angle_std: 3
-            scale_std: 3
+            scale_std: 5
             min_scale_std: 0.5
             sampler: gaussian
             weight_dist: uniform
@@ -114,9 +114,9 @@ dataset:
     coco:
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
-        scale_factor: 0.25
-        rotate_factor: 30
-        translation_factor: 0.05
+        scale_factor: 0.5
+        rotate_factor: 60
+        translation_factor: 0.1
     mpii:
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
