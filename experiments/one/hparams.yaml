@@ -60,7 +60,7 @@ model:
         init_stride: 0
         init_random_scale: 0.
         num_blk: 2
-        num_offset: [64, 192]
+        num_offset: [64, 64, 64, 64]
         num_transform: null
         post_groups: [1, 1]
         num_out_channel: 128
@@ -81,7 +81,7 @@ model:
             load: null
             loss_pointer_cof: 0
             num_blk: 2
-            num_offset: [64, 64, 64, 64]
+            num_offset: [64, 192]
             stride: [1, 1]
             num_feature: 256
             enable: true
