@@ -59,10 +59,10 @@ model:
     learnable_offset:
         init_stride: 0
         init_random_scale: 0.
-        num_blk: 2
+        num_blk: 4
         num_offset: [64, 64, 64, 64]
         num_transform: null
-        post_groups: [1, 1]
+        post_groups: [1, 1, 1, 1]
         num_out_channel: 128
         bind_chan: 1
         reuse_offset: false

@@ -363,6 +363,7 @@ class TransformFeature(nn.Module):
         num_out_channel = hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE
         offblks = []
         shape_factor = 4
+        assert len(hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.STRIDE) == len(hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_OFFSET) == hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_BLK
         for i in range(hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_BLK):
             offblks.append(
                 OffsetBlock(
@@ -418,6 +419,8 @@ class SimpleEstimator(nn.Module):
         num_out_channel = hparams.MODEL.LEARNABLE_OFFSET.NUM_OUT_CHANNEL
         offblks = []
         predictors = []
+        assert len(hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET) == len(hparams.MODEL.LEARNABLE_OFFSET.POST_GROUPS) == hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK
+        assert hparams.MODEL.LEARNABLE_OFFSET.NUM_TRANSFORM is None or len(hparams.MODEL.LEARNABLE_OFFSET.NUM_TRANSFORM) == hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK
         for i in range(hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK):
             offblks.append(
                 OffsetBlock(
