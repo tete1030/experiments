@@ -100,7 +100,6 @@ class OffsetTransformer(nn.Module):
                     scale_regressor_mods.append(nn.Conv2d(inplanes, bottleneck, kernel_size=1, bias=False))
                 scale_regressor_mods.append(nn.Conv2d(num_last_inp_channels, num_last_out_channels, kernel_size=1, bias=False))
                 scale_regressor_mods.append(nn.BatchNorm2d(num_last_out_channels))
-                scale_regressor_mods.append(nn.Softsign())
                 self.scale_regressor = nn.Sequential(*scale_regressor_mods)
             else:
                 self.scale_regressor = None
@@ -187,7 +186,7 @@ class OffsetTransformer(nn.Module):
             trans_size = scale.size()
         else:
             if self.scale_regressor is not None:
-                scale = 1 + self.scale_regressor(x)
+                scale = self.scale_regressor(x).clamp(max=88.722835).exp()
             else:
                 scale = None
             pre_angle = self.pre_angle_regressor(x)
