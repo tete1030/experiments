@@ -64,7 +64,7 @@ class TransformCoordinate(Function):
         return grad_offsets_x, grad_offsets_y, grad_angle_ksin, grad_angle_kcos
 
 class OffsetTransformer(nn.Module):
-    def __init__(self, inplanes, num_offsets, bottleneck=None, num_regress=None, scale_grow_step=None, absolute_regressor=False):
+    def __init__(self, inplanes, num_offsets, bottleneck=None, num_regress=None, scale_grow_step=None, absolute_regressor=False, sep_scale=True):
         super(OffsetTransformer, self).__init__()
         self.inplanes = inplanes
         self.num_offsets = num_offsets
@@ -72,6 +72,8 @@ class OffsetTransformer(nn.Module):
         self.num_regress = num_regress
         self.use_absolute_regressor = absolute_regressor
         if not self.use_absolute_regressor:
+            if not sep_scale:
+                raise ValueError("Cannot use separate scale")
             first_layer_channels = (self.num_regress if self.num_regress else num_offsets) if bottleneck is None else bottleneck
             use_bias = False if bottleneck is None else True
 
@@ -92,13 +94,16 @@ class OffsetTransformer(nn.Module):
             num_last_inp_channels = inplanes if bottleneck is None else bottleneck
             num_last_out_channels = (self.num_regress if self.num_regress else num_offsets) if bottleneck is None else num_offsets
 
-            scale_regressor_mods = []
-            if bottleneck is not None:
-                scale_regressor_mods.append(nn.Conv2d(inplanes, bottleneck, kernel_size=1, bias=False))
-            scale_regressor_mods.append(nn.Conv2d(num_last_inp_channels, num_last_out_channels, kernel_size=1, bias=False))
-            scale_regressor_mods.append(nn.BatchNorm2d(num_last_out_channels))
-            scale_regressor_mods.append(nn.Softsign())
-            self.scale_regressor = nn.Sequential(*scale_regressor_mods)
+            if sep_scale:
+                scale_regressor_mods = []
+                if bottleneck is not None:
+                    scale_regressor_mods.append(nn.Conv2d(inplanes, bottleneck, kernel_size=1, bias=False))
+                scale_regressor_mods.append(nn.Conv2d(num_last_inp_channels, num_last_out_channels, kernel_size=1, bias=False))
+                scale_regressor_mods.append(nn.BatchNorm2d(num_last_out_channels))
+                scale_regressor_mods.append(nn.Softsign())
+                self.scale_regressor = nn.Sequential(*scale_regressor_mods)
+            else:
+                self.scale_regressor = None
 
             if bottleneck is None:
                 self.pre_angle_regressor = lambda x: x
@@ -171,21 +176,26 @@ class OffsetTransformer(nn.Module):
             angle_ksin = angle.sin() * scale
             angle_kcos = angle.cos() * scale
 
-            scale_size = scale.size()
+            trans_size = scale.size()
         else:
-            scale = 1 + self.scale_regressor(x)
+            if self.scale_regressor is not None:
+                scale = 1 + self.scale_regressor(x)
+            else:
+                scale = None
             pre_angle = self.pre_angle_regressor(x)
             angle_kcos = self.angle_x_regressor(pre_angle)
             angle_ksin = self.angle_y_regressor(pre_angle)
-            angle_knorm = torch.stack([angle_kcos, angle_ksin], dim=0).norm(dim=0) / scale
-            angle_kcos = angle_kcos / angle_knorm
-            angle_ksin = angle_ksin / angle_knorm
+
+            if scale is not None:
+                angle_knorm = torch.stack([angle_kcos, angle_ksin], dim=0).norm(dim=0) / scale
+                angle_kcos = angle_kcos / angle_knorm
+                angle_ksin = angle_ksin / angle_knorm
 
             angle_bias_cos = self.angle_bias.cos().expand_as(offsets_x)
             angle_bias_sin = self.angle_bias.sin().expand_as(offsets_x)
 
             offsets_x, offsets_y = TransformCoordinate.apply(offsets_x, offsets_y, angle_bias_sin, angle_bias_cos)
-            scale_size = scale.size()
+            trans_size = angle_kcos.size()
 
         if angle_ksin.size(1) != offset_size[-2]:
             assert offset_size[-2] % angle_ksin.size(1) == 0, "Number of offsets should be interger times of number of regress results"
@@ -194,11 +204,11 @@ class OffsetTransformer(nn.Module):
             angle_kcos = angle_kcos[:, :, None].repeat(1, 1, expand_size, 1, 1).view(angle_kcos.size(0), -1, angle_kcos.size(2), angle_kcos.size(3))
 
         if offset_dim == 2:
-            offsets_x = offsets_x.view(1, -1, 1, 1).expand(scale_size[0], -1, scale_size[2], scale_size[3])
-            offsets_y = offsets_y.view(1, -1, 1, 1).expand(scale_size[0], -1, scale_size[2], scale_size[3])
+            offsets_x = offsets_x.view(1, -1, 1, 1).expand(trans_size[0], -1, trans_size[2], trans_size[3])
+            offsets_y = offsets_y.view(1, -1, 1, 1).expand(trans_size[0], -1, trans_size[2], trans_size[3])
         elif offset_dim == 3:
-            offsets_x = offsets_x.view(offset_size[0], offset_size[1], 1, 1).expand(-1, -1, scale_size[2], scale_size[3])
-            offsets_y = offsets_y.view(offset_size[0], offset_size[1], 1, 1).expand(-1, -1, scale_size[2], scale_size[3])
+            offsets_x = offsets_x.view(offset_size[0], offset_size[1], 1, 1).expand(-1, -1, trans_size[2], trans_size[3])
+            offsets_y = offsets_y.view(offset_size[0], offset_size[1], 1, 1).expand(-1, -1, trans_size[2], trans_size[3])
 
         new_offsets_x, new_offsets_y = TransformCoordinate.apply(offsets_x, offsets_y, angle_ksin, angle_kcos)
         if self.use_absolute_regressor and use_effect_scale:

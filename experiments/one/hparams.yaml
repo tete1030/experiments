@@ -59,10 +59,10 @@ model:
     learnable_offset:
         init_stride: 0
         init_random_scale: 0.
-        num_blk: 4
-        num_offset: [64, 64, 64, 64]
+        num_blk: 2
+        num_offset: [64, 192]
         num_transform: null
-        post_groups: [1, 1, 1, 1]
+        post_groups: [1, 1]
         num_out_channel: 128
         bind_chan: 1
         reuse_offset: false
@@ -80,14 +80,15 @@ model:
         transformer:
             load: null
             loss_pointer_cof: 0
-            num_blk: 2
-            num_offset: [64, 192]
-            stride: [1, 1]
+            num_blk: 4
+            num_offset: [64, 64, 64, 64]
+            stride: [1, 1, 1, 1]
             num_feature: 256
             enable: true
             independent: true
             bottleneck: null
             absolute_regressor: true
+            sep_scale: false
             disable_arc: true
             atten:
                 enable: true

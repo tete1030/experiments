@@ -133,7 +133,8 @@ class OffsetBlock(nn.Module):
                 bottleneck=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.BOTTLENECK,
                 num_regress=num_transform,
                 scale_grow_step=1 / hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None,
-                absolute_regressor=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ABSOLUTE_REGRESSOR)
+                absolute_regressor=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ABSOLUTE_REGRESSOR,
+                sep_scale=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.SEP_SCALE)
         else:
             offset_transformer = None
         if hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE and not disable_arc:
