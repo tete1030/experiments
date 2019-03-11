@@ -63,6 +63,7 @@ model:
         num_offset: [64, 192]
         trans_groups: null
         post_groups: [1, 1]
+        use_transformer: [false, true]
         num_out_channel: 128
         bind_chan: 1
         reuse_offset: false

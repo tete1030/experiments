@@ -185,7 +185,6 @@ class OffsetBlock(nn.Module):
             if atten_source == "input":
                 atten_inplanes = self.inplanes
             elif atten_source == "transformer":
-                assert use_transformer and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT
                 atten_inplanes = hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE
             else:
                 raise ValueError("Unknown atten_source = '{}'".format(atten_source))
@@ -205,7 +204,6 @@ class OffsetBlock(nn.Module):
             if post_atten_source == "input":
                 post_atten_inplanes = self.inplanes
             elif post_atten_source == "transformer":
-                assert use_transformer and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT
                 post_atten_inplanes = hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE
             else:
                 raise ValueError("Unknown post_atten_source = '{}'".format(post_atten_source))
@@ -241,7 +239,8 @@ class OffsetBlock(nn.Module):
                 assert transformer_source is None
                 actual_transformer_source = x
         else:
-            assert transformer_source is None
+            # Currently, when not using transformer, transformer_source can also be used for atten
+            # assert transformer_source is None
             actual_transformer_source = None
 
         if not hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK and globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
@@ -420,7 +419,7 @@ class SimpleEstimator(nn.Module):
         num_out_channel = hparams.MODEL.LEARNABLE_OFFSET.NUM_OUT_CHANNEL
         offblks = []
         predictors = []
-        assert len(hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET) == len(hparams.MODEL.LEARNABLE_OFFSET.POST_GROUPS) == hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK
+        assert len(hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET) == len(hparams.MODEL.LEARNABLE_OFFSET.POST_GROUPS) == len(hparams.MODEL.LEARNABLE_OFFSET.USE_TRANSFORMER) == hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK
         assert hparams.MODEL.LEARNABLE_OFFSET.TRANS_GROUPS is None or len(hparams.MODEL.LEARNABLE_OFFSET.TRANS_GROUPS) == hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK
         for i in range(hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK):
             offblks.append(
@@ -438,7 +437,7 @@ class SimpleEstimator(nn.Module):
                     post_atten_source=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.SOURCE,
                     post_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.SPACE_NORM,
                     post_groups=hparams.MODEL.LEARNABLE_OFFSET.POST_GROUPS[i],
-                    use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE))
+                    use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LEARNABLE_OFFSET.USE_TRANSFORMER[i]))
             cur_num_channel = num_out_channel
             if hparams.MODEL.MULTI_PREDICT:
                 predictors.append(self._make_predictor(cur_num_channel, num_class))
