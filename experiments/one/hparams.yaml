@@ -88,7 +88,7 @@ model:
             independent: true
             bottleneck: null
             absolute_regressor: true
-            sep_scale: false
+            sep_scale: true
             disable_arc: true
             atten:
                 enable: true
