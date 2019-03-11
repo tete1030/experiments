@@ -354,8 +354,7 @@ class TransformFeature(nn.Module):
     def __init__(self):
         super(TransformFeature, self).__init__()
         self.pre = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=True),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
 
@@ -411,8 +410,7 @@ class SimpleEstimator(nn.Module):
         super(SimpleEstimator, self).__init__()
 
         self.pre = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=True),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
         cur_num_channel = 64
