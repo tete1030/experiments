@@ -116,13 +116,13 @@ class OffsetTransformer(nn.Module):
                 nn.Conv2d(num_last_inp_channels, num_last_inp_channels, kernel_size=1),
                 nn.BatchNorm2d(num_last_inp_channels),
                 nn.ReLU(inplace=True),
-                Lambda(lambda x: x / x.sum(dim=1, keepdim=True)),
+                Lambda(lambda x: x / (x.sum(dim=1, keepdim=True) + np.finfo(np.float).eps.item())),
                 nn.Conv2d(num_last_inp_channels, num_last_out_channels, kernel_size=1, bias=False))
             self.angle_y_regressor = nn.Sequential(
                 nn.Conv2d(num_last_inp_channels, num_last_inp_channels, kernel_size=1),
                 nn.BatchNorm2d(num_last_inp_channels),
                 nn.ReLU(inplace=True),
-                Lambda(lambda x: x / x.sum(dim=1, keepdim=True)),
+                Lambda(lambda x: x / (x.sum(dim=1, keepdim=True) + np.finfo(np.float).eps.item())),
                 nn.Conv2d(num_last_inp_channels, num_last_out_channels, kernel_size=1, bias=False))
 
             self.angle_bias = nn.Parameter(torch.zeros(num_offsets, dtype=torch.float))
