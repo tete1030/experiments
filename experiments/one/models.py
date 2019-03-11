@@ -104,7 +104,7 @@ class OffsetBlock(nn.Module):
             post_atten_source="input",
             post_atten_space_norm=False,
             post_groups=1,
-            num_transform=None,
+            trans_groups=None,
             disable_arc=False):
         super(OffsetBlock, self).__init__()
         self.height = height
@@ -131,7 +131,7 @@ class OffsetBlock(nn.Module):
                 hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_FEATURE if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT else self.inplanes,
                 num_offset,
                 bottleneck=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.BOTTLENECK,
-                num_regress=num_transform,
+                num_regress=trans_groups,
                 scale_grow_step=1 / hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None,
                 absolute_regressor=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ABSOLUTE_REGRESSOR,
                 sep_scale=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.SEP_SCALE)
@@ -421,7 +421,7 @@ class SimpleEstimator(nn.Module):
         offblks = []
         predictors = []
         assert len(hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET) == len(hparams.MODEL.LEARNABLE_OFFSET.POST_GROUPS) == hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK
-        assert hparams.MODEL.LEARNABLE_OFFSET.NUM_TRANSFORM is None or len(hparams.MODEL.LEARNABLE_OFFSET.NUM_TRANSFORM) == hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK
+        assert hparams.MODEL.LEARNABLE_OFFSET.TRANS_GROUPS is None or len(hparams.MODEL.LEARNABLE_OFFSET.TRANS_GROUPS) == hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK
         for i in range(hparams.MODEL.LEARNABLE_OFFSET.NUM_BLK):
             offblks.append(
                 OffsetBlock(
@@ -430,7 +430,7 @@ class SimpleEstimator(nn.Module):
                     cur_num_channel,
                     num_out_channel,
                     hparams.MODEL.LEARNABLE_OFFSET.NUM_OFFSET[i],
-                    num_transform=hparams.MODEL.LEARNABLE_OFFSET.NUM_TRANSFORM[i] if hparams.MODEL.LEARNABLE_OFFSET.NUM_TRANSFORM else None,
+                    trans_groups=hparams.MODEL.LEARNABLE_OFFSET.TRANS_GROUPS[i] if hparams.MODEL.LEARNABLE_OFFSET.TRANS_GROUPS else None,
                     use_atten=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.ENABLE,
                     atten_source=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SOURCE,
                     atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SPACE_NORM,
