@@ -1,5 +1,7 @@
 import torch
+import numpy as np
 from torch import nn
+import torch.nn.functional as F
 from utils.globals import config, hparams, globalvars
 from utils.log import log_i, log_w, log_progress
 from lib.models.spacenorm import SpaceNormalization
@@ -46,6 +48,31 @@ class Attention(nn.Module):
 
         return self.atten(x)
 
+class DynamicPooling(nn.Module):
+    def __init__(self, num_channels, kernel_size):
+        super(DynamicPooling, self).__init__()
+        self.num_channels = num_channels
+        self.kernel_size = kernel_size
+        assert kernel_size % 2 == 1
+        x = torch.arange(-(kernel_size // 2), (kernel_size // 2) + 1).view(1, -1).expand(kernel_size, -1)
+        y = torch.arange(-(kernel_size // 2), (kernel_size // 2) + 1).view(-1, 1).expand(-1, kernel_size)
+        dissq = torch.stack((x, y), dim=0).pow(2).float().sum(dim=0)
+        self.register_buffer("dissq", dissq)
+        self.sigma = nn.Parameter(torch.zeros(num_channels))
+        self.sigma.data.fill_(kernel_size / 2 / 2)
+        self.register_buffer("max_sigma", torch.tensor(kernel_size / 2, dtype=torch.float))
+        self.eps = np.finfo(np.float32).eps.item()
+        globalvars.dpools.append(self)
+
+    def forward(self, x):
+        kernel = torch.exp(-(self.dissq / 2)[None] / (self.sigma.pow(2)[:, None, None] + self.eps))
+        kernel = kernel / kernel.sum(dim=1, keepdim=True).sum(dim=2, keepdim=True)
+        kernel = kernel.view(self.num_channels, 1, self.kernel_size, self.kernel_size)
+        expx = torch.exp(x.clamp(max=88.722835))
+        gp_expx = F.conv2d(expx, kernel, padding=(self.kernel_size // 2, self.kernel_size // 2), groups=self.num_channels)
+        pooled = torch.log(gp_expx + self.eps)
+        return pooled
+
 class OffsetBlock(nn.Module):
     _counter = 0
     def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1):
@@ -86,6 +113,11 @@ class OffsetBlock(nn.Module):
         else:
             self.downsample = None
 
+        if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
+            self.dpool = DynamicPooling(self.displace_planes, hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE)
+        else:
+            self.dpool = None
+
     def forward(self, x):
         if config.check:
             assert x.size(2) == self.height and x.size(3) == self.width
@@ -94,6 +126,10 @@ class OffsetBlock(nn.Module):
             return x
 
         out_pre = self.pre_offset(x)
+
+        if self.dpool:
+            out_pre = self.dpool(out_pre)
+
         out_dis = self.displace(out_pre)
 
         if self.atten_displace is not None:

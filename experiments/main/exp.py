@@ -43,6 +43,9 @@ class Experiment(BaseExperiment):
                 if dm.offset.size(0) == 0:
                     continue
                 self.move_dis_avgmeter.append(OffsetCycleAverageMeter(hparams.LOG.MOVE_AVERAGE_CYCLE, (dm.offset.data * dm.offset_scale).cpu()))
+            self.change_sigma_avgmeter = []
+            for dp in globalvars.dpools:
+                self.change_sigma_avgmeter.append(OffsetCycleAverageMeter(hparams.LOG.SIGMA_CHANGE_AVERAGE_CYCLE, dp.sigma.detach().cpu().abs()))
         else:
             self.move_dis_avgmeter = None
 
@@ -69,6 +72,7 @@ class Experiment(BaseExperiment):
     def init_model(self):
         globalvars.early_predictor_size = list()
         globalvars.displace_mods = list()
+        globalvars.dpools = list()
         if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             globalvars.early_predictors = list()
             globalvars.pre_early_predictor_outs = dict()
@@ -88,6 +92,15 @@ class Experiment(BaseExperiment):
         assert OffsetBlock._counter == len(hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO) or not hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK
 
     def init_optimizer(self):
+        def _print_parameters(para_groups, all_para_pair):
+            print("Parameter groups:")
+            para2name_dict = dict(map(lambda p: (p[1], p[0]), all_para_pair))
+            for group_name, paras in para_groups.items():
+                print("  " + group_name + ":")
+                for para_name in map(para2name_dict.get, paras):
+                    print("    " + para_name)
+                print("")
+
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in globalvars.displace_mods if hasattr(dm, "offset")]))
             self.offset_regressor_parameters = list(filter(lambda x: x.requires_grad, list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in globalvars.displace_mods if hasattr(dm, "offset_regressor")]))))
@@ -95,13 +108,26 @@ class Experiment(BaseExperiment):
             self.offset_parameters = []
             self.offset_regressor_parameters = []
 
+        if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
+            self.dpool_parameters = list(filter(lambda x: x.requires_grad, [dp.sigma for dp in globalvars.dpools]))
+        else:
+            self.dpool_parameters = []
+
         if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             self.early_predictor_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([ep.parameters() for ep in globalvars.early_predictors])))
         else:
             self.early_predictor_parameters = []
 
-        special_parameter_ids = list(map(lambda x: id(x), self.offset_parameters + self.offset_regressor_parameters + self.early_predictor_parameters))
+        special_parameter_ids = list(map(lambda x: id(x), self.offset_parameters + self.dpool_parameters + self.offset_regressor_parameters + self.early_predictor_parameters))
         self.normal_parameters = list(filter(lambda x: x.requires_grad and id(x) not in special_parameter_ids, self.model.parameters()))
+
+        _print_parameters(
+            dict(
+                offset=self.offset_parameters,
+                offset_regressor=self.offset_regressor_parameters,
+                early_predictor=self.early_predictor_parameters,
+                dpool=self.dpool_parameters),
+            self.model.named_parameters())
 
         self.optimizer = torch.optim.Adam(
             self.normal_parameters,
@@ -115,6 +141,9 @@ class Experiment(BaseExperiment):
         if len(self.offset_regressor_parameters) > 0:
             offset_optimizer_args.append(
                 {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams.TRAIN.OFFSET.LR_REGRESSOR, "init_lr": hparams.TRAIN.OFFSET.LR_REGRESSOR})
+        if len(self.dpool_parameters) > 0:
+            offset_optimizer_args.append(
+                {"para_name": "offset_dpool_lr", "params": self.dpool_parameters, "lr": hparams.TRAIN.OFFSET.LR_DPOOL_SIGMA, "init_lr": hparams.TRAIN.OFFSET.LR_DPOOL_SIGMA})
         if len(offset_optimizer_args) > 0:
             self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
         else:
@@ -329,6 +358,8 @@ class Experiment(BaseExperiment):
                 offset_disabled = False
         if not offset_disabled:
             torch.save([(dm.get_all_offsets(detach=True) * dm.offset_scale).cpu() for dm in globalvars.displace_mods], os.path.join(globalvars.main_context.checkpoint_dir, "offset_{}.pth".format(step)))
+            if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
+                torch.save([dp.sigma.cpu() for dp in globalvars.dpools], os.path.join(globalvars.main_context.checkpoint_dir, "dpool_{}.pth".format(step)))
 
     def epoch_end(self, epoch, step, evaluate_only):
         if not evaluate_only and not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
@@ -348,6 +379,10 @@ class Experiment(BaseExperiment):
         self.optimizer.step()
         if optimize_offset:
             self.offset_optimizer.step()
+            if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
+                for idp, dp in enumerate(globalvars.dpools):
+                    sigma_data = dp.sigma.data
+                    sigma_data[sigma_data.abs() > dp.max_sigma] = dp.max_sigma
         if self.early_predictor_optimizer:
             self.early_predictor_optimizer.step()
 
@@ -400,22 +435,32 @@ class Experiment(BaseExperiment):
             globalvars.cur_img = None
 
         if not hparams.MODEL.DETAIL.FIRST_ESP_ONLY:
-            loss = 0.
+            loss_map = 0.
             for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
                 if ilabel < len(det_map_gt_cuda) - 1:
-                    loss = loss + ((outv - gtv).pow(2) * masking_early).mean().sqrt()
+                    loss_map = loss_map + ((outv - gtv).pow(2) * masking_early).mean().sqrt()
                 else:
-                    loss = loss + ((outv - gtv).pow(2) * masking_final).mean().sqrt()
+                    loss_map = loss_map + ((outv - gtv).pow(2) * masking_final).mean().sqrt()
 
             if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
                 assert len(early_predictor_outputs) == len(hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX)
                 for ilabel, outv in enumerate(early_predictor_outputs):
-                    loss = loss + ((outv - det_map_gt_cuda[hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX[ilabel]]).pow(2) * \
+                    loss_map = loss_map + ((outv - det_map_gt_cuda[hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX[ilabel]]).pow(2) * \
                         masking_early).mean().sqrt()
         else:
-            loss = ((early_predictor_outputs[0] - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][0]]).pow(2) * \
+            loss_map = ((early_predictor_outputs[0] - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][0]]).pow(2) * \
                 masking_early).mean().sqrt()
 
+        epoch_ctx.set_iter_data("loss_map", loss_map)
+
+        loss_dpool = 0
+        if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1 and hparams.MODEL.LOSS_DPOOL_COF is not None:
+            for idp, dp in enumerate(globalvars.dpools):
+                loss_dpool = loss_dpool + dp.sigma.pow(2).mean()
+            loss_dpool = loss_dpool * hparams.MODEL.LOSS_DPOOL_COF
+            epoch_ctx.set_iter_data("loss_dpool", loss_dpool)
+
+        loss = loss_map + loss_dpool
         epoch_ctx.set_iter_data("loss", loss)
 
         if not train or config.vis:
@@ -479,23 +524,51 @@ class Experiment(BaseExperiment):
     def summarize_iter(self, epoch_ctx:EpochContext, progress:dict, train:bool):
         tb_writer = globalvars.main_context.get("tb_writer")
 
+        if "loss_dpool" in epoch_ctx.iter_data:
+            loss_dpool_val = epoch_ctx.iter_data["loss_dpool"].item()
+        else:
+            loss_dpool_val = None
+
+        loss_map_val = epoch_ctx.iter_data["loss_map"].item()
         loss_val = epoch_ctx.iter_data["loss"].item()
         if train and tb_writer is not None:
+            tb_writer.add_scalar("loss/map", loss_map_val, progress["step"])
+            if loss_dpool_val is not None:
+                tb_writer.add_scalar("loss/dpool", loss_dpool_val, progress["step"])
             tb_writer.add_scalar("loss/all_train", loss_val, progress["step"])
+
         epoch_ctx.add_scalar("loss", loss_val)
 
         if train and not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer is not None and progress["step"] >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
-            move_dis_avg = list()
-            move_dis = list()
-            for idm in range(len(globalvars.displace_mods)):
-                dm = globalvars.displace_mods[idm]
-                if dm.offset.size(0) == 0:
-                    continue
-                self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.offset_scale).cpu())
-                move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
-                move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
-            tb_writer.add_scalar("{}/{}".format("move_dis", "mod"), np.mean(move_dis_avg), progress["step"] + 1)
-            tb_writer.add_scalar("{}/{}".format("move_dis", "mod_cur"), np.mean(move_dis), progress["step"] + 1)
+            if tb_writer:
+                move_dis_avg = list()
+                move_dis = list()
+                for idm in range(len(globalvars.displace_mods)):
+                    dm = globalvars.displace_mods[idm]
+                    if dm.offset.size(0) == 0:
+                        continue
+                    self.move_dis_avgmeter[idm].update((dm.offset.detach() * dm.offset_scale).cpu())
+                    move_dis_avg.append(self.move_dis_avgmeter[idm].avg)
+                    move_dis.append(self.move_dis_avgmeter[idm].lastdiff)
+                move_dis_avg = np.mean(move_dis_avg)
+                move_dis = np.mean(move_dis)
+
+                tb_writer.add_scalar("{}/{}".format("move_dis", "cur"), move_dis, progress["step"])
+                tb_writer.add_scalar("{}/{}".format("move_dis", "avg"), move_dis_avg, progress["step"])
+                tb_writer.add_scalar("{}/{}".format("move_dis", "right_ratio"), move_dis_avg / move_dis, progress["step"])
+
+                if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
+                    sigma_change = list()
+                    sigma_change_avg = list()
+                    for idp, dp in enumerate(globalvars.dpools):
+                        self.change_sigma_avgmeter[idp].update(dp.sigma.detach().cpu().abs())
+                        sigma_change.append(self.change_sigma_avgmeter[idp].lastdiff_dir)
+                        sigma_change_avg.append(self.change_sigma_avgmeter[idp].avg_dir)
+                    sigma_change = np.mean(sigma_change)
+                    sigma_change_avg = np.mean(sigma_change_avg)
+                    tb_writer.add_scalar("{}/{}".format("sigma_change", "cur"), sigma_change, progress["step"])
+                    tb_writer.add_scalar("{}/{}".format("sigma_change", "avg"), sigma_change_avg, progress["step"])
+                    tb_writer.add_scalar("{}/{}".format("sigma_change", "right_ratio"), sigma_change_avg / sigma_change, progress["step"])
 
             if (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
                 self.save_offsets(progress["step"] + 1)
