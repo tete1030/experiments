@@ -28,12 +28,16 @@ class Bottleneck(nn.Module):
         self.block_index = block_index
 
         if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK:
-            self.offset_block = OffsetBlock(
-                hparams.MODEL.INP_SHAPE[1] // self.inshape_factor,
-                hparams.MODEL.INP_SHAPE[0] // self.inshape_factor,
-                self.inplanes,
-                self.inplanes,
-                int(self.inplanes * hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter]))
+            expand_chan_ratio = hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter]
+            if expand_chan_ratio > 0:
+                self.offset_block = OffsetBlock(
+                    hparams.MODEL.INP_SHAPE[1] // self.inshape_factor,
+                    hparams.MODEL.INP_SHAPE[0] // self.inshape_factor,
+                    self.inplanes,
+                    self.inplanes,
+                    int(self.inplanes * expand_chan_ratio))
+            else:
+                self.offset_block = None
             OffsetBlock._counter += 1
         else:
             self.offset_block = None
