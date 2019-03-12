@@ -86,17 +86,17 @@ def get_args():
     mode_group.add_argument("--archive", action="store_true")
     mode_group.add_argument("--trash", action="store_true")
     parser_remove.add_argument("--permanant", action="store_true")
-    parser_remove.add_argument("runid", action="append")
+    parser_remove.add_argument("runid", nargs="+")
     parser_remove.set_defaults(func=remove_runs)
 
     parser_archive = subparsers.add_parser("archive")
     parser_archive.add_argument("--trash", action="store_true")
-    parser_archive.add_argument("runid", action="append")
+    parser_archive.add_argument("runid", nargs="+")
     parser_archive.set_defaults(func=archive_runs)
 
     parser_restore = subparsers.add_parser("restore")
     parser_restore.add_argument("--archive", action="store_true")
-    parser_restore.add_argument("runid", action="append")
+    parser_restore.add_argument("runid", nargs="+")
     parser_restore.set_defaults(func=restore_runs)
 
     parser_partaction = subparsers.add_parser("paction")
