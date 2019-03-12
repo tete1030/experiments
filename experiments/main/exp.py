@@ -362,7 +362,7 @@ class Experiment(BaseExperiment):
         batch_size = img.size(0)
         globalvars.progress = progress
 
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and progress["step"] == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and progress["train"]:
+        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and progress["step"] == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and train:
             self.save_offsets(progress["step"])
 
         det_map_gt_cuda = [dm.cuda(non_blocking=True) for dm in det_maps_gt]
