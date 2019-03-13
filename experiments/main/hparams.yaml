@@ -15,7 +15,7 @@ train:
         train_min_step: 6543
         lr: 1.e-3
         lr_regressor: 1.e-3
-        lr_gamma: 1.0
+        lr_gamma: 0.3
         lr_decay_step: 100000 # 15 * 6543
         lr_dpool_sigma: 5.e-4
         bn_momentum: 0.1
@@ -46,11 +46,11 @@ model:
     resnet: 50
     loss_dpool_cof: 1.e-6
     detail:
-        early_predictor_label_index: [3, 2, 1]
+        early_predictor_label_index: [3, 2, 1, 0]
         disable_displace: false
         displace_learnable_offset: true
         early_predictor: true
-        early_predictor_from_offblk: false
+        early_predictor_from_offblk: true
         loss_early: labeled
         loss_final: labeled
         enable_offset_block: true
