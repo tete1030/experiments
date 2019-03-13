@@ -83,6 +83,7 @@ class Experiment(BaseExperiment):
             globalvars.BatchNorm2dImpl = nn.BatchNorm2d
 
         assert hparams.MODEL.DETAIL.EARLY_PREDICTOR or not hparams.MODEL.DETAIL.FIRST_ESP_ONLY
+        assert not hparams.MODEL.DETAIL.FIRST_ESP_ONLY or not hparams.MODEL.DETAIL.EARLY_PREDICTOR_FROM_OFFBLK
 
         pretrained = hparams.MODEL.RESNET_PRETRAINED
         if config.resume:
@@ -445,6 +446,7 @@ class Experiment(BaseExperiment):
             if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
                 assert len(early_predictor_outputs) == len(hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX)
                 for ilabel, outv in enumerate(early_predictor_outputs):
+                    assert (3 - math.log2(globalvars.early_predictor_size[ilabel][1] / 4)) == hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX[ilabel]
                     loss_map = loss_map + ((outv - det_map_gt_cuda[hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX[ilabel]]).pow(2) * \
                         masking_early).mean().sqrt()
         else:
@@ -661,8 +663,7 @@ class Predictor(nn.Module):
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
-        layers.append(nn.Conv2d(num_class, num_class,
-            kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
+        layers.append(nn.BatchNorm2d(num_class))
         if hparams.MODEL.LEARNABLE_OFFSET.USE_IN_PREDICTOR:
             layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, num_class, 256))
 
@@ -725,8 +726,7 @@ class GlobalNet(nn.Module):
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
         layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
-        layers.append(nn.Conv2d(num_class, num_class,
-            kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
+        layers.append(nn.BatchNorm2d(num_class))
         if hparams.MODEL.LEARNABLE_OFFSET.USE_IN_PREDICTOR:
             layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256, 256))
 

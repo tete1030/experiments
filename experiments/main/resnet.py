@@ -36,6 +36,8 @@ class Bottleneck(nn.Module):
                     self.inplanes,
                     self.inplanes,
                     int(self.inplanes * expand_chan_ratio))
+                if hparams.MODEL.DETAIL.EARLY_PREDICTOR and hparams.MODEL.DETAIL.EARLY_PREDICTOR_FROM_OFFBLK:
+                    globalvars.early_predictor_size.append((self.inplanes, self.inshape_factor))
             else:
                 self.offset_block = None
             OffsetBlock._counter += 1
@@ -45,6 +47,8 @@ class Bottleneck(nn.Module):
     def forward(self, x):
         if self.offset_block is not None:
             x = self.offset_block(x)
+            if hparams.MODEL.DETAIL.EARLY_PREDICTOR and hparams.MODEL.DETAIL.EARLY_PREDICTOR_FROM_OFFBLK:
+                globalvars.pre_early_predictor_outs[x.device].append(x)
 
         residual = x
 
@@ -177,7 +181,8 @@ class ResNet(nn.Module):
         for i in range(1, blocks):
             layers.append(block(self.inplanes, planes, inshape_factor=self.inshape_factor, res_index=res_index, block_index=i))
 
-        if res_index < 3:
+        self.early_predictor_source = bool(hparams.MODEL.DETAIL.EARLY_PREDICTOR and not hparams.MODEL.DETAIL.EARLY_PREDICTOR_FROM_OFFBLK)
+        if self.early_predictor_source and res_index < 3:
             globalvars.early_predictor_size.append((self.inplanes, self.inshape_factor))
 
         # Use BreakableSequential to support middle break 
@@ -192,18 +197,18 @@ class ResNet(nn.Module):
         x1, x2, x3, x4 = None, None, None, None
 
         x1 = self.layer1(x)
-        if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
+        if self.early_predictor_source:
             globalvars.pre_early_predictor_outs[x.device].append(x1)
         if hparams.MODEL.DETAIL.FIRST_ESP_ONLY:
             return None
 
         if x1 is not None:
             x2 = self.layer2(x1)
-            if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
+            if self.early_predictor_source:
                 globalvars.pre_early_predictor_outs[x.device].append(x2)
         if x2 is not None:
             x3 = self.layer3(x2)
-            if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
+            if self.early_predictor_source:
                 globalvars.pre_early_predictor_outs[x.device].append(x3)
         if x3 is not None:
             x4 = self.layer4(x3)

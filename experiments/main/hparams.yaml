@@ -46,10 +46,11 @@ model:
     resnet: 50
     loss_dpool_cof: 1.e-6
     detail:
-        early_predictor_label_index: [3, 2, 1]
+        early_predictor_label_index: [3, 2, 1, 0]
         disable_displace: false
         displace_learnable_offset: true
         early_predictor: true
+        early_predictor_from_offblk: true
         loss_early: labeled
         loss_final: labeled
         enable_offset_block: true
