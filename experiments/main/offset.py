@@ -122,7 +122,7 @@ class OffsetBlock(nn.Module):
         if config.check:
             assert x.size(2) == self.height and x.size(3) == self.width
 
-        if globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
+        if not hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK and globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             return x
 
         out_pre = self.pre_offset(x)
