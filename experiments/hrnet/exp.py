@@ -439,21 +439,21 @@ class Experiment(BaseExperiment):
         output_maps = [output_map]
 
         if not hparams.MODEL.DETAIL.FIRST_ESP_ONLY:
-            loss_map = 0.
-            for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
-                if ilabel < len(det_map_gt_cuda) - 1:
-                    loss_map = loss_map + ((outv - gtv).pow(2) * masking_early).mean().sqrt()
-                else:
-                    loss_map = loss_map + ((outv - gtv).pow(2) * masking_final).mean().sqrt()
+            loss_map = ((output_map - det_map_gt_cuda[hparams.MODEL.FINAL_PREDICTOR_INDEX]).pow(2) * masking_final).mean().sqrt()
+            # for ilabel, (outv, gtv) in enumerate(zip(output_maps, det_map_gt_cuda)):
+            #     if ilabel < len(det_map_gt_cuda) - 1:
+            #         loss_map = loss_map + ((outv - gtv).pow(2) * masking_early).mean().sqrt()
+            #     else:
+            #         loss_map = loss_map + ((outv - gtv).pow(2) * masking_final).mean().sqrt()
 
             if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
                 assert len(early_predictor_outputs) == len(hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX)
                 for ilabel, outv in enumerate(early_predictor_outputs):
-                    assert (3 - math.log2(globalvars.early_predictor_size[ilabel][1] / 4)) == hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX[ilabel]
+                    # assert (3 - math.log2(globalvars.early_predictor_size[ilabel][1] / 4)) == hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX[ilabel]
                     loss_map = loss_map + ((outv - det_map_gt_cuda[hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX[ilabel]]).pow(2) * \
                         masking_early).mean().sqrt()
         else:
-            loss_map = ((early_predictor_outputs[0] - det_map_gt_cuda[hparams["model"]["detail"]["early_predictor_label_index"][0]]).pow(2) * \
+            loss_map = ((early_predictor_outputs[0] - det_map_gt_cuda[hparams.MODEL.DETAIL.EARLY_PREDICTOR_LABEL_INDEX[0]]).pow(2) * \
                 masking_early).mean().sqrt()
 
         epoch_ctx.set_iter_data("loss_map", loss_map)
@@ -637,21 +637,11 @@ class Predictor(nn.Module):
     
     def _make_predictor(self, inplanes, input_shape, output_shape, num_class):
         layers = []
-        # lateral of globalNet
-        layers.append(nn.Conv2d(inplanes, 256,
-            kernel_size=1, stride=1, bias=False))
-        layers.append(globalvars.BatchNorm2dImpl(256, momentum=hparams.TRAIN.BN_MOMENTUM))
-        layers.append(nn.ReLU(inplace=True))
-
-        # predict of globalNet
-        layers.append(nn.Conv2d(256, 256,
-            kernel_size=1, stride=1, bias=False))
-        layers.append(globalvars.BatchNorm2dImpl(256, momentum=hparams.TRAIN.BN_MOMENTUM))
-        layers.append(nn.ReLU(inplace=True))
 
         layers.append(nn.Conv2d(256, num_class,
             kernel_size=3, stride=1, padding=1, bias=False))
-        layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
+        if input_shape != output_shape:
+            layers.append(nn.Upsample(size=output_shape, mode='bilinear', align_corners=True))
         layers.append(nn.Conv2d(num_class, num_class,
             kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
         if hparams.MODEL.LEARNABLE_OFFSET.USE_IN_PREDICTOR:

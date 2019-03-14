@@ -42,13 +42,14 @@ model:
     pretrained: pretrained/hrnet_w32-36af842e.pth
     inp_shape: [192, 256] # W, H
     out_shape: [48, 64] # W, H
-    gaussian_kernels: [1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
+    gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
+    final_predictor_index: 3
     loss_dpool_cof: 1.e-6
     detail:
-        early_predictor_label_index: []
+        early_predictor_label_index: [1, 2, 3]
         disable_displace: false
         displace_learnable_offset: true
-        early_predictor: false
+        early_predictor: true
         early_predictor_from_offblk: false
         loss_early: labeled
         loss_final: labeled

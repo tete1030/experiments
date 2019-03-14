@@ -126,7 +126,7 @@ class BasicBlock(nn.Module):
 
 class HighResolutionModule(nn.Module):
     def __init__(self, num_branches, blocks, num_blocks, num_inchannels,
-                 num_channels, fuse_method, offset_expand, multi_scale_output=True):
+                 num_channels, fuse_method, offset_expand, multi_scale_output=True, enable_early_predictor=False):
         super(HighResolutionModule, self).__init__()
         self._check_branches(
             num_branches, blocks, num_blocks, num_inchannels, num_channels)
@@ -140,6 +140,11 @@ class HighResolutionModule(nn.Module):
         self.branches = self._make_branches(
             num_branches, blocks, num_blocks, num_channels, offset_expand)
         self.fuse_layers = self._make_fuse_layers()
+        if hparams.MODEL.DETAIL.EARLY_PREDICTOR and enable_early_predictor:
+            self.predictor_fuse_layer = self._make_predictor_fuse_layer(256)
+            globalvars.early_predictor_size.append((256, 4))
+        else:
+            self.predictor_fuse_layer = None
         self.relu = nn.ReLU(True)
 
     def _check_branches(self, num_branches, blocks, num_blocks,
@@ -269,6 +274,45 @@ class HighResolutionModule(nn.Module):
 
         return nn.ModuleList(fuse_layers)
 
+    def _make_predictor_fuse_layer(self, out_channels):
+        num_branches = self.num_branches
+        num_inchannels = self.num_inchannels
+        fuse_layer = []
+        for j in range(num_branches):
+            if j > 0:
+                fuse_layer.append(
+                    nn.Sequential(
+                        nn.Conv2d(
+                            num_inchannels[j],
+                            out_channels,
+                            1, 1, 0, bias=False
+                        ),
+                        nn.BatchNorm2d(out_channels),
+                        nn.Upsample(scale_factor=2**j, mode='bilinear'),
+                        nn.Conv2d(
+                            out_channels,
+                            out_channels,
+                            3, 1, 1, bias=False, groups=out_channels
+                        ),
+                        nn.BatchNorm2d(out_channels),
+                    )
+                )
+            elif j == 0:
+                fuse_layer.append(
+                    nn.Sequential(
+                        nn.Conv2d(
+                            num_inchannels[j],
+                            out_channels,
+                            1, 1, 0, bias=False
+                        ),
+                        nn.BatchNorm2d(out_channels)
+                    )
+                )
+            
+        fuse_layer = nn.ModuleList(fuse_layer)
+
+        return fuse_layer
+
     def get_num_inchannels(self):
         return self.num_inchannels
 
@@ -289,6 +333,12 @@ class HighResolutionModule(nn.Module):
                 else:
                     y = y + self.fuse_layers[i][j](x[j])
             x_fuse.append(self.relu(y))
+        
+        if self.predictor_fuse_layer:
+            y = 0
+            for i in range(0, len(self.predictor_fuse_layer)):
+                y = y + self.predictor_fuse_layer[i](x[i])
+            globalvars.pre_early_predictor_outs[y.device].append(y)
 
         return x_fuse
 
@@ -314,6 +364,8 @@ class PoseHighResolutionNet(nn.Module):
         self.bn2 = nn.BatchNorm2d(64, momentum=hparams.TRAIN.BN_MOMENTUM)
         self.relu = nn.ReLU(inplace=True)
         self.layer1 = self._make_layer(Bottleneck, 64, 4, offset_expands=hparams.MODEL.HRNET.STAGE1.OFFSET_EXPAND)
+        if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
+            globalvars.early_predictor_size.append((256, 4))
 
         self.stage2_cfg = hparams.MODEL.HRNET.STAGE2
         num_channels = self.stage2_cfg.NUM_CHANNELS
@@ -345,7 +397,7 @@ class PoseHighResolutionNet(nn.Module):
         self.transition3 = self._make_transition_layer(
             pre_stage_channels, num_channels)
         self.stage4, pre_stage_channels = self._make_stage(
-            self.stage4_cfg, num_channels, multi_scale_output=False)
+            self.stage4_cfg, num_channels, multi_scale_output=False, disable_early_predictor=True)
 
         self.final_layer = nn.Conv2d(
             in_channels=pre_stage_channels[0],
@@ -418,7 +470,7 @@ class PoseHighResolutionNet(nn.Module):
         return nn.Sequential(*layers)
 
     def _make_stage(self, layer_config, num_inchannels,
-                    multi_scale_output=True):
+                    multi_scale_output=True, disable_early_predictor=False):
         num_modules = layer_config.NUM_MODULES
         num_branches = layer_config.NUM_BRANCHES
         num_blocks = layer_config.NUM_BLOCKS
@@ -435,6 +487,11 @@ class PoseHighResolutionNet(nn.Module):
             else:
                 reset_multi_scale_output = True
 
+            if not disable_early_predictor and i == num_modules - 1:
+                enable_early_predictor = True
+            else:
+                enable_early_predictor = False
+
             modules.append(
                 HighResolutionModule(
                     num_branches,
@@ -444,7 +501,8 @@ class PoseHighResolutionNet(nn.Module):
                     num_channels,
                     fuse_method,
                     offset_expand[i],
-                    reset_multi_scale_output
+                    multi_scale_output=reset_multi_scale_output,
+                    enable_early_predictor=enable_early_predictor
                 )
             )
             num_inchannels = modules[-1].get_num_inchannels()
@@ -459,6 +517,9 @@ class PoseHighResolutionNet(nn.Module):
         x = self.bn2(x)
         x = self.relu(x)
         x = self.layer1(x)
+
+        if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
+            globalvars.pre_early_predictor_outs[x.device].append(x)
 
         x_list = []
         for i in range(self.stage2_cfg.NUM_BRANCHES):
