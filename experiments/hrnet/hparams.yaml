@@ -13,7 +13,7 @@ train:
     bn_momentum: 0.1
     offset:
         always_train_block: true
-        train_min_step: 2000
+        train_min_step: 500
         lr: 1.e-3
         lr_regressor: 1.e-3
         lr_gamma: 0.3
@@ -49,7 +49,7 @@ model:
         early_predictor_label_index: [1, 2, 3]
         disable_displace: false
         displace_learnable_offset: true
-        early_predictor: true
+        early_predictor: false
         early_predictor_from_offblk: false
         loss_early: labeled
         loss_final: labeled
@@ -81,7 +81,7 @@ model:
             - 'transition3'
             - 'stage4'
         stage1:
-            offset_expand: [0, 0, 0, 2]
+            offset_expand: [0, 0, 0, 0]
         stage2:
             num_modules: 1
             num_branches: 2
@@ -90,7 +90,7 @@ model:
             num_channels: [32, 64]
             fuse_method: sum
             offset_expand:
-                - [[0, 0, 0, 2], [0, 0, 0, 1]]
+                - [[0, 0, 0, 0], [0, 0, 0, 0]]
         stage3:
             num_modules: 4
             num_branches: 3
@@ -99,10 +99,10 @@ model:
             num_channels: [32, 64, 128]
             fuse_method: sum
             offset_expand:
-                - [[0, 0, 0, 2], [0, 0, 0, 1], [0, 0, 0, 0.5]]
-                - [[0, 0, 0, 2], [0, 0, 0, 1], [0, 0, 0, 0.5]]
-                - [[0, 0, 0, 2], [0, 0, 0, 1], [0, 0, 0, 0.5]]
-                - [[0, 0, 0, 2], [0, 0, 0, 1], [0, 0, 0, 0.5]]
+                - [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+                - [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+                - [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+                - [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
         stage4:
             num_modules: 3
             num_branches: 4
@@ -111,9 +111,9 @@ model:
             num_channels: [32, 64, 128, 256]
             fuse_method: sum
             offset_expand:
-                - [[0, 0, 0, 2], [0, 0, 0, 1], [0, 0, 0, 0.5], [0, 0, 0, 0.25]]
-                - [[0, 0, 0, 2], [0, 0, 0, 1], [0, 0, 0, 0.5], [0, 0, 0, 0.25]]
-                - [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+                - [[0, 2, 0, 2], [0, 1, 0, 1], [0, 0.5, 0, 0.5], [0, 0.25, 0, 0.25]]
+                - [[0, 2, 0, 2], [0, 1, 0, 1], [0, 0.5, 0, 0.5], [0, 0.25, 0, 0.25]]
+                - [[0, 2, 0, 0], [0, 1, 0, 0], [0, 0.5, 0, 0], [0, 0.25, 0, 0]]
         final_conv_kernel: 1
 
 dataset:
