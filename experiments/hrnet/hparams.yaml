@@ -1,6 +1,6 @@
 exp:
     name: hrnet
-    id: 1
+    id: 2
 
 train:
     learning_rate: 5.e-4
@@ -13,7 +13,7 @@ train:
     bn_momentum: 0.1
     offset:
         always_train_block: true
-        train_min_step: 6543
+        train_min_step: 2000
         lr: 1.e-3
         lr_regressor: 1.e-3
         lr_gamma: 0.3
@@ -52,7 +52,7 @@ model:
         early_predictor_from_offblk: false
         loss_early: labeled
         loss_final: labeled
-        enable_offset_block: false
+        enable_offset_block: true
         # TODO
         first_esp_only: false
 
