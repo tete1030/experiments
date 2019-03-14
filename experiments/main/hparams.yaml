@@ -46,19 +46,19 @@ model:
     resnet: 50
     loss_dpool_cof: 1.e-6
     detail:
-        early_predictor_label_index: [3, 2, 1, 0]
+        early_predictor_label_index: [3, 2, 1]
         disable_displace: false
         displace_learnable_offset: true
         early_predictor: true
-        early_predictor_from_offblk: true
+        early_predictor_from_offblk: false
         loss_early: labeled
         loss_final: labeled
         enable_offset_block: true
         first_esp_only: false
 
     learnable_offset:
-        expand_chan_ratio: [0, 0, 2, 0, 0, 1, 0, 0, 0, 0, 0.5, 0, 0.25]
-        dpool_size: 7
+        expand_chan_ratio: [4, 2, 2, 2, 1, 1, 1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.25]
+        dpool_size: 0
         bind_chan: 1
         reuse_offset: false
         half_reversed_offset: false
