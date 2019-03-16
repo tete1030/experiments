@@ -415,7 +415,8 @@ class COCOSinglePose(data.Dataset):
                  is_train, img_res=(192, 256), minus_mean=True,
                  ext_border=(0., 0.),
                  kpmap_res=(48, 64), keypoint_res=(48, 64),
-                 kpmap_sigma=1, scale_factor=0.25, rot_factor=30, trans_factor=0.05):
+                 kpmap_sigma=1, scale_factor=0.25, rot_factor=30, trans_factor=0.05,
+                 half_body_prob=0., half_body_num_joints=17):
         """COCO Keypoints Single Person
         
         Arguments:
@@ -465,6 +466,11 @@ class COCOSinglePose(data.Dataset):
             self.coco = anno
         else:
             self.coco = COCO(anno)
+
+        self.upper_body_ids = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+        self.lower_body_ids = (11, 12, 13, 14, 15, 16)
+        self.num_joints_half_body = half_body_num_joints
+        self.prob_half_body = half_body_prob
 
         self.train, self.valid = self._split(split_file)
         if self.minus_mean:
@@ -552,6 +558,35 @@ class COCOSinglePose(data.Dataset):
             assert img_res[0] / keypoint_res[0] == FACTOR and img_res[1] / keypoint_res[1] == FACTOR
         self.resize_scale = resize_scale
 
+    def half_body_transform(self, keypoints):
+        upper_keypoints = []
+        lower_keypoints = []
+        for part_id in range(NUM_PARTS):
+            if keypoints[part_id, 2] > 0:
+                if part_id in self.upper_body_ids:
+                    upper_keypoints.append(keypoints[part_id, :2])
+                else:
+                    lower_keypoints.append(keypoints[part_id, :2])
+
+        if np.random.randn() < 0.5 and len(upper_keypoints) > 2:
+            selected_keypoints = upper_keypoints
+        else:
+            selected_keypoints = lower_keypoints \
+                if len(lower_keypoints) > 2 else upper_keypoints
+
+        if len(selected_keypoints) < 2:
+            return None
+
+        selected_keypoints = np.array(selected_keypoints, dtype=np.float32)
+
+        left_top = np.amin(selected_keypoints, axis=0)
+        right_bottom = np.amax(selected_keypoints, axis=0)
+
+        w = right_bottom[0] - left_top[0]
+        h = right_bottom[1] - left_top[1]
+
+        return np.array([left_top[0] - w * 0.15, left_top[1] - h * 0.15, w * 1.3, h * 1.3], dtype=np.float32)
+
     def __getitem__(self, index):
         sf = float(self.scale_factor)
         rf = float(self.rot_factor)
@@ -593,6 +628,13 @@ class COCOSinglePose(data.Dataset):
         img_size = np.array(list(img_bgr.shape[:2][::-1]), dtype=np.float32) # W, H
         img_res_np = np.array(img_res, dtype=np.float32)
         bbox = np.array(ann['bbox']).reshape(4).astype(np.float32)
+        keypoints = np.array(ann["keypoints"], dtype=np.float32).reshape((NUM_PARTS, 3))
+        if self.is_train:
+            if (np.sum(keypoints[:, 2]) > self.num_joints_half_body
+                and np.random.rand() < self.prob_half_body):
+                new_bbox = self.half_body_transform(keypoints)
+                if new_bbox is not None:
+                    bbox = new_bbox
         crop_size = bbox[2:] * (1 + np.array(self.ext_border, dtype=np.float32))
 
         center = bbox[:2] + bbox[2:] / 2
@@ -637,8 +679,6 @@ class COCOSinglePose(data.Dataset):
         if self.minus_mean:
             img -= self.mean
         img = img.transpose(2, 0, 1)
-
-        keypoints = np.array(ann["keypoints"], dtype=np.float32).reshape((NUM_PARTS, 3))
 
         if flip_status:
             keypoints_tf = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
