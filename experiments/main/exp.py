@@ -177,7 +177,9 @@ class Experiment(BaseExperiment):
             kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
             scale_factor=hparams.DATASET["COCO"].SCALE_FACTOR,
             rot_factor=hparams.DATASET["COCO"].ROTATE_FACTOR,
-            trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR)
+            trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR,
+            half_body_num_joints=hparams.DATASET.COCO.HALF_BODY_NUM_JOINTS,
+            half_body_prob=hparams.DATASET.COCO.HALF_BODY_PROB)
 
         self.val_dataset = datasets.COCOSinglePose(
             "data/mscoco/images2017",
