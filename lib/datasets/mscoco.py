@@ -15,6 +15,8 @@ from lib.utils.imutils import HeatmapGenerator
 from lib.utils.transforms import fliplr_chwimg, fliplr_pts, get_transform, transform
 from pycocotools.coco import COCO
 
+from utils.globals import config
+
 # FLIP_INDEX is an involution map
 FLIP_INDEX = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]
 
@@ -459,8 +461,6 @@ class COCOSinglePose(data.Dataset):
 
         self.heatmap_gen = HeatmapGenerator()
 
-        self.debug = False
-
         # create train/val split
         if isinstance(anno, COCO):
             self.coco = anno
@@ -578,14 +578,15 @@ class COCOSinglePose(data.Dataset):
             return None
 
         selected_keypoints = np.array(selected_keypoints, dtype=np.float32)
+        center = selected_keypoints.mean(axis=0)[:2]
 
-        left_top = np.amin(selected_keypoints, axis=0)
-        right_bottom = np.amax(selected_keypoints, axis=0)
+        left_top = np.amin(selected_keypoints, axis=0)[:2]
+        right_bottom = np.amax(selected_keypoints, axis=0)[:2]
 
-        w = right_bottom[0] - left_top[0]
-        h = right_bottom[1] - left_top[1]
+        w = (right_bottom[0] - left_top[0]) * 1.3
+        h = (right_bottom[1] - left_top[1]) * 1.3
 
-        return np.array([left_top[0] - w * 0.15, left_top[1] - h * 0.15, w * 1.3, h * 1.3], dtype=np.float32)
+        return np.array([center[0] - w  / 2, center[1] - h / 2, w, h], dtype=np.float32)
 
     def __getitem__(self, index):
         sf = float(self.scale_factor)
@@ -629,11 +630,13 @@ class COCOSinglePose(data.Dataset):
         img_res_np = np.array(img_res, dtype=np.float32)
         bbox = np.array(ann['bbox']).reshape(4).astype(np.float32)
         keypoints = np.array(ann["keypoints"], dtype=np.float32).reshape((NUM_PARTS, 3))
+        half_body = False
         if self.is_train:
             if (np.sum(keypoints[:, 2]) > self.num_joints_half_body
                 and np.random.rand() < self.prob_half_body):
                 new_bbox = self.half_body_transform(keypoints)
                 if new_bbox is not None:
+                    half_body = True
                     bbox = new_bbox
         crop_size = bbox[2:] * (1 + np.array(self.ext_border, dtype=np.float32))
 
@@ -707,10 +710,13 @@ class COCOSinglePose(data.Dataset):
         else:
             kp_map = None
 
-        if self.debug:
-            # print("Aug Setting: scale_fac %.2f , rotate_fac %.2f, trans_fac %.2f" % (sf, rf, self.trans_factor))
-            print("Aug: rescale %.2f , rot %.2f , center_off (%.2f, %.2f), flip %s" % (
-                scale_aug, rotate, center_aug_off[0], center_aug_off[1], "Y" if flip_status else "N"))
+        if config.vis:
+            if self.is_train:
+                # print("Aug Setting: scale_fac %.2f , rotate_fac %.2f, trans_fac %.2f" % (sf, rf, self.trans_factor))
+                print("Aug: rescale %.2f , rot %.2f , center_off (%.2f, %.2f), flip %s, half %s" % (
+                    scale_aug, rotate, center_aug_off[0], center_aug_off[1],
+                    "Y" if flip_status else "N",
+                    "Y" if half_body else "N"))
 
             if flip_status:
                 bbox[0] = img_size[0] - bbox[0] - bbox[2]
