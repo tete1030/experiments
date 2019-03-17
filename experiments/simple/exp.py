@@ -145,6 +145,9 @@ class Experiment(BaseExperiment):
                 dpool=self.dpool_parameters),
             self.model.named_parameters())
 
+        num_parameters = sum(map(lambda x: x.numel(), filter(lambda x: x.requires_grad, self.model.parameters())))
+        print(num_parameters)
+
         # Make sure no parameter is shared
         all_parameter_ptrs = list(map(lambda x: x.data_ptr(), all_special_parameters + self.general_parameters))
         assert len(all_parameter_ptrs) == len(np.unique(all_parameter_ptrs)), "shared parameter exists"
@@ -1106,7 +1109,7 @@ class SequentialForOffsetBlockTransformer(nn.Sequential):
     def forward(self, input, extra):
         for module in self._modules.values():
             if isinstance(module, OffsetBlock):
-                if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+                if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
                     assert extra is not None
                     input = module(input, transformer_source=extra)
                 else:
@@ -1146,7 +1149,7 @@ class SimpleEstimator(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.inshape_factor *= 2
-        self.layer1 = self._make_layer(Bottleneck, 64, 3, res_index=0)
+        self.layer1 = self._make_layer(Bottleneck, 64, hparams.MODEL.NUM_BLOCKS, res_index=0)
 
         self.predictor = self._make_predictor(256, num_class)
 
@@ -1201,7 +1204,7 @@ class SimpleEstimator(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        if not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+        if not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE or not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
             assert transform_features is None
         else:
             assert transform_features is not None

@@ -1,6 +1,6 @@
 exp:
     name: simpleoff
-    id: 10
+    id: 11
 
 train:
     learning_rate: 5.e-4
@@ -49,9 +49,10 @@ model:
     regress_predict: false
     loss_featstab: false
     loss_featstab_cof: 1
-    loss_featstab_v2: true
+    loss_featstab_v2: false
     loss_featstab_v2_cof: 1.e-2
     loss_dpool_cof: 1.e-6
+    num_blocks: 3
     detail:
         disable_displace: false
         learnable_offset: true
@@ -60,7 +61,7 @@ model:
 
     learnable_offset:
         init_stride: 0
-        expand_chan_ratio: [1, 1, 1]
+        expand_chan_ratio: [8, 2, 2]
         bind_chan: 1
         reuse_offset: false
         half_reversed_offset: false
@@ -68,10 +69,10 @@ model:
         enable_atten: true
         enable_post_atten: false
         atten_space_norm: false
-        dpool_size: 15
+        dpool_size: 0
         transformer:
             dilation: 1
-            enable: true
+            enable: false
             independent: true
             idp_use_stride: false
             bottleneck: 32
@@ -79,7 +80,7 @@ model:
 
 dataset:
     profile: coco
-    subset: 0.3
+    subset: null
     coco:
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
