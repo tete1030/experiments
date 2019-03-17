@@ -61,7 +61,7 @@ model:
 
     learnable_offset:
         init_stride: 0
-        expand_chan_ratio: [8, 2, 2]
+        expand_chan_ratio: [4, 1, 1]
         bind_chan: 1
         reuse_offset: false
         half_reversed_offset: false
