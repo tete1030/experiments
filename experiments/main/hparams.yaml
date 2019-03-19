@@ -73,11 +73,11 @@ dataset:
     coco:
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
-        scale_factor: 0.35
-        rotate_factor: 45
+        scale_factor: 0.25
+        rotate_factor: 30
         translation_factor: 0.05
         half_body_num_joints: 8
-        half_body_prob: 0.3
+        half_body_prob: -1
     mpii:
         mean_std_file: mean_std.pth
         ext_border: [0.1, 0.15]
