@@ -287,7 +287,7 @@ class Experiment(BaseExperiment):
             self.pose_regressor.load_state_dict(checkpoint["pose_regressor"])
         return checkpoint["epoch"]
 
-    def save_checkpoint(self, checkpoint_full, epoch):
+    def save_checkpoint(self, checkpoint_full, epoch, extra=None):
         checkpoint_dict = {
             "epoch": epoch,
             "state_dict": self.model.state_dict(),
@@ -299,6 +299,8 @@ class Experiment(BaseExperiment):
         }
         if hparams.MODEL.REGRESS_PREDICT:
             checkpoint_dict["pose_regressor"] = self.pose_regressor.state_dict()
+        if extra:
+            checkpoint_dict.update(extra)
         save_checkpoint(checkpoint_dict, checkpoint_full=checkpoint_full, force_replace=True)
 
     def evaluate(self, epoch_ctx:EpochContext, epoch, step):
@@ -343,6 +345,12 @@ class Experiment(BaseExperiment):
                 ]
                 for istat, (stat_type, stat_name) in enumerate(stat_typenames):
                     tb_writer.add_scalar("coco/{}_{}".format(stat_type, stat_name), stats[istat], step)
+            if config.eval_save_checkpoint:
+                self.save_checkpoint(os.path.join(globalvars.main_context.checkpoint_dir, "eval_checkpoint_step_{}_avg_{:05.2f}.pth.tar".format(step, stats[0] * 100)), epoch,
+                                     extra=dict(
+                                         avg=stats[0],
+                                         step=step
+                                     ))
 
         elif self.data_source == "mpii":
             annotates = epoch_ctx.stored["annotates"]
