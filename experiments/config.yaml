@@ -20,6 +20,7 @@ default: &DEFAULT
     check: false
     ignore_hparams_mismatch: false
     save_checkpoint: true
+    eval_save_checkpoint: false
     use_tensorboard: true
     train_drop_last: false
     detect_anomaly: false
