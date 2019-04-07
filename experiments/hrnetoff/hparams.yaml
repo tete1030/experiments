@@ -1,0 +1,137 @@
+exp:
+    name: hrnetoff
+    id: 1
+
+train:
+    learning_rate: 5.e-4
+    lr_gamma: 0.5
+    num_epoch: 100
+    schedule: []
+    train_batch: 16
+    test_batch: 16
+    weight_decay: 0
+    bn_momentum: 0.1
+    offset:
+        always_train_block: true
+        train_min_step: 500
+        lr: 1.e-3
+        lr_regressor: 1.e-3
+        lr_gamma: 0.3
+        lr_decay_step: 100000 # 15 * 6543
+        lr_dpool_sigma: 5.e-4
+        momentum: 0.0
+
+eval:
+    parse_threshold: 0.1
+
+config:
+    store_map: false
+    valid_interval: 1000
+
+log:
+    # TODO: Make log configurable
+    # TODO: log more:
+    # - Unstable network parapmeter changes
+    # - Intermediate result and visualization
+    move_average_cycle: 500
+    offset_save_interval: 1000
+    sigma_change_average_cycle: 500
+
+model:
+    use_gn: false
+    pretrained: null # pretrained/hrnet_w32-36af842e.pth
+    inp_shape: [192, 256] # W, H
+    out_shape: [48, 64] # W, H
+    gaussian_kernels: [1.4] # [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
+    final_predictor_index: 0
+    loss_dpool_cof: 1.e-6
+    detail:
+        early_predictor: false
+        early_predictor_from_offblk: false
+        early_predictor_label_index: [1, 2, 3]
+        disable_displace: false
+        displace_learnable_offset: true
+        loss_early: labeled
+        loss_final: labeled
+        enable_offset_block: true
+        # TODO
+        first_esp_only: false
+
+    learnable_offset:
+        dpool_size: 0
+        bind_chan: 1
+        reuse_offset: false
+        half_reversed_offset: false
+        regress_offset: false
+        use_in_predictor: false
+        enable_atten: true
+        enable_mask: false
+
+    hrnet:
+        pretrained_layers:
+            - 'conv1'
+            - 'bn1'
+            - 'conv2'
+            - 'bn2'
+            - 'layer1'
+            - 'transition1'
+            - 'stage2'
+            - 'transition2'
+            - 'stage3'
+            - 'transition3'
+            - 'stage4'
+        stage1:
+            num_blocks: 2
+            block: offset
+            offset_expand: [1, 0.25]
+        stage2:
+            num_modules: 1
+            num_branches: 2
+            block: offset
+            num_blocks: [2, 2]
+            num_channels: [32, 64]
+            fuse_method: sum
+            offset_expand:
+                - [[2, 2], [1, 1]]
+        stage3:
+            num_modules: 4
+            num_branches: 3
+            block: offset
+            num_blocks: [2, 2, 2]
+            num_channels: [32, 64, 128]
+            fuse_method: sum
+            offset_expand:
+                - [[2, 2], [1, 1], [0.5, 0.5]]
+                - [[2, 2], [1, 1], [0.5, 0.5]]
+                - [[2, 2], [1, 1], [0.5, 0.5]]
+                - [[2, 2], [1, 1], [0.5, 0.5]]
+        stage4:
+            num_modules: 3
+            num_branches: 4
+            block: offset
+            num_blocks: [2, 2, 2, 2]
+            num_channels: [32, 64, 128, 256]
+            fuse_method: sum
+            offset_expand:
+                - [[2, 2], [1, 1], [0.5, 0.5], [0.25, 0.25]]
+                - [[2, 2], [1, 1], [0.5, 0.5], [0.25, 0.25]]
+                - [[2, 2], [1, 1], [0.5, 0.5], [0.25, 0.25]]
+        final_conv_kernel: 1
+
+dataset:
+    profile: coco
+    subset: 0.3
+    coco:
+        mean_std_file: mean_std.pth
+        ext_border: [0.1, 0.15]
+        scale_factor: 0.25
+        rotate_factor: 30
+        translation_factor: 0.05
+        half_body_num_joints: 8
+        half_body_prob: -1
+    mpii:
+        mean_std_file: mean_std.pth
+        ext_border: [0.1, 0.15]
+        scale_factor: 0.25
+        rotate_factor: 30
+        translation_factor: 0.02
