@@ -73,6 +73,7 @@ class Experiment(BaseExperiment):
         globalvars.early_predictor_size = list()
         globalvars.displace_mods = list()
         globalvars.dpools = list()
+        globalvars.arc_displacers = list()
         if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             globalvars.early_predictors = list()
             globalvars.pre_early_predictor_outs = dict()
@@ -396,6 +397,13 @@ class Experiment(BaseExperiment):
                 for idp, dp in enumerate(globalvars.dpools):
                     sigma_data = dp.sigma.data
                     sigma_data[sigma_data.abs() > dp.max_sigma] = dp.max_sigma
+            
+            if hparams.TRAIN.OFFSET.ARC_SIGMA_DEC_ITER > 0:
+                angle_step = float(hparams.MODEL.LEARNABLE_OFFSET.ARC.ANGLE_STD - hparams.MODEL.LEARNABLE_OFFSET.ARC.MIN_ANGLE_STD) / 180 * np.pi / hparams.TRAIN.OFFSET.ARC_SIGMA_DEC_ITER
+                scale_step = float(hparams.MODEL.LEARNABLE_OFFSET.ARC.SCALE_STD - hparams.MODEL.LEARNABLE_OFFSET.ARC.MIN_SCALE_STD) / hparams.TRAIN.OFFSET.ARC_SIGMA_DEC_ITER
+                for arc in globalvars.arc_displacers:
+                    arc.set_angle_std(arc.angle_std().add(-angle_step).clamp(min=arc.min_angle_std, max=arc.max_angle_std))
+                    arc.set_scale_std(arc.scale_std().add(-scale_step).clamp(min=arc.min_scale_std, max=arc.max_scale_std))
         if self.early_predictor_optimizer:
             self.early_predictor_optimizer.step()
 

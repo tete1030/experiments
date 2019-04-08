@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from utils.globals import config, hparams, globalvars
 from utils.log import log_i, log_w, log_progress
 from lib.models.spacenorm import SpaceNormalization
-from lib.models.displacechan import DisplaceChannel
+from lib.models.displacechan import DisplaceChannel, PositionalGaussianDisplaceModule
 
 class Attention(nn.Module):
     def __init__(self, inplanes, outplanes, input_shape=None, bias_planes=0, bias_factor=0, space_norm=True, stride=1):
@@ -96,14 +96,33 @@ class OffsetBlock(nn.Module):
                 self.displace_planes,
                 self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN
             ))
+
+        num_offset = self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN
+        if hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE:
+            arc_displacer = PositionalGaussianDisplaceModule(
+                num_offset,
+                hparams.MODEL.LEARNABLE_OFFSET.ARC.NUM_SAMPLE,
+                float(hparams.MODEL.LEARNABLE_OFFSET.ARC.ANGLE_STD) / 180 * np.pi,
+                hparams.MODEL.LEARNABLE_OFFSET.ARC.SCALE_STD,
+                min_angle_std=float(hparams.MODEL.LEARNABLE_OFFSET.ARC.MIN_ANGLE_STD) / 180 * np.pi,
+                min_scale_std=hparams.MODEL.LEARNABLE_OFFSET.ARC.MIN_SCALE_STD,
+                max_scale_std=5.1,
+                sampler=hparams.MODEL.LEARNABLE_OFFSET.ARC.SAMPLER,
+                weight_dist=hparams.MODEL.LEARNABLE_OFFSET.ARC.WEIGHT_DIST,
+                learnable_sigma=False, transform_sigma=False,
+                simple=hparams.MODEL.LEARNABLE_OFFSET.ARC.SIMPLE)
+            globalvars.arc_displacers.append(arc_displacer)
+        else:
+            arc_displacer = None
         self.displace = DisplaceChannel(
             self.out_height, self.out_width,
-            self.displace_planes, self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN,
+            self.displace_planes, num_offset,
             disable_displace=hparams.MODEL.DETAIL.DISABLE_DISPLACE,
             learnable_offset=hparams.MODEL.DETAIL.DISPLACE_LEARNABLE_OFFSET,
             regress_offset=hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET,
             half_reversed_offset=hparams.MODEL.LEARNABLE_OFFSET.HALF_REVERSED_OFFSET,
-            previous_dischan=globalvars.displace_mods[-1] if hparams.MODEL.LEARNABLE_OFFSET.REUSE_OFFSET and len(globalvars.displace_mods) > 0 else None)
+            previous_dischan=globalvars.displace_mods[-1] if hparams.MODEL.LEARNABLE_OFFSET.REUSE_OFFSET and len(globalvars.displace_mods) > 0 else None,
+            arc_gaussian=arc_displacer)
         globalvars.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
         self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)

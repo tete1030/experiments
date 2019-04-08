@@ -66,6 +66,17 @@ model:
         use_in_predictor: false
         enable_atten: true
         enable_mask: false
+        arc:
+            enable: true
+            simple: true
+            num_sample: 16
+            angle_std: 30
+            min_angle_std: 3
+            scale_std: 3
+            min_scale_std: 0.5
+            sampler: gaussian
+            weight_dist: uniform
+            divide_dist: true
 
     hrnet:
         pretrained_layers:
