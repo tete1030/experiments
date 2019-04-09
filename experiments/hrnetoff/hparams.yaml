@@ -16,11 +16,13 @@ train:
         train_min_step: 500
         lr: 1.e-3
         lr_regressor: 1.e-3
+        lr_transformer: 1.e-3
         lr_gamma: 0.3
         lr_decay_step: 100000 # 15 * 6543
         lr_dpool_sigma: 5.e-4
         momentum: 0.0
         arc_sigma_dec_iter: 200000
+        transformer_grow_iter: 2785
 
 eval:
     parse_threshold: 0.1
@@ -67,6 +69,10 @@ model:
         use_in_predictor: false
         enable_atten: true
         enable_mask: false
+        transformer:
+            enable: true
+            absolute_regressor: true
+            sep_scale: true
         arc:
             enable: true
             simple: true

@@ -116,24 +116,43 @@ class Experiment(BaseExperiment):
         else:
             self.dpool_parameters = []
 
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE:
+            self.offset_transformer_parameters = list(
+                filter(
+                    lambda x: x.requires_grad,
+                    list(itertools.chain.from_iterable([dm.offset_transformer.parameters() for dm in globalvars.displace_mods if dm.offset_transformer is not None]))))
+        else:
+            self.offset_transformer_parameters = []
+
         if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             self.early_predictor_parameters = list(filter(lambda x: x.requires_grad, itertools.chain.from_iterable([ep.parameters() for ep in globalvars.early_predictors])))
         else:
             self.early_predictor_parameters = []
 
-        special_parameter_ids = list(map(lambda x: id(x), self.offset_parameters + self.dpool_parameters + self.offset_regressor_parameters + self.early_predictor_parameters))
-        self.normal_parameters = list(filter(lambda x: x.requires_grad and id(x) not in special_parameter_ids, self.model.parameters()))
+        all_special_parameters = self.offset_parameters + \
+            self.dpool_parameters + \
+            self.offset_regressor_parameters + \
+            self.offset_transformer_parameters + \
+            self.early_predictor_parameters
+
+        special_parameter_ids = list(map(lambda x: id(x), all_special_parameters))
+        self.general_parameters = list(filter(lambda x: x.requires_grad and id(x) not in special_parameter_ids, self.model.parameters()))
 
         _print_parameters(
             dict(
                 offset=self.offset_parameters,
                 offset_regressor=self.offset_regressor_parameters,
+                offset_transformer=self.offset_transformer_parameters,
                 early_predictor=self.early_predictor_parameters,
                 dpool=self.dpool_parameters),
             self.model.named_parameters())
 
+        # Make sure no parameter is shared
+        all_parameter_ptrs = list(map(lambda x: x.data_ptr(), all_special_parameters + self.general_parameters))
+        assert len(all_parameter_ptrs) == len(np.unique(all_parameter_ptrs)), "shared parameter exists"
+
         self.optimizer = torch.optim.Adam(
-            self.normal_parameters,
+            self.general_parameters,
             lr=hparams.TRAIN.LEARNING_RATE,
             weight_decay=hparams.TRAIN.WEIGHT_DECAY)
 
@@ -152,6 +171,13 @@ class Experiment(BaseExperiment):
         else:
             self.offset_optimizer = None
 
+        # Transformer optimizer
+        if len(self.offset_transformer_parameters) > 0:
+            self.transformer_optimizer = \
+                torch.optim.Adam([{"para_name": "offset_regressor_lr", "params": self.offset_transformer_parameters, "lr": hparams.TRAIN.OFFSET.LR_TRANSFORMER, "init_lr": hparams.TRAIN.OFFSET.LR_TRANSFORMER}])
+        else:
+            self.transformer_optimizer = None
+
         if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             self.early_predictor_optimizer = torch.optim.Adam(
                 self.early_predictor_parameters,
@@ -159,6 +185,9 @@ class Experiment(BaseExperiment):
                 weight_decay=hparams.TRAIN.WEIGHT_DECAY)
         else:
             self.early_predictor_optimizer = None
+        self.update_weight = True
+        self.update_offset = True
+        self.update_transformer = True
 
     def init_dataloader(self):
         self.worker_init_fn = nprand_init
@@ -249,6 +278,8 @@ class Experiment(BaseExperiment):
             self.optimizer.load_state_dict(checkpoint["optimizer"])
             if self.offset_optimizer:
                 self.offset_optimizer.load_state_dict(checkpoint["offset_optimizer"])
+            if self.transformer_optimizer:
+                self.transformer_optimizer.load_state_dict(checkpoint["transformer_optimizer"])
             if self.early_predictor_optimizer:
                 self.early_predictor_optimizer.load_state_dict(checkpoint["early_predictor_optimizer"])
         if self.offset_optimizer:
@@ -261,6 +292,7 @@ class Experiment(BaseExperiment):
             "state_dict": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "offset_optimizer": self.offset_optimizer.state_dict() if self.offset_optimizer else None,
+            "transformer_optimizer": self.transformer_optimizer.state_dict() if self.transformer_optimizer else None,
             "early_predictor_optimizer": self.early_predictor_optimizer.state_dict() if self.early_predictor_optimizer else None,
             "move_dis_avgmeter": self.move_dis_avgmeter if not hparams.MODEL.DETAIL.DISABLE_DISPLACE else None
         }
@@ -365,7 +397,9 @@ class Experiment(BaseExperiment):
             if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
                 self.set_offset_learning_rate(epoch, step)
 
-    def save_offsets(self, step):
+            self._update_training_state(0, step, False)
+
+    def _save_offsets(self, step):
         offset_disabled = True
         for dm in globalvars.displace_mods:
             if dm.learnable_offset:
@@ -377,20 +411,24 @@ class Experiment(BaseExperiment):
 
     def epoch_end(self, epoch, step, evaluate_only):
         if not evaluate_only and not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
-            self.save_offsets(step)
+            self._save_offsets(step)
 
     def iter_step(self, epoch_ctx:EpochContext, loss:torch.Tensor, progress:dict):
-        optimize_offset = False
-        if self.offset_optimizer is not None and progress["step"] >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
-            optimize_offset = True
+        optimize_weight = self.update_weight
+        optimize_offset = bool(self.offset_optimizer and self.update_offset)
+        optimize_transformer = bool(self.transformer_optimizer and self.update_transformer)
 
-        self.optimizer.zero_grad()
+        if optimize_weight:
+            self.optimizer.zero_grad()
         if optimize_offset:
             self.offset_optimizer.zero_grad()
+        if optimize_transformer:
+            self.transformer_optimizer.zero_grad()
         if self.early_predictor_optimizer:
             self.early_predictor_optimizer.zero_grad()
         loss.backward()
-        self.optimizer.step()
+        if optimize_weight:
+            self.optimizer.step()
         if optimize_offset:
             self.offset_optimizer.step()
             if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
@@ -404,8 +442,49 @@ class Experiment(BaseExperiment):
                 for arc in globalvars.arc_displacers:
                     arc.set_angle_std(arc.angle_std().add(-angle_step).clamp(min=arc.min_angle_std, max=arc.max_angle_std))
                     arc.set_scale_std(arc.scale_std().add(-scale_step).clamp(min=arc.min_scale_std, max=arc.max_scale_std))
+        if optimize_transformer:
+            self.transformer_optimizer.step()
+            for dm in globalvars.displace_mods:
+                if dm.offset_transformer is not None and dm.offset_transformer.effect_scale is not None:
+                    dm.offset_transformer.effect_scale.data.add_(dm.offset_transformer.scale_grow_step.data).clamp_(0, 1)
+
         if self.early_predictor_optimizer:
             self.early_predictor_optimizer.step()
+
+    def _set_training_state(self, update_weight=None, update_offset=None, update_transformer=None):
+        def set_requires_grad(paras, requires_grad):
+            for para in paras:
+                para.requires_grad = requires_grad
+
+        state_ori = dict()
+        log_i("Set training state: update_weight={}, update_offset={}, update_transformer={}".format(update_weight, update_offset, update_transformer))
+
+        if update_weight is not None:
+            state_ori["update_weight"] = self.update_weight
+            self.update_weight = update_weight
+            set_requires_grad(self.general_parameters, update_weight)
+
+        if update_offset is not None:
+            state_ori["update_offset"] = self.update_offset
+            self.update_offset = update_offset
+            set_requires_grad(self.offset_parameters, update_offset)
+            set_requires_grad(self.offset_regressor_parameters, update_offset)
+            set_requires_grad(self.dpool_parameters, update_offset)
+
+        if update_transformer is not None:
+            state_ori["update_transformer"] = self.update_transformer
+            self.update_transformer = update_transformer
+            set_requires_grad(self.offset_transformer_parameters, update_transformer)
+
+        return state_ori
+
+    def _update_training_state(self, iteration, step, only_on_boundary):
+        if step >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
+            if not only_on_boundary or step == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
+                self._set_training_state(update_offset=True, update_transformer=True)
+        else:
+            if not only_on_boundary or step == 0:
+                self._set_training_state(update_offset=False, update_transformer=False)
 
     def iter_process(self, epoch_ctx: EpochContext, batch: dict, progress: dict, train: bool) -> torch.Tensor:
         image_ids = batch["img_index"].tolist()
@@ -418,8 +497,10 @@ class Experiment(BaseExperiment):
         batch_size = img.size(0)
         globalvars.progress = progress
 
-        if not hparams.MODEL.DETAIL.DISABLE_DISPLACE and self.offset_optimizer and progress["step"] == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP and train:
-            self.save_offsets(progress["step"])
+        if train:
+            self._update_training_state(progress["iter"], progress["step"], True)
+            if self.offset_optimizer and progress["step"] == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
+                self._save_offsets(progress["step"])
 
         det_map_gt_cuda = [dm.cuda(non_blocking=True) for dm in det_maps_gt]
         keypoint_cuda = keypoint.cuda(non_blocking=True)
@@ -595,7 +676,7 @@ class Experiment(BaseExperiment):
                     tb_writer.add_scalar("{}/{}".format("sigma_change", "right_ratio"), sigma_change_avg / sigma_change, progress["step"])
 
             if (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
-                self.save_offsets(progress["step"] + 1)
+                self._save_offsets(progress["step"] + 1)
 
     def summarize_epoch(self, epoch_ctx:EpochContext, progress:dict, train:bool):
         tb_writer = globalvars.main_context.get("tb_writer")

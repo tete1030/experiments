@@ -12,6 +12,8 @@ from .displace import DisplaceFracCUDA, PositionalDisplace, PositionalGaussianDi
 from lib.utils.lambdalayer import Lambda
 import math
 
+EPS = np.finfo(np.float32).eps.item()
+
 class Weighted(nn.Module):
     def __init__(self, num_channels, init=0.):
         super(Weighted, self).__init__()
@@ -99,7 +101,6 @@ class OffsetTransformer(nn.Module):
                 if bottleneck is not None:
                     scale_regressor_mods.append(nn.Conv2d(inplanes, bottleneck, kernel_size=1, bias=False))
                 scale_regressor_mods.append(nn.Conv2d(num_last_inp_channels, num_last_out_channels, kernel_size=1, bias=False))
-                scale_regressor_mods.append(nn.BatchNorm2d(num_last_out_channels))
                 scale_regressor_mods.append(nn.Softsign())
                 self.scale_regressor = nn.Sequential(*scale_regressor_mods)
             else:
@@ -113,16 +114,8 @@ class OffsetTransformer(nn.Module):
                 num_last_inp_channels = bottleneck * 2
 
             self.angle_x_regressor = nn.Sequential(
-                nn.Conv2d(num_last_inp_channels, num_last_inp_channels, kernel_size=1),
-                nn.BatchNorm2d(num_last_inp_channels),
-                nn.ReLU(inplace=True),
-                Lambda(lambda x: x / (x.sum(dim=1, keepdim=True) + np.finfo(np.float).eps.item())),
                 nn.Conv2d(num_last_inp_channels, num_last_out_channels, kernel_size=1, bias=False))
             self.angle_y_regressor = nn.Sequential(
-                nn.Conv2d(num_last_inp_channels, num_last_inp_channels, kernel_size=1),
-                nn.BatchNorm2d(num_last_inp_channels),
-                nn.ReLU(inplace=True),
-                Lambda(lambda x: x / (x.sum(dim=1, keepdim=True) + np.finfo(np.float).eps.item())),
                 nn.Conv2d(num_last_inp_channels, num_last_out_channels, kernel_size=1, bias=False))
 
             self.angle_bias = nn.Parameter(torch.zeros(num_offsets, dtype=torch.float))
@@ -195,7 +188,7 @@ class OffsetTransformer(nn.Module):
             angle_ksin = self.angle_y_regressor(pre_angle)
 
             if scale is not None:
-                angle_knorm = torch.stack([angle_kcos, angle_ksin], dim=0).norm(dim=0) / scale
+                angle_knorm = (torch.stack([angle_kcos, angle_ksin], dim=0).norm(dim=0) + EPS) / (scale + EPS)
                 angle_kcos = angle_kcos / angle_knorm
                 angle_ksin = angle_ksin / angle_knorm
 
