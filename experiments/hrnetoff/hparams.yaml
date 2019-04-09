@@ -20,6 +20,7 @@ train:
         lr_decay_step: 100000 # 15 * 6543
         lr_dpool_sigma: 5.e-4
         momentum: 0.0
+        arc_sigma_dec_iter: 200000
 
 eval:
     parse_threshold: 0.1
