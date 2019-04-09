@@ -101,7 +101,8 @@ class OffsetBlock(nn.Module):
         if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE:
             offset_transformer = OffsetTransformer(
                 self.inplanes,
-                1,
+                num_offset,
+                num_regress=1,
                 scale_grow_step=1 / hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None,
                 absolute_regressor=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ABSOLUTE_REGRESSOR,
                 sep_scale=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.SEP_SCALE)
