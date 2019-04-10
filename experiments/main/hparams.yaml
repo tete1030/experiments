@@ -1,6 +1,6 @@
 exp:
     name: offset
-    id: 101
+    id: 102
 
 train:
     learning_rate: 5.e-4
@@ -15,11 +15,14 @@ train:
         train_min_step: 6543
         lr: 1.e-3
         lr_regressor: 1.e-3
+        lr_transformer: 5.e-4
         lr_gamma: 0.3
         lr_decay_step: 100000 # 15 * 6543
         lr_dpool_sigma: 5.e-4
         bn_momentum: 0.1
         momentum: 0.0
+        arc_sigma_dec_iter: 200000
+        transformer_grow_iter: 2785
 
 eval:
     parse_threshold: 0.1
@@ -40,9 +43,9 @@ log:
 model:
     use_gn: true
     resnet_pretrained: pretrained/resnet50_gn.pth
-    inp_shape: [288, 384] # W, H
-    out_shape: [72, 96] # W, H
-    gaussian_kernels: [3.8, 2.9, 2.3, 1.7] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
+    inp_shape: [192, 256] # W, H
+    out_shape: [48, 64] # W, H
+    gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
     resnet: 50
     loss_dpool_cof: 1.e-6
     detail:
@@ -57,7 +60,7 @@ model:
         first_esp_only: false
 
     learnable_offset:
-        expand_chan_ratio: [4, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 0.5]
+        expand_chan_ratio: [2, 1, 1, 1, 0.5, 0.5, 0.5, 0.25, 0.25, 0.25, 0.25, 0.25, 0.125]
         dpool_size: 0
         bind_chan: 1
         reuse_offset: false
@@ -66,6 +69,21 @@ model:
         use_in_predictor: false
         enable_atten: true
         enable_mask: false
+        transformer:
+            enable: true
+            absolute_regressor: true
+            sep_scale: true
+        arc:
+            enable: false
+            simple: true
+            num_sample: 16
+            angle_std: 30
+            min_angle_std: 3
+            scale_std: 3
+            min_scale_std: 0.5
+            sampler: gaussian
+            weight_dist: uniform
+            divide_dist: true
 
 dataset:
     profile: coco

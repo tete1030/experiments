@@ -174,7 +174,7 @@ class Experiment(BaseExperiment):
         # Transformer optimizer
         if len(self.offset_transformer_parameters) > 0:
             self.transformer_optimizer = \
-                torch.optim.Adam([{"para_name": "offset_regressor_lr", "params": self.offset_transformer_parameters, "lr": hparams.TRAIN.OFFSET.LR_TRANSFORMER, "init_lr": hparams.TRAIN.OFFSET.LR_TRANSFORMER}])
+                torch.optim.Adam([{"params": self.offset_transformer_parameters, "lr": hparams.TRAIN.OFFSET.LR_TRANSFORMER, "init_lr": hparams.TRAIN.OFFSET.LR_TRANSFORMER}])
         else:
             self.transformer_optimizer = None
 
