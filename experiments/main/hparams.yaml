@@ -68,17 +68,17 @@ model:
         regress_offset: false
         use_in_predictor: false
         atten:
-            enable: false
-            space_norm: false
-        post_atten:
             enable: true
+            space_norm: true
+        post_atten:
+            enable: false
             space_norm: true
         transformer:
             enable: true
             absolute_regressor: true
             sep_scale: true
         arc:
-            enable: false
+            enable: true
             simple: true
             num_sample: 16
             angle_std: 30
