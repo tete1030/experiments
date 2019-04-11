@@ -139,12 +139,12 @@ class OffsetBlock(nn.Module):
         globalvars.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
         self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
-        if hparams.MODEL.LEARNABLE_OFFSET.ENABLE_ATTEN:
-            self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=True, stride=stride)
+        if hparams.MODEL.LEARNABLE_OFFSET.ATTEN.ENABLE:
+            self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SPACE_NORM, stride=stride)
         else:
             self.atten_displace = None
-        if hparams.MODEL.LEARNABLE_OFFSET.ENABLE_MASK:
-            self.atten_post = Attention(0, self.outplanes, input_shape=(self.out_height, self.out_width), bias_planes=inplanes // 4, bias_factor=2, space_norm=False)
+        if hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.ENABLE:
+            self.atten_post = Attention(self.inplanes, self.outplanes, input_shape=(self.out_height, self.out_width), bias_planes=0, bias_factor=0, space_norm=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.SPACE_NORM, stride=stride)
         else:
             self.atten_post = None
         self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM)
