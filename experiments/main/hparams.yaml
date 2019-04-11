@@ -11,8 +11,8 @@ train:
     test_batch: 16
     weight_decay: 0
     offset:
-        always_train_block: true
-        train_min_step: 6543
+        always_train_block: false
+        train_min_step: 2000
         lr: 1.e-3
         lr_regressor: 1.e-3
         lr_transformer: 5.e-4
@@ -69,7 +69,7 @@ model:
         use_in_predictor: false
         atten:
             enable: true
-            space_norm: true
+            space_norm: false
         post_atten:
             enable: false
             space_norm: true
@@ -78,7 +78,7 @@ model:
             absolute_regressor: true
             sep_scale: true
         arc:
-            enable: true
+            enable: false
             simple: true
             num_sample: 16
             angle_std: 30
