@@ -67,14 +67,12 @@ model:
         half_reversed_offset: false
         regress_offset: false
         use_in_predictor: false
-        enable_atten: true
-        enable_mask: false
         atten:
-            enable: true
-            space_norm: false
-        post_atten:
             enable: false
             space_norm: false
+        post_atten:
+            enable: true
+            space_norm: true
         transformer:
             enable: true
             absolute_regressor: true
