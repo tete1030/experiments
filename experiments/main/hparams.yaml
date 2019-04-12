@@ -68,7 +68,7 @@ model:
         regress_offset: false
         use_in_predictor: false
         atten:
-            enable: true
+            enable: false
             space_norm: false
         post_atten:
             enable: false
@@ -78,7 +78,7 @@ model:
             absolute_regressor: true
             sep_scale: true
         arc:
-            enable: false
+            enable: true
             simple: true
             num_sample: 16
             angle_std: 30
