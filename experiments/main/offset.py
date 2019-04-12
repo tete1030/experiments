@@ -189,7 +189,7 @@ class OffsetBlock(nn.Module):
         if self.dpool:
             out_pre = self.dpool(out_pre)
 
-        out_dis = self.displace(out_pre, transformer_source=x if self.trans_displacer is None else self.trans_displacer(x))
+        out_dis = self.displace(out_pre, transformer_source=x.detach() if self.trans_displacer is None else self.trans_displacer(x.detach()))
 
         if self.atten_displace is not None:
             out_atten = self.atten_displace(x)

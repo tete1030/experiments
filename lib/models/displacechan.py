@@ -420,7 +420,7 @@ class DisplaceChannel(nn.Module):
         height = inp.size(2)
         width = inp.size(3)
         device = inp.device
-        # assert self.height == height and self.width == width and self.num_channels == num_channels
+        assert self.height == height and self.width == width and self.num_channels == num_channels
         assert offset_plus_rel is None or offset_plus_rel.size(1) == self.num_offsets
 
         if not self.learnable_offset:
