@@ -68,7 +68,7 @@ model:
         regress_offset: false
         use_in_predictor: false
         atten:
-            enable: false
+            enable: true
             space_norm: false
         post_atten:
             enable: false
@@ -77,6 +77,7 @@ model:
             enable: true
             absolute_regressor: true
             sep_scale: true
+            source: displace
         arc:
             enable: true
             simple: true

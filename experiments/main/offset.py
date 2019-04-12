@@ -100,8 +100,24 @@ class OffsetBlock(nn.Module):
 
         num_offset = self.displace_planes // hparams.MODEL.LEARNABLE_OFFSET.BIND_CHAN
         if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE:
+            num_trans_source_planes = self.inplanes
+            if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.SOURCE == "displace":
+                num_trans_source_planes = self.displace_planes // 4
+                trans_displacer = DisplaceChannel(
+                    self.out_height, self.out_width,
+                    num_trans_source_planes, num_trans_source_planes,
+                    disable_displace=False,
+                    learnable_offset=True)
+                assert not hparams.MODEL.LEARNABLE_OFFSET.REUSE_OFFSET
+                globalvars.displace_mods.append(trans_displacer)
+                self.trans_displacer = nn.Sequential(
+                    nn.Conv2d(self.inplanes, num_trans_source_planes, 1, stride=stride),
+                    trans_displacer
+                )
+            else:
+                self.trans_displacer = None
             offset_transformer = OffsetTransformer(
-                self.inplanes,
+                num_trans_source_planes,
                 num_offset,
                 num_regress=1,
                 scale_grow_step=1 / hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None,
@@ -109,6 +125,7 @@ class OffsetBlock(nn.Module):
                 sep_scale=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.SEP_SCALE)
         else:
             offset_transformer = None
+            self.trans_displacer = None
 
         if hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE:
             arc_displacer = PositionalGaussianDisplaceModule(
@@ -172,7 +189,7 @@ class OffsetBlock(nn.Module):
         if self.dpool:
             out_pre = self.dpool(out_pre)
 
-        out_dis = self.displace(out_pre, transformer_source=x)
+        out_dis = self.displace(out_pre, transformer_source=x if self.trans_displacer is None else self.trans_displacer(x))
 
         if self.atten_displace is not None:
             out_atten = self.atten_displace(x)
