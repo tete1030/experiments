@@ -35,7 +35,8 @@ class Bottleneck(nn.Module):
                     hparams.MODEL.INP_SHAPE[0] // self.inshape_factor,
                     self.inplanes,
                     self.inplanes,
-                    int(self.inplanes * expand_chan_ratio))
+                    int(self.inplanes * expand_chan_ratio),
+                    always_train_block=hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK)
                 if hparams.MODEL.DETAIL.EARLY_PREDICTOR and hparams.MODEL.DETAIL.EARLY_PREDICTOR_FROM_OFFBLK:
                     globalvars.early_predictor_size.append((self.inplanes, self.inshape_factor))
             else:
@@ -100,7 +101,8 @@ class BasicBlock(nn.Module):
                 hparams.MODEL.INP_SHAPE[0] // self.inshape_factor,
                 self.inplanes,
                 self.inplanes,
-                int(self.inplanes * hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter]))
+                int(self.inplanes * hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter]),
+                always_train_block=hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK)
             OffsetBlock._counter += 1
         else:
             self.offset_block = None
@@ -154,9 +156,6 @@ class ResNet(nn.Module):
             self.layer4 = self._make_layer(block, 512, layers[3], res_index=3, stride=2)
 
         for mod_name, m in self.named_modules():
-            # TODO:
-            if re.match(r"^(.+\.)?displace(\..+)?$", mod_name):
-                continue
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
                 m.weight.data.normal_(0, math.sqrt(2. / n))

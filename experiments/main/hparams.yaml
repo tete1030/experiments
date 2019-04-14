@@ -24,6 +24,10 @@ train:
         arc_sigma_dec_iter: 200000
         transformer_grow_iter: 2785
 
+    ind_transformer:
+        scale_std: 0.25
+        rotate_std: 30
+
 eval:
     parse_threshold: 0.1
 
@@ -41,6 +45,7 @@ log:
     sigma_change_average_cycle: 500
 
 model:
+    mode: "transformer"
     use_gn: true
     resnet_pretrained: pretrained/resnet50_gn.pth
     inp_shape: [192, 256] # W, H
@@ -51,7 +56,6 @@ model:
     detail:
         early_predictor_label_index: [3, 2, 1]
         disable_displace: false
-        displace_learnable_offset: true
         early_predictor: true
         early_predictor_from_offblk: false
         loss_early: labeled
@@ -62,9 +66,6 @@ model:
     learnable_offset:
         expand_chan_ratio: [2, 1, 1, 1, 0.5, 0.5, 0.5, 0.25, 0.25, 0.25, 0.25, 0.25, 0.125]
         dpool_size: 0
-        bind_chan: 1
-        reuse_offset: false
-        half_reversed_offset: false
         regress_offset: false
         use_in_predictor: false
         atten:
@@ -75,9 +76,8 @@ model:
             space_norm: true
         transformer:
             enable: true
-            absolute_regressor: true
-            sep_scale: true
-            source: displace
+            independent: true
+            num_regress: 1
         arc:
             enable: true
             simple: true
@@ -89,6 +89,14 @@ model:
             sampler: gaussian
             weight_dist: uniform
             divide_dist: true
+
+    ind_transformer:
+        num_blk: 2
+        num_offset: [64, 192]
+        stride: [1, 1]
+        num_feature: 256
+        loss_angle_cof: 1
+        loss_scale_cof: 1
 
 dataset:
     profile: coco

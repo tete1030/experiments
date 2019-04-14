@@ -26,6 +26,7 @@ from utils.miscs import nprand_init
 from experiments.baseexperiment import BaseExperiment, EpochContext
 from .resnet import resnet18, resnet50, resnet101
 from .offset import OffsetBlock
+from .transformer_exp import TransformerExperiment
 
 FACTOR = 4
 
@@ -35,6 +36,13 @@ class GroupNormWrapper(nn.GroupNorm):
         super(GroupNormWrapper, self).__init__(num_groups, num_features, eps=1e-5)
 
 class Experiment(BaseExperiment):
+    def __new__(cls):
+        if hparams.MODEL.MODE == "transformer":
+            return TransformerExperiment()
+        else:
+            return MainExperiment()
+
+class MainExperiment(BaseExperiment):
     def init(self):
         super().init()
         if self.offset_optimizer is not None:
@@ -445,7 +453,7 @@ class Experiment(BaseExperiment):
             self.transformer_optimizer.step()
             for dm in globalvars.displace_mods:
                 if dm.offset_transformer is not None and dm.offset_transformer.effect_scale is not None:
-                    dm.offset_transformer.effect_scale.data.add_(dm.offset_transformer.scale_grow_step.data).clamp_(0, 1)
+                    dm.offset_transformer.effect_scale.data.add_(1. / hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER).clamp_(0, 1)
 
         if self.early_predictor_optimizer:
             self.early_predictor_optimizer.step()
