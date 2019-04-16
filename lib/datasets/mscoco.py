@@ -418,7 +418,8 @@ class COCOSinglePose(data.Dataset):
                  ext_border=(0., 0.),
                  kpmap_res=(48, 64), keypoint_res=(48, 64),
                  kpmap_sigma=1, scale_factor=0.25, rot_factor=30, trans_factor=0.05,
-                 half_body_prob=0., half_body_num_joints=17):
+                 half_body_prob=0., half_body_num_joints=17,
+                 preserve_transform_data=False):
         """COCO Keypoints Single Person
         
         Arguments:
@@ -453,6 +454,7 @@ class COCOSinglePose(data.Dataset):
         self.rot_factor = rot_factor
         self.trans_factor = trans_factor
         self.resize_scale = 1
+        self.preserve_transform_data = preserve_transform_data
 
         if self.kpmap_res is not None:
             assert float(self.img_res[0]) / float(self.img_res[1]) == float(self.kpmap_res[0]) / float(self.kpmap_res[1])
@@ -588,6 +590,16 @@ class COCOSinglePose(data.Dataset):
 
         return np.array([center[0] - w  / 2, center[1] - h / 2, w, h], dtype=np.float32)
 
+    def get_transformed_image(self, img_bgr, center, img_res, rotate, scale):
+        img_transform_mat = get_transform(center, None, (img_res[0], img_res[1]), rot=rotate, scale=scale)
+        img_bgr_warp = cv2.warpAffine(img_bgr, img_transform_mat[:2], dsize=(img_res[0], img_res[1]), flags=cv2.INTER_LINEAR)
+        img = img_bgr_warp[..., ::-1].astype(np.float32) / 255
+
+        if self.minus_mean:
+            img -= self.mean
+        img = img.transpose(2, 0, 1)
+        return img, img_bgr_warp, img_transform_mat
+
     def __getitem__(self, index):
         sf = float(self.scale_factor)
         rf = float(self.rot_factor)
@@ -596,9 +608,6 @@ class COCOSinglePose(data.Dataset):
             img_index, ann_index = self.train[index]
         else:
             img_index, ann_index = self.valid[index]
-
-        img_bgr = self._load_image(img_index, bgr=True)
-        ann = self.coco.anns[ann_index]
 
         if self.is_train and self.resize_scale != 1:
             # assume the factor
@@ -626,6 +635,9 @@ class COCOSinglePose(data.Dataset):
             kpmap_sigma = self.kpmap_sigma
             keypoint_res = self.keypoint_res
 
+        img_bgr = self._load_image(img_index, bgr=True)
+        ann = self.coco.anns[ann_index]
+
         img_size = np.array(list(img_bgr.shape[:2][::-1]), dtype=np.float32) # W, H
         img_res_np = np.array(img_res, dtype=np.float32)
         bbox = np.array(ann['bbox']).reshape(4).astype(np.float32)
@@ -644,10 +656,10 @@ class COCOSinglePose(data.Dataset):
 
         crop_ratio = crop_size / img_res_np
         if crop_ratio[0] > crop_ratio[1]:
-            scale = crop_size[0]
+            bbox_size = crop_size[0]
             arg_min_shape = 0
         else:
-            scale = crop_size[1]
+            bbox_size = crop_size[1]
             arg_min_shape = 1
         min_crop_size = crop_size.min()
         rotate = 0
@@ -656,10 +668,10 @@ class COCOSinglePose(data.Dataset):
         if self.is_train:
             if self.resize_scale != 1:
                 # continuous scale
-                scale *= self.resize_scale / (img_res[0] / self.img_res[0])
+                bbox_size *= self.resize_scale / (img_res[0] / self.img_res[0])
 
             scale_aug = truncnorm.rvs(-1, 1, loc=1, scale=sf)
-            scale = scale * scale_aug
+            bbox_size = bbox_size * scale_aug
             rotate = truncnorm.rvs(-1, 1, loc=0, scale=rf) \
                     if np.random.rand() <= 0.6 else 0
 
@@ -675,13 +687,8 @@ class COCOSinglePose(data.Dataset):
                 img_bgr = cv2.flip(img_bgr, 1)
                 center[0] = img_size[0] - center[0]
 
-        img_transform_mat = get_transform(center, None, (img_res[0], img_res[1]), rot=rotate, scale=float(img_res[arg_min_shape]) / scale)
-        img_bgr_warp = cv2.warpAffine(img_bgr, img_transform_mat[:2], dsize=(img_res[0], img_res[1]), flags=cv2.INTER_LINEAR)
-        img = img_bgr_warp[..., ::-1].astype(np.float32) / 255
-
-        if self.minus_mean:
-            img -= self.mean
-        img = img.transpose(2, 0, 1)
+        img_scale = float(img_res[arg_min_shape]) / bbox_size
+        img, img_bgr_warp, img_transform_mat = self.get_transformed_image(img_bgr, center, img_res, rotate, img_scale)
 
         if flip_status:
             keypoints_tf = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
@@ -689,7 +696,7 @@ class COCOSinglePose(data.Dataset):
             keypoints_tf = keypoints.copy()
         
         keypoints_tf = np.c_[
-                transform(keypoints_tf[:, :2], center, None, (keypoint_res[0], keypoint_res[1]), rot=rotate, scale=float(keypoint_res[arg_min_shape]) / scale),
+                transform(keypoints_tf[:, :2], center, None, (keypoint_res[0], keypoint_res[1]), rot=rotate, scale=float(keypoint_res[arg_min_shape]) / bbox_size),
                 keypoints_tf[:, [2]]
             ]
 
@@ -710,7 +717,7 @@ class COCOSinglePose(data.Dataset):
         else:
             kp_map = None
 
-        if config.vis:
+        if config.vis and False:
             if self.is_train:
                 # print("Aug Setting: scale_fac %.2f , rotate_fac %.2f, trans_fac %.2f" % (sf, rf, self.trans_factor))
                 print("Aug: rescale %.2f , rot %.2f , center_off (%.2f, %.2f), flip %s, half %s" % (
@@ -752,8 +759,6 @@ class COCOSinglePose(data.Dataset):
             "img_index": img_index,
             "ann_index": ann_index,
             "img": torch.from_numpy(img),
-            "center": torch.from_numpy(center),
-            "scale": scale,
             "keypoint_ori": torch.from_numpy(keypoints),
             "keypoint": torch.from_numpy(keypoints_tf),
             "img_transform": torch.from_numpy(img_transform_mat),
@@ -769,15 +774,28 @@ class COCOSinglePose(data.Dataset):
         else:
             raise ValueError()
 
+        if self.preserve_transform_data:
+            result.update({
+                "center": center,
+                "bbox_size": bbox_size,
+                "img_bgr": img_bgr,
+                "img_res": img_res,
+                "img_scale": img_scale,
+                "img_rotate": rotate
+            })
+
         return result
 
     @classmethod
     def collate_function(cls, batch):
         NON_COLLATE_KEYS = ["img_flipped"]
+        IGNORE_KEYS = ["img_bgr", "img_res", "img_scale", "img_rotate", "bbox_size", "center"]
         collate_fn = data.dataloader.default_collate
         all_keys = batch[0].keys()
         result = dict()
         for k in all_keys:
+            if k in IGNORE_KEYS:
+                continue
             if k in NON_COLLATE_KEYS:
                 result[k] = [sample[k] for sample in batch]
             else:

@@ -120,7 +120,8 @@ class TransformerExperiment(BaseExperiment):
             rot_factor=hparams.DATASET["COCO"].ROTATE_FACTOR,
             trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR,
             half_body_num_joints=hparams.DATASET.COCO.HALF_BODY_NUM_JOINTS,
-            half_body_prob=hparams.DATASET.COCO.HALF_BODY_PROB))
+            half_body_prob=hparams.DATASET.COCO.HALF_BODY_PROB,
+            preserve_transform_data=True))
 
         self.val_dataset = TransformedData(datasets.COCOSinglePose(
             "data/mscoco/images2017",
@@ -135,7 +136,8 @@ class TransformerExperiment(BaseExperiment):
             kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
             scale_factor=hparams.DATASET["COCO"].SCALE_FACTOR,
             rot_factor=hparams.DATASET["COCO"].ROTATE_FACTOR,
-            trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR))
+            trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR,
+            preserve_transform_data=True))
         self.train_collate_fn = datasets.COCOSinglePose.collate_function
         self.valid_collate_fn = datasets.COCOSinglePose.collate_function
 
@@ -151,7 +153,8 @@ class TransformerExperiment(BaseExperiment):
             kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
             scale_factor=hparams.DATASET["MPII"].SCALE_FACTOR,
             rot_factor=hparams.DATASET["MPII"].ROTATE_FACTOR,
-            trans_factor=hparams.DATASET["MPII"].TRANSLATION_FACTOR))
+            trans_factor=hparams.DATASET["MPII"].TRANSLATION_FACTOR,
+            preserve_transform_data=True))
 
         self.val_dataset = TransformedData(datasets.MPII("data/mpii/images",
             "data/mpii/mpii_human_pose.json",
@@ -164,7 +167,8 @@ class TransformerExperiment(BaseExperiment):
             kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
             scale_factor=hparams.DATASET["MPII"].SCALE_FACTOR,
             rot_factor=hparams.DATASET["MPII"].ROTATE_FACTOR,
-            trans_factor=hparams.DATASET["MPII"].TRANSLATION_FACTOR))
+            trans_factor=hparams.DATASET["MPII"].TRANSLATION_FACTOR,
+            preserve_transform_data=True))
         self.train_collate_fn = datasets.MPII.collate_function
         self.valid_collate_fn = datasets.MPII.collate_function
 
@@ -281,26 +285,43 @@ class TransformedData(Dataset):
         data = self.dataset[index]
         img = data["img"]
 
+        center = data["center"]
+        img_bgr = data["img_bgr"]
+        img_res = data["img_res"]
+        img_scale = data["img_scale"]
+        img_rotate = data["img_rotate"]
+
         scale_std = hparams.TRAIN.IND_TRANSFORMER.SCALE_STD
         rotate_std = float(hparams.TRAIN.IND_TRANSFORMER.ROTATE_STD) / 180
 
         # truncate at value [max(0, 1-3*std), min(2, 1+3*std)]
-        scale = torch.tensor(truncnorm.rvs(max(-1/scale_std, -3), min(1/scale_std, 3), loc=1, scale=scale_std)).float()
+        scale_aug = torch.tensor(truncnorm.rvs(max(-1/scale_std, -3), min(1/scale_std, 3), loc=1, scale=scale_std)).float()
         # truncate at value [-3*std, 3*std]
-        rotate = torch.tensor(truncnorm.rvs(-3, 3, loc=0, scale=rotate_std)).float()
-        # blur_sigma = torch.tensor(np.abs(truncnorm.rvs(-1, 1, loc=0, scale=3))).float()
-        mean_img = torch.tensor(self.dataset.mean, dtype=torch.float)[None, :, None, None]
-        img_trans = (transform_maps(img[None] + mean_img, scale, rotate, None) - mean_img)[0]
+        rotate_aug = torch.tensor(truncnorm.rvs(-3, 3, loc=0, scale=rotate_std)).float()
+
+        img_trans, _, _ = self.dataset.get_transformed_image(img_bgr, center, img_res, img_rotate + (rotate_aug.item() / np.pi * 180), img_scale / scale_aug.item())
+        img_trans = torch.from_numpy(img_trans)
 
         mask = torch.ones(1, img.size(-2) // FACTOR, img.size(-1) // FACTOR, dtype=torch.float)
-        mask_trans = ((transform_maps(mask[None], scale, rotate, None))[0] >= 0.99).float()
+        mask_trans = ((transform_maps(mask[None], scale_aug, rotate_aug, None))[0] >= 0.99).float()
+
+        if config.vis:
+            import matplotlib.pyplot as plt
+            print("scale_aug={}, rotate_aug={}".format(scale_aug.item(), rotate_aug.item()))
+            plt.figure()
+            plt.imshow(self.dataset.restore_image(img.numpy()))
+            plt.figure()
+            plt.imshow(self.dataset.restore_image(img_trans.numpy()))
+            plt.figure()
+            plt.imshow(mask_trans.numpy()[0], vmin=0, vmax=1)
+            plt.show()
 
         return dict(
             img=img,
             img_trans=img_trans,
             mask_trans=mask_trans,
-            scale=scale,
-            rotate=rotate
+            scale=scale_aug,
+            rotate=rotate_aug
         )
 
 class TransformerLoss(nn.Module):
