@@ -232,7 +232,7 @@ class TransformerHead(nn.Module):
         self.sep_scale = sep_scale
         self.scale_regressor = nn.Sequential(
             nn.Conv2d(num_channels, num_regress, kernel_size=1, bias=False),
-            nn.Softplus()
+            nn.Softsign()
         )
         self.angle_x_regressor = nn.Sequential(
             nn.Conv2d(num_channels, num_regress, kernel_size=1, bias=False))
@@ -241,7 +241,7 @@ class TransformerHead(nn.Module):
 
     def forward(self, x):
         EPS = np.finfo(np.float32).eps.item()
-        scale = self.scale_regressor(x)
+        scale = 1 + self.scale_regressor(x)
         angle_kcos = self.angle_x_regressor(x)
         angle_ksin = self.angle_y_regressor(x)
 
