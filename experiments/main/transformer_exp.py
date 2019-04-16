@@ -338,24 +338,8 @@ class TransformerLoss(nn.Module):
     def forward(self, ori, trans, scale, rotate, translation, mask_trans):
         EPS = np.finfo(np.float32).eps.item()
 
-        cos_ori_trans, sin_ori_trans, scale_ori_trans = ori
+        cos_ori, sin_ori, scale_ori = ori
         cos_trans, sin_trans, scale_trans = trans
-
-        if config.vis and False:
-            import matplotlib.pyplot as plt
-            from matplotlib.colors import hsv_to_rgb
-            img_h_ori_trans = torch.atan2(sin_ori_trans, cos_ori_trans) / np.pi / 2 + 0.5
-            img_h_trans = torch.atan2(sin_trans, cos_trans) / np.pi / 2 + 0.5
-            for i in range(cos_trans.size(0)):
-                plt.figure()
-                plt.imshow(hsv_to_rgb(np.stack((img_h_ori_trans[i, 0].cpu().numpy(), np.ones(img_h_ori_trans.shape[-2:]), np.ones(img_h_ori_trans.shape[-2:])), axis=-1)))
-                plt.figure()
-                plt.imshow(hsv_to_rgb(np.stack((img_h_trans[i, 0].cpu().numpy(), np.ones(img_h_trans.shape[-2:]), np.ones(img_h_trans.shape[-2:])), axis=-1)))
-                plt.figure()
-                plt.imshow(scale_ori_trans[i, 0].cpu().numpy(), vmin=0, vmax=2)
-                plt.figure()
-                plt.imshow(scale_trans[i, 0].cpu().numpy(), vmin=0, vmax=2)
-                plt.show()
 
         cos_ori_trans, sin_ori_trans, scale_ori_trans = tuple(map(lambda x: transform_maps(x, scale, rotate, translation_factor=translation), ori))
         
@@ -365,10 +349,31 @@ class TransformerLoss(nn.Module):
         sin_ori_trans = cos_ori_trans * rotate_sin + sin_ori_trans * rotate_cos
         scale_ori_trans = scale_ori_trans * scale[:, None, None, None]
 
-        angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans.sum()
+        if config.vis and False:
+            import matplotlib.pyplot as plt
+            from matplotlib.colors import hsv_to_rgb
+            img_h_ori = torch.atan2(sin_ori, cos_ori) / np.pi / 2 + 0.5
+            img_h_ori_trans = torch.atan2(sin_ori_trans, cos_ori_trans) / np.pi / 2 + 0.5
+            img_h_trans = torch.atan2(sin_trans, cos_trans) / np.pi / 2 + 0.5
+            for i in range(cos_trans.size(0)):
+                plt.figure()
+                plt.imshow(hsv_to_rgb(np.stack((img_h_ori[i, 0].cpu().numpy(), np.ones(img_h_ori.shape[-2:]), np.ones(img_h_ori.shape[-2:])), axis=-1)))
+                plt.figure()
+                plt.imshow(hsv_to_rgb(np.stack((img_h_ori_trans[i, 0].cpu().numpy(), np.ones(img_h_ori_trans.shape[-2:]), np.ones(img_h_ori_trans.shape[-2:])), axis=-1)))
+                plt.figure()
+                plt.imshow(hsv_to_rgb(np.stack((img_h_trans[i, 0].cpu().numpy(), np.ones(img_h_trans.shape[-2:]), np.ones(img_h_trans.shape[-2:])), axis=-1)))
+                plt.figure()
+                plt.imshow(scale_ori[i, 0].cpu().numpy(), vmin=0, vmax=2)
+                plt.figure()
+                plt.imshow(scale_ori_trans[i, 0].cpu().numpy(), vmin=0, vmax=2)
+                plt.figure()
+                plt.imshow(scale_trans[i, 0].cpu().numpy(), vmin=0, vmax=2)
+                plt.show()
+
+        angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans).pow(2) * mask_trans).sum() / mask_trans.sum()
         scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).pow(2) * mask_trans).sum() / mask_trans.sum()
 
-        if torch.isnan(angle_loss).any() or torch.isnan(scale_loss).any():
+        if config.check and (torch.isnan(angle_loss).any() or torch.isnan(scale_loss).any()):
             raise RuntimeError("NaN")
 
         return angle_loss, scale_loss
