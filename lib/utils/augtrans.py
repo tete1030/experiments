@@ -17,10 +17,15 @@ def transform_maps(x, scale, rotate, blur_sigma=None, translation_factor=None):
     half_height = height / 2
     half_width = width / 2
 
-    scale_mat = torch.zeros(batch_size, 3, 3).to(x.device, non_blocking=True)
+    assert scale.dim() == 1
+    assert rotate.dim() == 1
 
     if translation_factor is None:
         translation_factor = torch.tensor([[0, 0]], dtype=torch.float).repeat(batch_size, 1)
+    else:
+        assert translation_factor.dim() == 2
+    
+    scale_mat = torch.zeros(batch_size, 3, 3).to(x.device, non_blocking=True)
 
     # transform coordinates -> translation -> scale
     scale_mat[:, 0, 0] = scale * half_width

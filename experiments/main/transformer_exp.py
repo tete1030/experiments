@@ -298,11 +298,14 @@ class TransformedData(Dataset):
         rotate_std = float(hparams.TRAIN.IND_TRANSFORMER.ROTATE_STD) / 180 * np.pi
         translation_std = hparams.TRAIN.IND_TRANSFORMER.TRANSLATION_STD
 
-        # truncate at value [max(0, 1-2*std), min(2, 1+2*std)]
-        scale_aug = torch.tensor(truncnorm.rvs(max(-1/(scale_std+EPS), -2), min(1/(scale_std+EPS), 2), loc=1, scale=scale_std)).float()
-        # truncate at value [-3*std, 3*std]
-        rotate_aug = torch.tensor(truncnorm.rvs(-2, 2, loc=0, scale=rotate_std)).float()
-        translation_aug = torch.tensor(truncnorm.rvs(-2, 2, loc=0, scale=translation_std, size=2)).float()
+        # # truncate at value [max(0, 1-2*std), min(2, 1+2*std)]
+        # scale_aug = torch.tensor(truncnorm.rvs(max(-1/(scale_std+EPS), -2), min(1/(scale_std+EPS), 2), loc=1, scale=scale_std)).float()
+        # # truncate at value [-3*std, 3*std]
+        # rotate_aug = torch.tensor(truncnorm.rvs(-2, 2, loc=0, scale=rotate_std)).float()
+        # translation_aug = torch.tensor(truncnorm.rvs(-2, 2, loc=0, scale=translation_std, size=2)).float()
+        scale_aug = torch.tensor(0., dtype=torch.float).uniform_(max(0, 1-2*scale_std), min(2, 1+2*scale_std))
+        rotate_aug = torch.tensor(0., dtype=torch.float).uniform_(-2*rotate_std, 2*rotate_std)
+        translation_aug = torch.zeros(2, dtype=torch.float).uniform_(-2*translation_std, 2*translation_std)
 
         mat_aug = get_transform((0.5 - translation_aug.numpy()) * np.array(img_res), None, (img_res[0], img_res[1]), rot=rotate_aug.item() / np.pi * 180, scale=scale_aug.item())
         img_trans, _, _ = self.dataset.get_transformed_image(img_bgr, img_res, center=center, rotate=img_rotate, scale=img_scale, mat=mat_aug)
@@ -341,15 +344,16 @@ class TransformerLoss(nn.Module):
         cos_ori, sin_ori, scale_ori = ori
         cos_trans, sin_trans, scale_trans = trans
 
+        assert scale.dim() == 1 and rotate.dim() == 1 and translation.dim() == 2
         cos_ori_trans, sin_ori_trans, scale_ori_trans = tuple(map(lambda x: transform_maps(x, scale, rotate, translation_factor=translation), ori))
-        
+
         rotate_sin = torch.sin(rotate)[:, None, None, None]
         rotate_cos = torch.cos(rotate)[:, None, None, None]
         cos_ori_trans = cos_ori_trans * rotate_cos - sin_ori_trans * rotate_sin
         sin_ori_trans = cos_ori_trans * rotate_sin + sin_ori_trans * rotate_cos
         scale_ori_trans = scale_ori_trans * scale[:, None, None, None]
 
-        if config.vis and False:
+        if config.vis and False: # globalvars.progress["step"] > 500 or 
             import matplotlib.pyplot as plt
             from matplotlib.colors import hsv_to_rgb
             img_h_ori = torch.atan2(sin_ori, cos_ori) / np.pi / 2 + 0.5
@@ -357,20 +361,20 @@ class TransformerLoss(nn.Module):
             img_h_trans = torch.atan2(sin_trans, cos_trans) / np.pi / 2 + 0.5
             for i in range(cos_trans.size(0)):
                 plt.figure()
-                plt.imshow(hsv_to_rgb(np.stack((img_h_ori[i, 0].cpu().numpy(), np.ones(img_h_ori.shape[-2:]), np.ones(img_h_ori.shape[-2:])), axis=-1)))
+                plt.imshow(hsv_to_rgb(np.stack((img_h_ori[i, 0].detach().cpu().numpy(), np.ones(img_h_ori.shape[-2:]), np.ones(img_h_ori.shape[-2:])), axis=-1)))
                 plt.figure()
-                plt.imshow(hsv_to_rgb(np.stack((img_h_ori_trans[i, 0].cpu().numpy(), np.ones(img_h_ori_trans.shape[-2:]), np.ones(img_h_ori_trans.shape[-2:])), axis=-1)))
+                plt.imshow(hsv_to_rgb(np.stack((img_h_ori_trans[i, 0].detach().cpu().numpy(), np.ones(img_h_ori_trans.shape[-2:]), np.ones(img_h_ori_trans.shape[-2:])), axis=-1)))
                 plt.figure()
-                plt.imshow(hsv_to_rgb(np.stack((img_h_trans[i, 0].cpu().numpy(), np.ones(img_h_trans.shape[-2:]), np.ones(img_h_trans.shape[-2:])), axis=-1)))
+                plt.imshow(hsv_to_rgb(np.stack((img_h_trans[i, 0].detach().cpu().numpy(), np.ones(img_h_trans.shape[-2:]), np.ones(img_h_trans.shape[-2:])), axis=-1)))
                 plt.figure()
-                plt.imshow(scale_ori[i, 0].cpu().numpy(), vmin=0, vmax=2)
+                plt.imshow(scale_ori[i, 0].detach().cpu().numpy(), vmin=0, vmax=2)
                 plt.figure()
-                plt.imshow(scale_ori_trans[i, 0].cpu().numpy(), vmin=0, vmax=2)
+                plt.imshow(scale_ori_trans[i, 0].detach().cpu().numpy(), vmin=0, vmax=2)
                 plt.figure()
-                plt.imshow(scale_trans[i, 0].cpu().numpy(), vmin=0, vmax=2)
+                plt.imshow(scale_trans[i, 0].detach().cpu().numpy(), vmin=0, vmax=2)
                 plt.show()
 
-        angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans).abs() * mask_trans).sum() / mask_trans.sum()
+        angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans.sum()
         scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs() * mask_trans).sum() / mask_trans.sum()
 
         if config.check and (torch.isnan(angle_loss).any() or torch.isnan(scale_loss).any()):
