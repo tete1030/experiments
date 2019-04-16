@@ -76,7 +76,6 @@ def get_transform(center, ori_size, new_size, rot=0, scale=None):
     t[1, 2] = -scale[1] * center[1] + float(new_size[1]) / 2
     t[2, 2] = 1
     if not rot == 0:
-        rot = -rot # To match direction of rotation from cropping
         rot_mat = np.zeros((3,3))
         rot_rad = rot * np.pi / 180
         sn,cs = np.sin(rot_rad), np.cos(rot_rad)

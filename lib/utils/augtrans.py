@@ -19,12 +19,12 @@ def transform_maps(x, scale, rotate, blur_sigma):
 
     ratio = width / height
 
-    scale_mat[:, 0, 0] = scale * ratio
-    scale_mat[:, 1, 1] = scale
+    scale_mat[:, 0, 0] = 1 / scale * ratio
+    scale_mat[:, 1, 1] = 1 / scale
     scale_mat[:, 2, 2] = 1
 
-    rotate_sin = torch.sin(rotate)
-    rotate_cos = torch.cos(rotate)
+    rotate_sin = torch.sin(-rotate)
+    rotate_cos = torch.cos(-rotate)
     rotate_mat = torch.zeros(batch_size, 2, 3).to(x.device, non_blocking=True)
     rotate_mat[:, 0, 0] = rotate_cos / ratio
     rotate_mat[:, 0, 1] = -rotate_sin / ratio

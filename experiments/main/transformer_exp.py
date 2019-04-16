@@ -299,7 +299,7 @@ class TransformedData(Dataset):
         # truncate at value [-3*std, 3*std]
         rotate_aug = torch.tensor(truncnorm.rvs(-3, 3, loc=0, scale=rotate_std)).float()
 
-        img_trans, _, _ = self.dataset.get_transformed_image(img_bgr, center, img_res, img_rotate + (rotate_aug.item() / np.pi * 180), img_scale / scale_aug.item())
+        img_trans, _, _ = self.dataset.get_transformed_image(img_bgr, center, img_res, img_rotate + (rotate_aug.item() / np.pi * 180), img_scale * scale_aug.item())
         img_trans = torch.from_numpy(img_trans)
 
         mask = torch.ones(1, img.size(-2) // FACTOR, img.size(-1) // FACTOR, dtype=torch.float)
@@ -332,8 +332,8 @@ class TransformerLoss(nn.Module):
         EPS = np.finfo(np.float32).eps.item()
         cos_ori_trans, sin_ori_trans, scale_ori_trans = tuple(map(lambda x: transform_maps(x, scale, rotate, None), ori))
         
-        rotate_sin = torch.sin(-rotate)[:, None, None, None]
-        rotate_cos = torch.cos(-rotate)[:, None, None, None]
+        rotate_sin = torch.sin(rotate)[:, None, None, None]
+        rotate_cos = torch.cos(rotate)[:, None, None, None]
         cos_ori_trans = cos_ori_trans * rotate_cos - sin_ori_trans * rotate_sin
         sin_ori_trans = cos_ori_trans * rotate_sin + sin_ori_trans * rotate_cos
         scale_ori_trans = scale_ori_trans * scale[:, None, None, None]
