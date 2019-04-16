@@ -370,8 +370,8 @@ class TransformerLoss(nn.Module):
                 plt.imshow(scale_trans[i, 0].cpu().numpy(), vmin=0, vmax=2)
                 plt.show()
 
-        angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans).pow(2) * mask_trans).sum() / mask_trans.sum()
-        scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).pow(2) * mask_trans).sum() / mask_trans.sum()
+        angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans).abs() * mask_trans).sum() / mask_trans.sum()
+        scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs() * mask_trans).sum() / mask_trans.sum()
 
         if config.check and (torch.isnan(angle_loss).any() or torch.isnan(scale_loss).any()):
             raise RuntimeError("NaN")
