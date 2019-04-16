@@ -353,6 +353,10 @@ class TransformerLoss(nn.Module):
         sin_ori_trans = cos_ori_trans * rotate_sin + sin_ori_trans * rotate_cos
         scale_ori_trans = scale_ori_trans * scale[:, None, None, None]
 
+        norm_ori_trans = (cos_ori_trans.pow(2) + sin_ori_trans.pow(2)).detach().sqrt() + EPS
+        cos_ori_trans = cos_ori_trans / norm_ori_trans
+        sin_ori_trans = sin_ori_trans / norm_ori_trans
+
         if config.vis and False: # globalvars.progress["step"] > 500 or 
             import matplotlib.pyplot as plt
             from matplotlib.colors import hsv_to_rgb
@@ -374,7 +378,8 @@ class TransformerLoss(nn.Module):
                 plt.imshow(scale_trans[i, 0].detach().cpu().numpy(), vmin=0, vmax=2)
                 plt.show()
 
-        angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans.sum()
+        # angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans.sum()
+        angle_loss = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans).clamp(-1+EPS, 1-EPS).acos() * mask_trans).sum() / mask_trans.sum()
         scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs() * mask_trans).sum() / mask_trans.sum()
 
         if config.check and (torch.isnan(angle_loss).any() or torch.isnan(scale_loss).any()):
