@@ -9,31 +9,40 @@ from torch.utils.data import Dataset
 from lib.utils.transforms import fliplr_chwimg, fliplr_pts, get_transform, transform
 from torch.nn.functional import affine_grid, grid_sample
 
-def transform_maps(x, scale, rotate, blur_sigma):
+def transform_maps(x, scale, rotate, blur_sigma=None, translation_factor=None):
     batch_size = x.size(0)
     in_channels = x.size(1)
     height = x.size(2)
     width = x.size(3)
+    half_height = height / 2
+    half_width = width / 2
 
     scale_mat = torch.zeros(batch_size, 3, 3).to(x.device, non_blocking=True)
 
-    ratio = width / height
+    if translation_factor is None:
+        translation_factor = torch.tensor([[0, 0]], dtype=torch.float).repeat(batch_size, 1)
 
-    scale_mat[:, 0, 0] = 1 / scale * ratio
-    scale_mat[:, 1, 1] = 1 / scale
+    # transform coordinates -> translation -> scale
+    scale_mat[:, 0, 0] = scale * half_width
+    scale_mat[:, 1, 1] = scale * half_height
+    scale_mat[:, 0, 2] = translation_factor[:, 0] * width * scale
+    scale_mat[:, 1, 2] = translation_factor[:, 1] * height * scale
     scale_mat[:, 2, 2] = 1
 
-    rotate_sin = torch.sin(-rotate)
-    rotate_cos = torch.cos(-rotate)
-    rotate_mat = torch.zeros(batch_size, 2, 3).to(x.device, non_blocking=True)
-    rotate_mat[:, 0, 0] = rotate_cos / ratio
-    rotate_mat[:, 0, 1] = -rotate_sin / ratio
+    # rotate -> transform back coordinates
+    rotate_sin = torch.sin(rotate)
+    rotate_cos = torch.cos(rotate)
+    rotate_mat = torch.zeros(batch_size, 3, 3).to(x.device, non_blocking=True)
+    rotate_mat[:, 0, 0] = rotate_cos / half_width
+    rotate_mat[:, 0, 1] = -rotate_sin / half_width
     rotate_mat[:, 0, 2] = 0
-    rotate_mat[:, 1, 0] = rotate_sin
-    rotate_mat[:, 1, 1] = rotate_cos
+    rotate_mat[:, 1, 0] = rotate_sin / half_height
+    rotate_mat[:, 1, 1] = rotate_cos / half_height
     rotate_mat[:, 1, 2] = 0
+    rotate_mat[:, 2, 2] = 1
 
     theta = torch.bmm(rotate_mat, scale_mat)
+    theta = theta.inverse()[:, :2]
     grid = affine_grid(theta, x.size())
     x = grid_sample(x, grid)
 

@@ -28,6 +28,7 @@ from .offset import IndpendentTransformerRegressor
 from lib.utils.augtrans import transform_maps
 from scipy.stats import truncnorm
 from lib.models.displacechan import TransformCoordinate
+from lib.utils.transforms import get_transform
 
 FACTOR = 4
 
@@ -241,6 +242,7 @@ class TransformerExperiment(BaseExperiment):
             (reg_angle_cos[batch_size:], reg_angle_sin[batch_size:], reg_scale[batch_size:]),
             batch["scale"].to(reg_angle_cos, non_blocking=True),
             batch["rotate"].to(reg_angle_cos, non_blocking=True),
+            batch["translation"].to(reg_angle_cos, non_blocking=True),
             batch["mask_trans"].to(reg_angle_cos, non_blocking=True)
         )
 
@@ -282,6 +284,7 @@ class TransformedData(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, index):
+        EPS = np.finfo(np.float32).eps.item()
         data = self.dataset[index]
         img = data["img"]
 
@@ -292,22 +295,25 @@ class TransformedData(Dataset):
         img_rotate = data["img_rotate"]
 
         scale_std = hparams.TRAIN.IND_TRANSFORMER.SCALE_STD
-        rotate_std = float(hparams.TRAIN.IND_TRANSFORMER.ROTATE_STD) / 180
+        rotate_std = float(hparams.TRAIN.IND_TRANSFORMER.ROTATE_STD) / 180 * np.pi
+        translation_std = hparams.TRAIN.IND_TRANSFORMER.TRANSLATION_STD
 
-        # truncate at value [max(0, 1-3*std), min(2, 1+3*std)]
-        scale_aug = torch.tensor(truncnorm.rvs(max(-1/scale_std, -3), min(1/scale_std, 3), loc=1, scale=scale_std)).float()
+        # truncate at value [max(0, 1-2*std), min(2, 1+2*std)]
+        scale_aug = torch.tensor(truncnorm.rvs(max(-1/(scale_std+EPS), -2), min(1/(scale_std+EPS), 2), loc=1, scale=scale_std)).float()
         # truncate at value [-3*std, 3*std]
-        rotate_aug = torch.tensor(truncnorm.rvs(-3, 3, loc=0, scale=rotate_std)).float()
+        rotate_aug = torch.tensor(truncnorm.rvs(-2, 2, loc=0, scale=rotate_std)).float()
+        translation_aug = torch.tensor(truncnorm.rvs(-2, 2, loc=0, scale=translation_std, size=2)).float()
 
-        img_trans, _, _ = self.dataset.get_transformed_image(img_bgr, center, img_res, img_rotate + (rotate_aug.item() / np.pi * 180), img_scale * scale_aug.item())
+        mat_aug = get_transform((0.5 - translation_aug.numpy()) * np.array(img_res), None, (img_res[0], img_res[1]), rot=rotate_aug.item() / np.pi * 180, scale=scale_aug.item())
+        img_trans, _, _ = self.dataset.get_transformed_image(img_bgr, img_res, center=center, rotate=img_rotate, scale=img_scale, mat=mat_aug)
         img_trans = torch.from_numpy(img_trans)
 
         mask = torch.ones(1, img.size(-2) // FACTOR, img.size(-1) // FACTOR, dtype=torch.float)
-        mask_trans = ((transform_maps(mask[None], scale_aug, rotate_aug, None))[0] >= 0.99).float()
+        mask_trans = ((transform_maps(mask[None], scale_aug[None], rotate_aug[None], translation_factor=translation_aug[None]))[0] >= 0.99).float()
 
-        if config.vis:
+        if config.vis and False:
             import matplotlib.pyplot as plt
-            print("scale_aug={}, rotate_aug={}".format(scale_aug.item(), rotate_aug.item()))
+            print("scale_aug={}, rotate_aug={}, tranlation_aug={}".format(scale_aug.item(), rotate_aug.item(), translation_aug.tolist()))
             plt.figure()
             plt.imshow(self.dataset.restore_image(img.numpy()))
             plt.figure()
@@ -321,16 +327,37 @@ class TransformedData(Dataset):
             img_trans=img_trans,
             mask_trans=mask_trans,
             scale=scale_aug,
-            rotate=rotate_aug
+            rotate=rotate_aug,
+            translation=translation_aug
         )
 
 class TransformerLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, ori, trans, scale, rotate, mask_trans):
+    def forward(self, ori, trans, scale, rotate, translation, mask_trans):
         EPS = np.finfo(np.float32).eps.item()
-        cos_ori_trans, sin_ori_trans, scale_ori_trans = tuple(map(lambda x: transform_maps(x, scale, rotate, None), ori))
+
+        cos_ori_trans, sin_ori_trans, scale_ori_trans = ori
+        cos_trans, sin_trans, scale_trans = trans
+
+        if config.vis and False:
+            import matplotlib.pyplot as plt
+            from matplotlib.colors import hsv_to_rgb
+            img_h_ori_trans = torch.atan2(sin_ori_trans, cos_ori_trans) / np.pi / 2 + 0.5
+            img_h_trans = torch.atan2(sin_trans, cos_trans) / np.pi / 2 + 0.5
+            for i in range(cos_trans.size(0)):
+                plt.figure()
+                plt.imshow(hsv_to_rgb(np.stack((img_h_ori_trans[i, 0].cpu().numpy(), np.ones(img_h_ori_trans.shape[-2:]), np.ones(img_h_ori_trans.shape[-2:])), axis=-1)))
+                plt.figure()
+                plt.imshow(hsv_to_rgb(np.stack((img_h_trans[i, 0].cpu().numpy(), np.ones(img_h_trans.shape[-2:]), np.ones(img_h_trans.shape[-2:])), axis=-1)))
+                plt.figure()
+                plt.imshow(scale_ori_trans[i, 0].cpu().numpy(), vmin=0, vmax=2)
+                plt.figure()
+                plt.imshow(scale_trans[i, 0].cpu().numpy(), vmin=0, vmax=2)
+                plt.show()
+
+        cos_ori_trans, sin_ori_trans, scale_ori_trans = tuple(map(lambda x: transform_maps(x, scale, rotate, translation_factor=translation), ori))
         
         rotate_sin = torch.sin(rotate)[:, None, None, None]
         rotate_cos = torch.cos(rotate)[:, None, None, None]
@@ -338,9 +365,7 @@ class TransformerLoss(nn.Module):
         sin_ori_trans = cos_ori_trans * rotate_sin + sin_ori_trans * rotate_cos
         scale_ori_trans = scale_ori_trans * scale[:, None, None, None]
 
-        cos_trans, sin_trans, scale_trans = trans
-
-        angle_loss = ((1 - cos_ori_trans * cos_trans + sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans.sum()
+        angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans.sum()
         scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).pow(2) * mask_trans).sum() / mask_trans.sum()
 
         if torch.isnan(angle_loss).any() or torch.isnan(scale_loss).any():

@@ -590,8 +590,10 @@ class COCOSinglePose(data.Dataset):
 
         return np.array([center[0] - w  / 2, center[1] - h / 2, w, h], dtype=np.float32)
 
-    def get_transformed_image(self, img_bgr, center, img_res, rotate, scale):
+    def get_transformed_image(self, img_bgr, img_res, center=None, rotate=None, scale=None, mat=None):
         img_transform_mat = get_transform(center, None, (img_res[0], img_res[1]), rot=rotate, scale=scale)
+        if mat is not None:
+            img_transform_mat = np.dot(mat, img_transform_mat)
         img_bgr_warp = cv2.warpAffine(img_bgr, img_transform_mat[:2], dsize=(img_res[0], img_res[1]), flags=cv2.INTER_LINEAR)
         img = img_bgr_warp[..., ::-1].astype(np.float32) / 255
 
@@ -688,7 +690,7 @@ class COCOSinglePose(data.Dataset):
                 center[0] = img_size[0] - center[0]
 
         img_scale = float(img_res[arg_min_shape]) / bbox_size
-        img, img_bgr_warp, img_transform_mat = self.get_transformed_image(img_bgr, center, img_res, rotate, img_scale)
+        img, img_bgr_warp, img_transform_mat = self.get_transformed_image(img_bgr, img_res, center=center, rotate=rotate, scale=img_scale)
 
         if flip_status:
             keypoints_tf = fliplr_pts(keypoints, FLIP_INDEX, width=int(img_size[0]))
@@ -781,7 +783,8 @@ class COCOSinglePose(data.Dataset):
                 "img_bgr": img_bgr,
                 "img_res": img_res,
                 "img_scale": img_scale,
-                "img_rotate": rotate
+                "img_rotate": rotate,
+                "min_crop_size": min_crop_size
             })
 
         return result
@@ -789,7 +792,7 @@ class COCOSinglePose(data.Dataset):
     @classmethod
     def collate_function(cls, batch):
         NON_COLLATE_KEYS = ["img_flipped"]
-        IGNORE_KEYS = ["img_bgr", "img_res", "img_scale", "img_rotate", "bbox_size", "center"]
+        IGNORE_KEYS = ["img_bgr", "img_res", "img_scale", "img_rotate", "bbox_size", "center", "min_crop_size"]
         collate_fn = data.dataloader.default_collate
         all_keys = batch[0].keys()
         result = dict()
