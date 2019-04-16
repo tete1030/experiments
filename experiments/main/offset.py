@@ -214,7 +214,7 @@ class TransformerFeature(nn.Module):
                     num_out_channel,
                     hparams.MODEL.IND_TRANSFORMER.NUM_OFFSET[i],
                     stride=hparams.MODEL.IND_TRANSFORMER.STRIDE[i],
-                    disable_atten=True,
+                    disable_atten=False,
                     disable_post_atten=True,
                     disable_arc=True,
                     disable_transformer=True,
