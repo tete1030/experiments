@@ -237,6 +237,9 @@ class TransformerExperiment(BaseExperiment):
         globalvars.progress = progress
 
         reg_angle_cos, reg_angle_sin, reg_scale = self.model(torch.cat([img, img_trans], dim=0))
+        if config.vis:
+            globalvars.img = self.train_dataset.dataset.restore_image(img)
+            globalvars.img_trans = self.train_dataset.dataset.restore_image(img_trans)
         angle_loss, scale_loss = self.loss(
             (reg_angle_cos[:batch_size], reg_angle_sin[:batch_size], reg_scale[:batch_size]),
             (reg_angle_cos[batch_size:], reg_angle_sin[batch_size:], reg_scale[batch_size:]),
@@ -245,6 +248,9 @@ class TransformerExperiment(BaseExperiment):
             batch["translation"].to(reg_angle_cos, non_blocking=True),
             batch["mask_trans"].to(reg_angle_cos, non_blocking=True)
         )
+        if config.vis:
+            globalvars.img = None
+            globalvars.img_trans = None
 
         loss = angle_loss * float(hparams.MODEL.IND_TRANSFORMER.LOSS_ANGLE_COF) + \
             scale_loss * float(hparams.MODEL.IND_TRANSFORMER.LOSS_SCALE_COF)
@@ -357,30 +363,32 @@ class TransformerLoss(nn.Module):
         cos_ori_trans = cos_ori_trans / norm_ori_trans
         sin_ori_trans = sin_ori_trans / norm_ori_trans
 
-        if config.vis and False: # globalvars.progress["step"] > 500 or 
+        # angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans.sum()
+        angle_loss = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans).clamp(-1+EPS, 1-EPS).acos() * mask_trans).sum() / mask_trans.sum()
+        scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs() * mask_trans).sum() / mask_trans.sum()
+
+        if config.vis: # globalvars.progress["step"] > 500 or 
             import matplotlib.pyplot as plt
             from matplotlib.colors import hsv_to_rgb
             img_h_ori = torch.atan2(sin_ori, cos_ori) / np.pi / 2 + 0.5
             img_h_ori_trans = torch.atan2(sin_ori_trans, cos_ori_trans) / np.pi / 2 + 0.5
             img_h_trans = torch.atan2(sin_trans, cos_trans) / np.pi / 2 + 0.5
+            
+            cos_sim = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans - 0.5) / 0.5 * mask_trans).detach().clamp(0, 1)
+            scale_sim = ((0.3 - torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs()) / 0.3 * mask_trans).detach().clamp(0, 1)
             for i in range(cos_trans.size(0)):
-                plt.figure()
-                plt.imshow(hsv_to_rgb(np.stack((img_h_ori[i, 0].detach().cpu().numpy(), np.ones(img_h_ori.shape[-2:]), np.ones(img_h_ori.shape[-2:])), axis=-1)))
-                plt.figure()
-                plt.imshow(hsv_to_rgb(np.stack((img_h_ori_trans[i, 0].detach().cpu().numpy(), np.ones(img_h_ori_trans.shape[-2:]), np.ones(img_h_ori_trans.shape[-2:])), axis=-1)))
-                plt.figure()
-                plt.imshow(hsv_to_rgb(np.stack((img_h_trans[i, 0].detach().cpu().numpy(), np.ones(img_h_trans.shape[-2:]), np.ones(img_h_trans.shape[-2:])), axis=-1)))
-                plt.figure()
-                plt.imshow(scale_ori[i, 0].detach().cpu().numpy(), vmin=0, vmax=2)
-                plt.figure()
-                plt.imshow(scale_ori_trans[i, 0].detach().cpu().numpy(), vmin=0, vmax=2)
-                plt.figure()
-                plt.imshow(scale_trans[i, 0].detach().cpu().numpy(), vmin=0, vmax=2)
+                fig, axes = plt.subplots(2, 5, figsize=(30, 16))
+                axes[0, 0].imshow(globalvars.img[i])
+                axes[1, 0].imshow(globalvars.img_trans[i])
+                axes[0, 1].imshow(hsv_to_rgb(np.stack((img_h_ori[i, 0].detach().cpu().numpy(), np.ones(img_h_ori.shape[-2:]), np.ones(img_h_ori.shape[-2:])), axis=-1)))
+                axes[1, 1].imshow(scale_ori[i, 0].detach().cpu().numpy(), vmin=0, vmax=2)
+                axes[0, 2].imshow(hsv_to_rgb(np.stack((img_h_ori_trans[i, 0].detach().cpu().numpy(), np.ones(img_h_ori_trans.shape[-2:]), np.ones(img_h_ori_trans.shape[-2:])), axis=-1)))
+                axes[1, 2].imshow(hsv_to_rgb(np.stack((img_h_trans[i, 0].detach().cpu().numpy(), np.ones(img_h_trans.shape[-2:]), np.ones(img_h_trans.shape[-2:])), axis=-1)))
+                axes[0, 3].imshow(scale_ori_trans[i, 0].detach().cpu().numpy(), vmin=0, vmax=2)
+                axes[1, 3].imshow(scale_trans[i, 0].detach().cpu().numpy(), vmin=0, vmax=2)
+                axes[0, 4].imshow(cos_sim[i, 0].detach().cpu().numpy(), vmin=0, vmax=1)
+                axes[1, 4].imshow(scale_sim[i, 0].detach().cpu().numpy(), vmin=0, vmax=1)
                 plt.show()
-
-        # angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans.sum()
-        angle_loss = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans).clamp(-1+EPS, 1-EPS).acos() * mask_trans).sum() / mask_trans.sum()
-        scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs() * mask_trans).sum() / mask_trans.sum()
 
         if config.check and (torch.isnan(angle_loss).any() or torch.isnan(scale_loss).any()):
             raise RuntimeError("NaN")
