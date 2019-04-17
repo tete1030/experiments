@@ -230,6 +230,11 @@ class TransformerHead(nn.Module):
     def __init__(self, num_channels, num_regress, sep_scale=False):
         super().__init__()
         self.sep_scale = sep_scale
+        self.pre_scale = nn.Sequential(
+            nn.Conv2d(num_channels, num_channels, kernel_size=1, bias=True),
+            nn.BatchNorm2d(num_channels),
+            nn.ReLU()
+        )
         self.scale_regressor = nn.Sequential(
             nn.Conv2d(num_channels, num_regress, kernel_size=1, bias=False),
             nn.Softsign()
@@ -245,7 +250,9 @@ class TransformerHead(nn.Module):
 
     def forward(self, x):
         EPS = np.finfo(np.float32).eps.item()
-        scale = 1 + self.scale_regressor(x)
+        pre_scale = self.pre_scale(x)
+        pre_scale = pre_scale / (pre_scale.sum(dim=1, keepdim=True).detach() + EPS)
+        scale = 1 + self.scale_regressor(pre_scale)
 
         pre_angle = self.pre_angle(x)
         pre_angle = pre_angle / (pre_angle.sum(dim=1, keepdim=True).detach() + EPS)
