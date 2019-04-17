@@ -234,6 +234,10 @@ class TransformerHead(nn.Module):
             nn.Conv2d(num_channels, num_regress, kernel_size=1, bias=False),
             nn.Softsign()
         )
+        self.pre_angle = nn.Sequential(
+            nn.Conv2d(num_channels, num_channels, kernel_size=1, bias=True),
+            nn.BatchNorm2d(num_channels),
+            nn.ReLU())
         self.angle_x_regressor = nn.Sequential(
             nn.Conv2d(num_channels, num_regress, kernel_size=1, bias=False))
         self.angle_y_regressor = nn.Sequential(
@@ -242,8 +246,11 @@ class TransformerHead(nn.Module):
     def forward(self, x):
         EPS = np.finfo(np.float32).eps.item()
         scale = 1 + self.scale_regressor(x)
-        angle_kcos = self.angle_x_regressor(x)
-        angle_ksin = self.angle_y_regressor(x)
+
+        pre_angle = self.pre_angle(x)
+        pre_angle = pre_angle / (pre_angle.sum(dim=1, keepdim=True).detach() + EPS)
+        angle_kcos = self.angle_x_regressor(pre_angle)
+        angle_ksin = self.angle_y_regressor(pre_angle)
 
         angle_knorm = (torch.stack([angle_kcos, angle_ksin], dim=0).norm(dim=0) + EPS)
         if not self.sep_scale:
