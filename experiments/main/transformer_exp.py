@@ -364,8 +364,8 @@ class TransformerLoss(nn.Module):
         cos_ori_trans = cos_ori_trans / norm_ori_trans
         sin_ori_trans = sin_ori_trans / norm_ori_trans
 
-        angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans.sum()
-        # angle_loss = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans).clamp(-1+EPS, 1-EPS).acos().pow(2) * mask_trans).sum() / mask_trans.sum()
+        # angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans.sum()
+        angle_loss = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans).clamp(-1+EPS, 1-EPS).acos().pow(2) * mask_trans).sum() / mask_trans.sum()
         scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs() * mask_trans).sum() / mask_trans.sum()
 
         if config.vis: # globalvars.progress["step"] > 500 or 
