@@ -351,13 +351,14 @@ class TransformerLoss(nn.Module):
         cos_trans, sin_trans, scale_trans = trans
 
         assert scale.dim() == 1 and rotate.dim() == 1 and translation.dim() == 2
-        cos_ori_trans, sin_ori_trans, scale_ori_trans = tuple(map(lambda x: transform_maps(x, scale, rotate, translation_factor=translation), ori))
+        cos_ori_trans_tmp, sin_ori_trans_tmp, scale_ori_trans_tmp = tuple(map(lambda x: transform_maps(x, scale, rotate, translation_factor=translation), ori))
 
         rotate_sin = torch.sin(rotate)[:, None, None, None]
         rotate_cos = torch.cos(rotate)[:, None, None, None]
-        cos_ori_trans = cos_ori_trans * rotate_cos - sin_ori_trans * rotate_sin
-        sin_ori_trans = cos_ori_trans * rotate_sin + sin_ori_trans * rotate_cos
-        scale_ori_trans = scale_ori_trans * scale[:, None, None, None]
+        cos_ori_trans = cos_ori_trans_tmp * rotate_cos - sin_ori_trans_tmp * rotate_sin
+        sin_ori_trans = cos_ori_trans_tmp * rotate_sin + sin_ori_trans_tmp * rotate_cos
+        scale_ori_trans = scale_ori_trans_tmp * scale[:, None, None, None]
+        del cos_ori_trans_tmp, sin_ori_trans_tmp, scale_ori_trans_tmp
 
         norm_ori_trans = (cos_ori_trans.pow(2) + sin_ori_trans.pow(2)).detach().sqrt() + EPS
         cos_ori_trans = cos_ori_trans / norm_ori_trans
