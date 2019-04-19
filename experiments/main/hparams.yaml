@@ -27,7 +27,7 @@ train:
     ind_transformer:
         scale_std: 0.25
         rotate_std: 90
-        translation_std: 0.1
+        translation_std: 0.5
 
 eval:
     parse_threshold: 0.1

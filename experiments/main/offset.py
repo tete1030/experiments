@@ -250,11 +250,11 @@ class TransformerHead(nn.Module):
 
     def forward(self, x):
         EPS = np.finfo(np.float32).eps.item()
-        pre_scale = self.pre_scale(x).clamp(max=88.722835).exp()
+        pre_scale = self.pre_scale(x)
         pre_scale = pre_scale / (pre_scale.sum(dim=1, keepdim=True).detach() + EPS)
         scale = 1 + self.scale_regressor(pre_scale)
 
-        pre_angle = self.pre_angle(x).clamp(max=88.722835).exp()
+        pre_angle = self.pre_angle(x)
         pre_angle = pre_angle / (pre_angle.sum(dim=1, keepdim=True).detach() + EPS)
         angle_kcos = self.angle_x_regressor(pre_angle)
         angle_ksin = self.angle_y_regressor(pre_angle)
