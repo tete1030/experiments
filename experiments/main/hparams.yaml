@@ -97,7 +97,7 @@ model:
         stride: [1, 1]
         num_feature: 256
         loss_angle_cof: 1
-        loss_scale_cof: 1
+        loss_scale_cof: 2
 
 dataset:
     profile: coco
