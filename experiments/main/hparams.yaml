@@ -22,7 +22,8 @@ train:
         bn_momentum: 0.1
         momentum: 0.0
         arc_sigma_dec_iter: 200000
-        transformer_grow_iter: 2785
+        transformer_grow_iter: 0
+        joint_optimize_transformer: false
 
     ind_transformer:
         scale_std: 0.25
@@ -46,7 +47,7 @@ log:
     sigma_change_average_cycle: 500
 
 model:
-    mode: "transformer"
+    mode: "main"
     use_gn: true
     resnet_pretrained: pretrained/resnet50_gn.pth
     inp_shape: [192, 256] # W, H
@@ -80,7 +81,7 @@ model:
             independent: true
             num_regress: 1
         arc:
-            enable: true
+            enable: false
             simple: true
             num_sample: 16
             angle_std: 30
@@ -92,6 +93,7 @@ model:
             divide_dist: true
 
     ind_transformer:
+        pretrained: checkpoint/offset_102/Apr20_021115/checkpoint_39.pth.tar
         num_blk: 2
         num_offset: [64, 192]
         stride: [1, 1]

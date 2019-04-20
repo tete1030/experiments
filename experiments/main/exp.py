@@ -25,7 +25,7 @@ from utils.checkpoint import save_pred, load_pretrained_loose, save_checkpoint, 
 from utils.miscs import nprand_init
 from experiments.baseexperiment import BaseExperiment, EpochContext
 from .resnet import resnet18, resnet50, resnet101
-from .offset import OffsetBlock
+from .offset import OffsetBlock, IndpendentTransformerRegressor, LocalTransformerRegressor
 from .transformer_exp import TransformerExperiment
 
 FACTOR = 4
@@ -82,6 +82,8 @@ class MainExperiment(BaseExperiment):
         globalvars.displace_mods = list()
         globalvars.dpools = list()
         globalvars.arc_displacers = list()
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+            globalvars.transformer_output = dict()
         if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             globalvars.early_predictors = list()
             globalvars.pre_early_predictor_outs = dict()
@@ -91,6 +93,8 @@ class MainExperiment(BaseExperiment):
         else:
             globalvars.BatchNorm2dImpl = nn.BatchNorm2d
 
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT and hparams.MODEL.IND_TRANSFORMER.PRETRAINED is not None:
+            assert hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER == 0, "Need not grow iters for pretrained parameters"
         assert hparams.MODEL.DETAIL.EARLY_PREDICTOR or not hparams.MODEL.DETAIL.FIRST_ESP_ONLY
         assert not hparams.MODEL.DETAIL.FIRST_ESP_ONLY or not hparams.MODEL.DETAIL.EARLY_PREDICTOR_FROM_OFFBLK
 
@@ -110,6 +114,24 @@ class MainExperiment(BaseExperiment):
                 for para_name in map(para2name_dict.get, paras):
                     print("    " + para_name)
                 print("")
+        
+        # First set transformer state
+        all_transformer_params = []
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE:
+            transformer_head_params = list(itertools.chain.from_iterable([dm.offset_transformer.parameters() for dm in globalvars.displace_mods if dm.offset_transformer is not None]))
+            for module in self.model.modules():
+                if isinstance(module, (IndpendentTransformerRegressor, LocalTransformerRegressor)):
+                    all_transformer_params += list(module.parameters())
+            all_transformer_params = transformer_head_params + all_transformer_params
+            if not hparams.TRAIN.OFFSET.JOINT_OPTIMIZE_TRANSFORMER:
+                assert len(transformer_head_params) == 0, "No optimization on transformer heads"
+                assert hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT and hparams.MODEL.IND_TRANSFORMER.PRETRAINED is not None, "No optimization on transformer"
+                for param in all_transformer_params:
+                    param.requires_grad_(False)
+                all_transformer_params = []
+                log_i("No training transformer")
+            else:
+                log_i("Jointly training transformer")
 
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in globalvars.displace_mods if hasattr(dm, "offset")]))
@@ -123,11 +145,10 @@ class MainExperiment(BaseExperiment):
         else:
             self.dpool_parameters = []
 
-        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE:
-            self.offset_transformer_parameters = list(
-                filter(
-                    lambda x: x.requires_grad,
-                    list(itertools.chain.from_iterable([dm.offset_transformer.parameters() for dm in globalvars.displace_mods if dm.offset_transformer is not None]))))
+        if len(all_transformer_params) > 0:
+            all_offset_pool_params = self.offset_parameters + self.offset_regressor_parameters + self.dpool_parameters
+            all_transformer_params = filter(lambda x: x not in all_offset_pool_params, all_transformer_params)
+            self.offset_transformer_parameters = list(filter(lambda x: x.requires_grad, all_transformer_params))
         else:
             self.offset_transformer_parameters = []
 
@@ -451,6 +472,7 @@ class MainExperiment(BaseExperiment):
                     arc.set_scale_std(arc.scale_std().add(-scale_step).clamp(min=arc.min_scale_std, max=arc.max_scale_std))
         if optimize_transformer:
             self.transformer_optimizer.step()
+        if self.update_transformer: # even no trans parameters (means optimize_transformer being false)
             for dm in globalvars.displace_mods:
                 if dm.offset_transformer is not None and dm.offset_transformer.effect_scale is not None:
                     dm.offset_transformer.effect_scale.data.add_(1. / hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER).clamp_(0, 1)
@@ -728,6 +750,18 @@ class Controller(nn.Module):
 class MainModel(nn.Module):
     def __init__(self, output_shape, num_points, pretrained=None):
         super(MainModel, self).__init__()
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+            self.transformer = IndpendentTransformerRegressor(hparams.MODEL.IND_TRANSFORMER.NUM_FEATURE, hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_REGRESS, sep_scale=False)
+            if hparams.MODEL.IND_TRANSFORMER.PRETRAINED is not None:
+                if config.resume:
+                    log_i("Skipping loading pretrained independent transformer")
+                else:
+                    log_i("Loading pretrained independent transformer: " + hparams.MODEL.IND_TRANSFORMER.PRETRAINED)
+                    state_dict = torch.load(hparams.MODEL.IND_TRANSFORMER.PRETRAINED)["state_dict"]
+                    remove_prefix = lambda x: x[x.startswith("module.") and len("module."):]
+                    state_dict = {remove_prefix(k): v for k, v in state_dict.items()}
+                    self.transformer.load_state_dict(state_dict)
+
         if hparams.MODEL.RESNET == 18:
             self.resnet = resnet18(pretrained=pretrained)
             channel_settings = [512, 256, 128, 64]
@@ -743,7 +777,11 @@ class MainModel(nn.Module):
             self.global_net = GlobalNet(channel_settings, output_shape, num_points)
 
     def forward(self, x):
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+            globalvars.transformer_output[x.device] = self.transformer(x)
         res_out = self.resnet(x)
+        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
+            globalvars.transformer_output[x.device] = None
         if not hparams.MODEL.DETAIL.FIRST_ESP_ONLY:
             global_re, global_out = self.global_net(res_out)
             return global_out

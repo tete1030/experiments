@@ -91,7 +91,7 @@ class OffsetTransformer(nn.Module):
             width_ori = kcos.size(-1)
             height_new = spatial_size[0]
             width_new = spatial_size[1]
-            assert height_new / height_ori == width_new / width_ori and height_new > height_ori
+            assert height_new / height_ori == width_new / width_ori
             kcos = F.interpolate(kcos, size=spatial_size, mode="bilinear", align_corners=True)
             ksin = F.interpolate(ksin, size=spatial_size, mode="bilinear", align_corners=True)
 

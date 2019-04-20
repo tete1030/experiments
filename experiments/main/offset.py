@@ -286,7 +286,7 @@ class IndpendentTransformerRegressorDelegate(nn.Module):
         super().__init__()
 
     def forward(self, x):
-        return globalvars.independent_transformer_result[x.device]
+        return globalvars.transformer_output[x.device]
 
 class LocalTransformerRegressor(nn.Module):
     def __init__(self, num_feature, num_regress):
