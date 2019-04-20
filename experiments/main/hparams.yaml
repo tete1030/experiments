@@ -26,6 +26,7 @@ train:
         joint_optimize_transformer: false
 
     ind_transformer:
+        multi_scale: [1, 0.5, 0.25, 0.125]
         scale_std: 0.25
         rotate_std: 90
         translation_std: 0.1
@@ -47,7 +48,7 @@ log:
     sigma_change_average_cycle: 500
 
 model:
-    mode: "main"
+    mode: "transformer"
     use_gn: true
     resnet_pretrained: pretrained/resnet50_gn.pth
     inp_shape: [192, 256] # W, H

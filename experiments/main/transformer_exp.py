@@ -240,14 +240,40 @@ class TransformerExperiment(BaseExperiment):
         if config.vis:
             globalvars.img = self.train_dataset.dataset.restore_image(img)
             globalvars.img_trans = self.train_dataset.dataset.restore_image(img_trans)
-        angle_loss, scale_loss = self.loss(
-            (reg_angle_cos[:batch_size], reg_angle_sin[:batch_size], reg_scale[:batch_size]),
-            (reg_angle_cos[batch_size:], reg_angle_sin[batch_size:], reg_scale[batch_size:]),
-            batch["scale"].to(reg_angle_cos, non_blocking=True),
-            batch["rotate"].to(reg_angle_cos, non_blocking=True),
-            batch["translation"].to(reg_angle_cos, non_blocking=True),
-            batch["mask_trans"].to(reg_angle_cos, non_blocking=True)
-        )
+
+        angle_loss = 0
+        scale_loss = 0
+        scale = batch["scale"].to(reg_angle_cos, non_blocking=True)
+        rotate = batch["rotate"].to(reg_angle_cos, non_blocking=True)
+        translation = batch["translation"].to(reg_angle_cos, non_blocking=True)
+        mask_trans = batch["mask_trans"].to(reg_angle_cos, non_blocking=True)
+
+        for scale_factor in hparams.TRAIN.IND_TRANSFORMER.MULTI_SCALE:
+            if scale_factor == 1:
+                reg_angle_cos_cur = reg_angle_cos
+                reg_angle_sin_cur = reg_angle_sin
+                reg_scale_cur = reg_scale
+                mask_trans_cur = mask_trans
+            else:
+                interp_kwargs = dict(
+                    scale_factor=scale_factor,
+                    mode="area" if scale_factor < 1 else "bilinear",
+                    align_corners=None if scale_factor < 1 else True)
+                reg_angle_cos_cur = F.interpolate(reg_angle_cos, **interp_kwargs)
+                reg_angle_sin_cur = F.interpolate(reg_angle_sin, **interp_kwargs)
+                reg_scale_cur = F.interpolate(reg_scale, **interp_kwargs)
+                mask_trans_cur = (F.interpolate(mask_trans, **interp_kwargs) > 0.99).float()
+            angle_loss_cur, scale_loss_cur = self.loss(
+                (reg_angle_cos_cur[:batch_size], reg_angle_sin_cur[:batch_size], reg_scale_cur[:batch_size]),
+                (reg_angle_cos_cur[batch_size:], reg_angle_sin_cur[batch_size:], reg_scale_cur[batch_size:]),
+                scale,
+                rotate,
+                translation,
+                mask_trans_cur
+            )
+            angle_loss = angle_loss + angle_loss_cur
+            scale_loss = scale_loss + scale_loss_cur
+
         if config.vis:
             globalvars.img = None
             globalvars.img_trans = None
@@ -364,9 +390,14 @@ class TransformerLoss(nn.Module):
         cos_ori_trans = cos_ori_trans / norm_ori_trans
         sin_ori_trans = sin_ori_trans / norm_ori_trans
 
-        angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans.sum()
-        # angle_loss = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans).clamp(-1+EPS, 1-EPS).acos().pow(2) * mask_trans).sum() / mask_trans.sum()
-        scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs() * mask_trans).sum() / mask_trans.sum()
+        mask_trans_sum = mask_trans.sum()
+        if mask_trans_sum > 0:
+            angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans_sum
+            # angle_loss = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans).clamp(-1+EPS, 1-EPS).acos().pow(2) * mask_trans).sum() / mask_trans_sum
+            scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs() * mask_trans).sum() / mask_trans_sum
+        else:
+            angle_loss = 0
+            scale_loss = 0
 
         if config.vis: # globalvars.progress["step"] > 500 or 
             import matplotlib.pyplot as plt
