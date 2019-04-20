@@ -392,9 +392,9 @@ class TransformerLoss(nn.Module):
 
         mask_trans_sum = mask_trans.sum()
         if mask_trans_sum > 0:
-            angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans) * mask_trans).sum() / mask_trans_sum
+            angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans).pow(2) * mask_trans).sum() / mask_trans_sum
             # angle_loss = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans).clamp(-1+EPS, 1-EPS).acos().pow(2) * mask_trans).sum() / mask_trans_sum
-            scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs() * mask_trans).sum() / mask_trans_sum
+            scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs().pow(2) * mask_trans).sum() / mask_trans_sum
         else:
             angle_loss = 0
             scale_loss = 0
