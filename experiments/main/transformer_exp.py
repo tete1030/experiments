@@ -25,7 +25,7 @@ from utils.checkpoint import save_pred, load_pretrained_loose, save_checkpoint, 
 from utils.miscs import nprand_init
 from experiments.baseexperiment import BaseExperiment, EpochContext
 from .offset import IndpendentTransformerRegressor
-from lib.utils.augtrans import transform_maps
+from lib.utils.augtrans import transform_maps, get_batch_transform_mats, batch_warp_affine
 from scipy.stats import truncnorm
 from lib.models.displacechan import TransformCoordinate
 from lib.utils.transforms import get_transform
@@ -114,9 +114,9 @@ class TransformerExperiment(BaseExperiment):
             True,
             img_res=hparams.MODEL.INP_SHAPE,
             ext_border=hparams.DATASET["COCO"].EXT_BORDER,
-            kpmap_res=None,
+            kpmap_res=hparams.MODEL.OUT_SHAPE,
             keypoint_res=hparams.MODEL.OUT_SHAPE,
-            kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
+            kpmap_sigma=hparams.MODEL.IND_TRANSFORMER.KEYPOINT_SIGMA,
             scale_factor=hparams.DATASET["COCO"].SCALE_FACTOR,
             rot_factor=hparams.DATASET["COCO"].ROTATE_FACTOR,
             trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR,
@@ -132,9 +132,9 @@ class TransformerExperiment(BaseExperiment):
             False,
             img_res=hparams.MODEL.INP_SHAPE,
             ext_border=hparams.DATASET["COCO"].EXT_BORDER,
-            kpmap_res=None,
+            kpmap_res=hparams.MODEL.OUT_SHAPE,
             keypoint_res=hparams.MODEL.OUT_SHAPE,
-            kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
+            kpmap_sigma=hparams.MODEL.IND_TRANSFORMER.KEYPOINT_SIGMA,
             scale_factor=hparams.DATASET["COCO"].SCALE_FACTOR,
             rot_factor=hparams.DATASET["COCO"].ROTATE_FACTOR,
             trans_factor=hparams.DATASET["COCO"].TRANSLATION_FACTOR,
@@ -150,8 +150,8 @@ class TransformerExperiment(BaseExperiment):
             True,
             True,
             img_res=hparams.MODEL.INP_SHAPE,
-            kpmap_res=None,
-            kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
+            kpmap_res=hparams.MODEL.OUT_SHAPE,
+            kpmap_sigma=hparams.MODEL.IND_TRANSFORMER.KEYPOINT_SIGMA,
             scale_factor=hparams.DATASET["MPII"].SCALE_FACTOR,
             rot_factor=hparams.DATASET["MPII"].ROTATE_FACTOR,
             trans_factor=hparams.DATASET["MPII"].TRANSLATION_FACTOR,
@@ -164,8 +164,8 @@ class TransformerExperiment(BaseExperiment):
             False,
             True,
             img_res=hparams.MODEL.INP_SHAPE,
-            kpmap_res=None,
-            kpmap_sigma=hparams.MODEL.GAUSSIAN_KERNELS,
+            kpmap_res=hparams.MODEL.OUT_SHAPE,
+            kpmap_sigma=hparams.MODEL.IND_TRANSFORMER.KEYPOINT_SIGMA,
             scale_factor=hparams.DATASET["MPII"].SCALE_FACTOR,
             rot_factor=hparams.DATASET["MPII"].ROTATE_FACTOR,
             trans_factor=hparams.DATASET["MPII"].TRANSLATION_FACTOR,
@@ -248,7 +248,7 @@ class TransformerExperiment(BaseExperiment):
         translation = batch["translation"].to(reg_angle_cos, non_blocking=True)
         mask_trans = batch["mask_trans"].to(reg_angle_cos, non_blocking=True)
 
-        for scale_factor in hparams.TRAIN.IND_TRANSFORMER.MULTI_SCALE:
+        for scale_factor in hparams.MODEL.IND_TRANSFORMER.MULTI_SCALE:
             if scale_factor == 1:
                 reg_angle_cos_cur = reg_angle_cos
                 reg_angle_sin_cur = reg_angle_sin
@@ -262,7 +262,7 @@ class TransformerExperiment(BaseExperiment):
                 reg_angle_cos_cur = F.interpolate(reg_angle_cos, **interp_kwargs)
                 reg_angle_sin_cur = F.interpolate(reg_angle_sin, **interp_kwargs)
                 reg_scale_cur = F.interpolate(reg_scale, **interp_kwargs)
-                mask_trans_cur = (F.interpolate(mask_trans, **interp_kwargs) > 0.99).float()
+                mask_trans_cur = F.interpolate(mask_trans, **interp_kwargs)
             angle_loss_cur, scale_loss_cur = self.loss(
                 (reg_angle_cos_cur[:batch_size], reg_angle_sin_cur[:batch_size], reg_scale_cur[:batch_size]),
                 (reg_angle_cos_cur[batch_size:], reg_angle_sin_cur[batch_size:], reg_scale_cur[batch_size:]),
@@ -325,10 +325,24 @@ class TransformedData(Dataset):
         img_res = data["img_res"]
         img_scale = data["img_scale"]
         img_rotate = data["img_rotate"]
+        keypoint_map = data["keypoint_map"]
 
         scale_std = hparams.TRAIN.IND_TRANSFORMER.SCALE_STD
         rotate_std = float(hparams.TRAIN.IND_TRANSFORMER.ROTATE_STD) / 180 * np.pi
         translation_std = hparams.TRAIN.IND_TRANSFORMER.TRANSLATION_STD
+
+        def get_transformed_data(scale_aug, rotate_aug, translation_aug, mask_extra=None):
+            nonlocal self, img, img_bgr, img_res, img_scale, img_rotate, center
+            mat_aug = get_transform((0.5 - translation_aug.numpy()) * np.array(img_res), None, (img_res[0], img_res[1]), rot=rotate_aug.item() / np.pi * 180, scale=scale_aug.item())
+            img_trans, _, _ = self.dataset.get_transformed_image(img_bgr, img_res, center=center, rotate=img_rotate, scale=img_scale, mat=mat_aug)
+            img_trans = torch.from_numpy(img_trans)
+
+            mask = torch.ones(1, img.size(-2) // FACTOR, img.size(-1) // FACTOR, dtype=torch.float)
+            if mask_extra is not None:
+                mask = mask * mask_extra
+            mask_trans = transform_maps(mask[None], scale_aug[None], rotate_aug[None], translation_factor=translation_aug[None])[0]
+
+            return img_trans, mask_trans
 
         # # truncate at value [max(0, 1-2*std), min(2, 1+2*std)]
         # scale_aug = torch.tensor(truncnorm.rvs(max(-1/(scale_std+EPS), -2), min(1/(scale_std+EPS), 2), loc=1, scale=scale_std)).float()
@@ -338,13 +352,7 @@ class TransformedData(Dataset):
         scale_aug = torch.tensor(0., dtype=torch.float).uniform_(max(0, 1-2*scale_std), min(2, 1+2*scale_std))
         rotate_aug = torch.tensor(0., dtype=torch.float).uniform_(-2*rotate_std, 2*rotate_std)
         translation_aug = torch.zeros(2, dtype=torch.float).uniform_(-2*translation_std, 2*translation_std)
-
-        mat_aug = get_transform((0.5 - translation_aug.numpy()) * np.array(img_res), None, (img_res[0], img_res[1]), rot=rotate_aug.item() / np.pi * 180, scale=scale_aug.item())
-        img_trans, _, _ = self.dataset.get_transformed_image(img_bgr, img_res, center=center, rotate=img_rotate, scale=img_scale, mat=mat_aug)
-        img_trans = torch.from_numpy(img_trans)
-
-        mask = torch.ones(1, img.size(-2) // FACTOR, img.size(-1) // FACTOR, dtype=torch.float)
-        mask_trans = ((transform_maps(mask[None], scale_aug[None], rotate_aug[None], translation_factor=translation_aug[None]))[0] >= 0.99).float()
+        img_trans, mask_trans = get_transformed_data(scale_aug, rotate_aug, translation_aug, mask_extra=keypoint_map.max(dim=0, keepdim=True)[0])
 
         if config.vis and False:
             import matplotlib.pyplot as plt
@@ -396,8 +404,8 @@ class TransformerLoss(nn.Module):
             # angle_loss = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans).clamp(-1+EPS, 1-EPS).acos().pow(2) * mask_trans).sum() / mask_trans_sum
             scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs().pow(2) * mask_trans).sum() / mask_trans_sum
         else:
-            angle_loss = 0
-            scale_loss = 0
+            angle_loss = torch.tensor(0).to(cos_ori, non_blocking=True)
+            scale_loss = torch.tensor(0).to(cos_ori, non_blocking=True)
 
         if config.vis: # globalvars.progress["step"] > 500 or 
             import matplotlib.pyplot as plt
