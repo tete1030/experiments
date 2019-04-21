@@ -114,7 +114,7 @@ class OffsetBlock(nn.Module):
         else:
             offset_transformer = None
 
-        if (use_arc is None and hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE) or use_arc:
+        if (use_arc is None and hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE and offset_transformer is not None) or use_arc:
             arc_displacer = PositionalGaussianDisplaceModule(
                 num_offset,
                 hparams.MODEL.LEARNABLE_OFFSET.ARC.NUM_SAMPLE,
@@ -216,7 +216,7 @@ class TransformerFeature(nn.Module):
                     stride=hparams.MODEL.IND_TRANSFORMER.STRIDE[i],
                     disable_atten=False,
                     disable_post_atten=True,
-                    use_arc=True,
+                    use_arc=False,
                     disable_transformer=True,
                     always_train_block=True))
             shape_factor *= hparams.MODEL.IND_TRANSFORMER.STRIDE[i]
