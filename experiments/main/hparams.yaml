@@ -99,7 +99,7 @@ model:
         num_offset: [64, 192]
         stride: [1, 1]
         num_feature: 256
-        multi_scale: [1]
+        multi_scale: [1, 0.5, 0.25, 0.125]
         keypoint_based: true
         keypoint_sigma: 2
         loss_angle_cof: 1
