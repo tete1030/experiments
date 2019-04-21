@@ -243,9 +243,16 @@ class TransformerExperiment(BaseExperiment):
 
         angle_loss = 0
         scale_loss = 0
+        var_loss = 0
+
+        angle_avg = 0
+        scale_avg = 0
+        var_avg = 0
+
         scale = batch["scale"].to(reg_angle_cos, non_blocking=True)
         rotate = batch["rotate"].to(reg_angle_cos, non_blocking=True)
         translation = batch["translation"].to(reg_angle_cos, non_blocking=True)
+        mask = batch["mask"].to(reg_angle_cos, non_blocking=True)
         mask_trans = batch["mask_trans"].to(reg_angle_cos, non_blocking=True)
 
         for scale_factor in hparams.MODEL.IND_TRANSFORMER.MULTI_SCALE:
@@ -253,6 +260,7 @@ class TransformerExperiment(BaseExperiment):
                 reg_angle_cos_cur = reg_angle_cos
                 reg_angle_sin_cur = reg_angle_sin
                 reg_scale_cur = reg_scale
+                mask_cur = mask
                 mask_trans_cur = mask_trans
             else:
                 interp_kwargs = dict(
@@ -262,28 +270,42 @@ class TransformerExperiment(BaseExperiment):
                 reg_angle_cos_cur = F.interpolate(reg_angle_cos, **interp_kwargs)
                 reg_angle_sin_cur = F.interpolate(reg_angle_sin, **interp_kwargs)
                 reg_scale_cur = F.interpolate(reg_scale, **interp_kwargs)
+                mask_cur = F.interpolate(mask, **interp_kwargs)
                 mask_trans_cur = F.interpolate(mask_trans, **interp_kwargs)
-            angle_loss_cur, scale_loss_cur = self.loss(
+            angle_loss_cur, scale_loss_cur, var_loss_cur, angle_avg_cur, scale_avg_cur, var_avg_cur = self.loss(
                 (reg_angle_cos_cur[:batch_size], reg_angle_sin_cur[:batch_size], reg_scale_cur[:batch_size]),
                 (reg_angle_cos_cur[batch_size:], reg_angle_sin_cur[batch_size:], reg_scale_cur[batch_size:]),
                 scale,
                 rotate,
                 translation,
+                mask_cur,
                 mask_trans_cur
             )
             angle_loss = angle_loss + angle_loss_cur
             scale_loss = scale_loss + scale_loss_cur
+            var_loss = var_loss + var_loss_cur
+
+            angle_avg = angle_avg + angle_avg_cur
+            scale_avg = scale_avg + scale_avg_cur
+            var_avg = var_avg + var_avg_cur
+
+        angle_avg = angle_avg / len(hparams.MODEL.IND_TRANSFORMER.MULTI_SCALE)
+        scale_avg = scale_avg / len(hparams.MODEL.IND_TRANSFORMER.MULTI_SCALE)
+        var_avg = var_avg / len(hparams.MODEL.IND_TRANSFORMER.MULTI_SCALE)
 
         if config.vis:
             globalvars.img = None
             globalvars.img_trans = None
 
         loss = angle_loss * float(hparams.MODEL.IND_TRANSFORMER.LOSS_ANGLE_COF) + \
-            scale_loss * float(hparams.MODEL.IND_TRANSFORMER.LOSS_SCALE_COF)
+            scale_loss * float(hparams.MODEL.IND_TRANSFORMER.LOSS_SCALE_COF) + \
+            var_loss * float(hparams.MODEL.IND_TRANSFORMER.LOSS_VAR_COF)
 
-        epoch_ctx.set_iter_data("loss_angle", angle_loss)
-        epoch_ctx.set_iter_data("loss_scale", scale_loss)
         epoch_ctx.set_iter_data("loss", loss)
+
+        epoch_ctx.set_iter_data("avg_angle", angle_avg)
+        epoch_ctx.set_iter_data("avg_scale", scale_avg)
+        epoch_ctx.set_iter_data("avg_var", var_avg)
 
         return loss
 
@@ -291,12 +313,19 @@ class TransformerExperiment(BaseExperiment):
         tb_writer = globalvars.main_context.get("tb_writer")
 
         loss_val = epoch_ctx.iter_data["loss"].item()
+        avg_angle = epoch_ctx.iter_data["avg_angle"].item()
+        avg_scale = epoch_ctx.iter_data["avg_scale"].item()
+        avg_var = epoch_ctx.iter_data["avg_var"].item()
         if train and tb_writer is not None:
             tb_writer.add_scalar("loss/transformer", loss_val, progress["step"])
+            tb_writer.add_scalar("loss/avg_angle", avg_angle, progress["step"])
+            tb_writer.add_scalar("loss/avg_scale", avg_scale, progress["step"])
+            tb_writer.add_scalar("loss/avg_var", avg_var, progress["step"])
 
         epoch_ctx.add_scalar("loss", loss_val)
-        epoch_ctx.add_scalar("loss_angle", epoch_ctx.iter_data["loss_angle"].item())
-        epoch_ctx.add_scalar("loss_scale", epoch_ctx.iter_data["loss_scale"].item())
+        epoch_ctx.add_scalar("avg_angle", avg_angle)
+        epoch_ctx.add_scalar("avg_scale", avg_scale)
+        epoch_ctx.add_scalar("avg_var", avg_var)
 
         if train:
             if (progress["step"] + 1) % hparams.LOG.OFFSET_SAVE_INTERVAL == 0:
@@ -306,6 +335,9 @@ class TransformerExperiment(BaseExperiment):
         tb_writer = globalvars.main_context.get("tb_writer")
         if tb_writer and not train:
             tb_writer.add_scalar("loss/transformer_valid", epoch_ctx.scalar["loss"].avg, progress["step"])
+            epoch_ctx.add_scalar("avg_angle", epoch_ctx.scalar["avg_angle"].avg)
+            epoch_ctx.add_scalar("avg_scale", epoch_ctx.scalar["avg_scale"].avg)
+            epoch_ctx.add_scalar("avg_var", epoch_ctx.scalar["avg_var"].avg)
 
 class TransformedData(Dataset):
     def __init__(self, dataset):
@@ -352,7 +384,11 @@ class TransformedData(Dataset):
         scale_aug = torch.tensor(0., dtype=torch.float).uniform_(max(0, 1-2*scale_std), min(2, 1+2*scale_std))
         rotate_aug = torch.tensor(0., dtype=torch.float).uniform_(-2*rotate_std, 2*rotate_std)
         translation_aug = torch.zeros(2, dtype=torch.float).uniform_(-2*translation_std, 2*translation_std)
-        img_trans, mask_trans = get_transformed_data(scale_aug, rotate_aug, translation_aug, mask_extra=keypoint_map.max(dim=0, keepdim=True)[0])
+        
+        mask_extra = keypoint_map.max(dim=0, keepdim=True)[0]
+        if hparams.MODEL.IND_TRANSFORMER.LOSS_VAR_COF > 0:
+            mask_extra = torch.cat([mask_extra, keypoint_map], dim=0)
+        img_trans, mask_trans = get_transformed_data(scale_aug, rotate_aug, translation_aug, mask_extra=mask_extra)
 
         if config.vis and False:
             import matplotlib.pyplot as plt
@@ -368,6 +404,7 @@ class TransformedData(Dataset):
         return dict(
             img=img,
             img_trans=img_trans,
+            mask=mask_extra,
             mask_trans=mask_trans,
             scale=scale_aug,
             rotate=rotate_aug,
@@ -378,7 +415,7 @@ class TransformerLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, ori, trans, scale, rotate, translation, mask_trans):
+    def forward(self, ori, trans, scale, rotate, translation, mask, mask_trans):
         EPS = np.finfo(np.float32).eps.item()
 
         cos_ori, sin_ori, scale_ori = ori
@@ -398,14 +435,51 @@ class TransformerLoss(nn.Module):
         cos_ori_trans = cos_ori_trans / norm_ori_trans
         sin_ori_trans = sin_ori_trans / norm_ori_trans
 
-        mask_trans_sum = mask_trans.sum()
-        if mask_trans_sum > 0:
-            angle_loss = ((1 - cos_ori_trans * cos_trans - sin_ori_trans * sin_trans).pow(2) * mask_trans).sum() / mask_trans_sum
-            # angle_loss = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans).clamp(-1+EPS, 1-EPS).acos().pow(2) * mask_trans).sum() / mask_trans_sum
-            scale_loss = (torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs().pow(2) * mask_trans).sum() / mask_trans_sum
+        mask_sep = None
+        mask_sep_trans = None
+        if mask_trans.size(1) > 1:
+            mask_sep = mask[:, 1:]
+            mask_sep_trans = mask_trans[:, 1:]
+            mask_max_trans = mask_trans[:, [0]]
+
+        dis_cossim = lambda cos_a, sin_a, cos_b, sin_b: (1 - cos_a * cos_b - sin_a * sin_b)
+        dis_angle = lambda cos_a, sin_a, cos_b, sin_b: (cos_a * cos_b + sin_a * sin_b).clamp(-1+EPS, 1-EPS).acos()
+        dis_scale = lambda scale_a, scale_b: torch.log(scale_a / (scale_b + EPS) + EPS)
+
+        mask_max_trans_sum = mask_max_trans.sum()
+        if mask_max_trans_sum > 0:
+            angle_loss = (dis_cossim(cos_ori_trans, sin_ori_trans, cos_trans, sin_trans).pow(2) * mask_max_trans).sum() / mask_max_trans_sum
+            scale_loss = (dis_scale(scale_ori_trans, scale_trans).pow(2) * mask_max_trans).sum() / mask_max_trans_sum
+            
+            angle_avg = ((dis_angle(cos_ori_trans, sin_ori_trans, cos_trans, sin_trans).abs() * mask_max_trans).sum() / mask_max_trans_sum).detach()
+            scale_avg = ((dis_scale(scale_ori_trans, scale_trans).abs() * mask_max_trans).sum() / mask_max_trans_sum).detach()
         else:
             angle_loss = torch.tensor(0).to(cos_ori, non_blocking=True)
             scale_loss = torch.tensor(0).to(cos_ori, non_blocking=True)
+
+            angle_avg = torch.tensor(0).to(cos_ori, non_blocking=True)
+            scale_avg = torch.tensor(0).to(cos_ori, non_blocking=True)
+
+        var_loss = torch.tensor(0).to(cos_ori, non_blocking=True)
+        var_avg = torch.tensor(0).to(cos_ori, non_blocking=True)
+        if hparams.MODEL.IND_TRANSFORMER.LOSS_VAR_COF:
+            assert mask_sep is not None
+            for i in range(mask_sep.size(1)):
+                mask_i = mask_sep[:, [i]]
+                mask_i_spa_sum = mask_i.sum(dim=-1).sum(dim=-1)
+                valid_sample = (mask_i_spa_sum[:, 0] > 0).nonzero()[:, 0]
+                if len(valid_sample) > 0:
+                    # calc avg angle for each keypoint
+                    cos_i_avg = (cos_ori * mask_i).sum(dim=-1).sum(dim=-1) / (mask_i_spa_sum + EPS)
+                    sin_i_avg = (sin_ori * mask_i).sum(dim=-1).sum(dim=-1) / (mask_i_spa_sum + EPS)
+                    # calc distance to avg angle for each keypoint
+                    diff = (cos_ori * cos_i_avg[:, :, None, None] + sin_ori * sin_i_avg[:, :, None, None]).clamp(-1+EPS, 1-EPS).acos()
+                    var_loss = var_loss + (diff.pow(2) * mask_i)[valid_sample].sum()
+                    var_avg = var_avg + (diff.abs() * mask_i)[valid_sample].sum().detach()
+            mask_sep_sum = mask_sep.sum()
+            if mask_sep_sum > 0:
+                var_loss = var_loss / mask_sep_sum
+                var_avg = var_avg / mask_sep_sum
 
         if config.vis: # globalvars.progress["step"] > 500 or 
             import matplotlib.pyplot as plt
@@ -414,8 +488,8 @@ class TransformerLoss(nn.Module):
             img_h_ori_trans = torch.atan2(sin_ori_trans, cos_ori_trans) / np.pi / 2 + 0.5
             img_h_trans = torch.atan2(sin_trans, cos_trans) / np.pi / 2 + 0.5
             
-            cos_sim = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans - 0.5) / 0.5 * mask_trans).detach().clamp(0, 1)
-            scale_sim = ((0.3 - torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs()) / 0.3 * mask_trans).detach().clamp(0, 1)
+            cos_sim = ((cos_ori_trans * cos_trans + sin_ori_trans * sin_trans - 0.5) / 0.5 * mask_max_trans).detach().clamp(0, 1)
+            scale_sim = ((0.3 - torch.log(scale_ori_trans / (scale_trans + EPS) + EPS).abs()) / 0.3 * mask_max_trans).detach().clamp(0, 1)
             for i in range(cos_trans.size(0)):
                 fig, axes = plt.subplots(2, 5, figsize=(30, 16))
                 axes[0, 0].imshow(globalvars.img[i])
@@ -433,6 +507,6 @@ class TransformerLoss(nn.Module):
         if config.check and (torch.isnan(angle_loss).any() or torch.isnan(scale_loss).any()):
             raise RuntimeError("NaN")
 
-        return angle_loss, scale_loss
+        return angle_loss, scale_loss, var_loss, angle_avg, scale_avg, var_avg
 
         
