@@ -98,7 +98,7 @@ class TransformerExperiment(BaseExperiment):
             lr=hparams.TRAIN.LEARNING_RATE,
             weight_decay=hparams.TRAIN.WEIGHT_DECAY)
 
-        self.offset_optimizer = torch.optim.Adam(self.offset_parameters, lr=hparams.TRAIN.OFFSET.LR)
+        self.offset_optimizer = torch.optim.Adam(self.offset_parameters, lr=hparams.TRAIN.IND_TRANSFORMER.IND_OFFSET_LR)
 
     def init_dataloader(self):
         self.worker_init_fn = nprand_init
@@ -472,6 +472,10 @@ class TransformerLoss(nn.Module):
                     # calc avg angle for each keypoint
                     cos_i_avg = (cos_ori * mask_i).sum(dim=-1).sum(dim=-1) / (mask_i_spa_sum + EPS)
                     sin_i_avg = (sin_ori * mask_i).sum(dim=-1).sum(dim=-1) / (mask_i_spa_sum + EPS)
+                    norm_i = (cos_i_avg.pow(2) + sin_i_avg.pow(2)).detach().sqrt()
+                    cos_i_avg = cos_i_avg / (norm_i + EPS)
+                    sin_i_avg = sin_i_avg / (norm_i + EPS)
+
                     # calc distance to avg angle for each keypoint
                     diff = (cos_ori * cos_i_avg[:, :, None, None] + sin_ori * sin_i_avg[:, :, None, None]).clamp(-1+EPS, 1-EPS).acos()
                     var_loss = var_loss + (diff.pow(2) * mask_i)[valid_sample].sum()
