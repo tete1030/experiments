@@ -76,7 +76,7 @@ class DynamicPooling(nn.Module):
 class OffsetBlock(nn.Module):
     _counter = 0
     def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1,
-            disable_atten=False, disable_post_atten=False, disable_transformer=False, disable_arc=False,
+            disable_atten=False, disable_post_atten=False, disable_transformer=False, use_arc=None,
             disable_dpool=False, always_train_block=False):
         super(OffsetBlock, self).__init__()
 
@@ -114,7 +114,7 @@ class OffsetBlock(nn.Module):
         else:
             offset_transformer = None
 
-        if hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE and not disable_arc:
+        if (use_arc is None and hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE) or use_arc:
             arc_displacer = PositionalGaussianDisplaceModule(
                 num_offset,
                 hparams.MODEL.LEARNABLE_OFFSET.ARC.NUM_SAMPLE,
@@ -216,7 +216,7 @@ class TransformerFeature(nn.Module):
                     stride=hparams.MODEL.IND_TRANSFORMER.STRIDE[i],
                     disable_atten=False,
                     disable_post_atten=True,
-                    disable_arc=True,
+                    use_arc=True,
                     disable_transformer=True,
                     always_train_block=True))
             shape_factor *= hparams.MODEL.IND_TRANSFORMER.STRIDE[i]

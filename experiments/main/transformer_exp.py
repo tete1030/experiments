@@ -59,6 +59,7 @@ class TransformerExperiment(BaseExperiment):
 
     def init_model(self):
         globalvars.displace_mods = list()
+        globalvars.arc_displacers = list()
 
         self.model = nn.DataParallel(IndpendentTransformerRegressor(
             hparams.MODEL.IND_TRANSFORMER.NUM_FEATURE, hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.NUM_REGRESS, sep_scale=True).cuda())
