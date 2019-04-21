@@ -105,7 +105,7 @@ model:
         keypoint_sigma: 2
         loss_angle_cof: 1
         loss_scale_cof: 2
-        loss_var_cof: 0.2
+        loss_var_cof: 0.5
 
 dataset:
     profile: coco
