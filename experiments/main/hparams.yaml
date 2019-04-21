@@ -26,7 +26,7 @@ train:
         joint_optimize_transformer: false
 
     ind_transformer:
-        scale_std: 0.5
+        scale_std: 0.25
         rotate_std: 90
         translation_std: 0.25
 
