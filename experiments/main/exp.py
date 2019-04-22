@@ -146,8 +146,8 @@ class MainExperiment(BaseExperiment):
             self.dpool_parameters = []
 
         if len(all_transformer_params) > 0:
-            all_offset_pool_params = self.offset_parameters + self.offset_regressor_parameters + self.dpool_parameters
-            all_transformer_params = filter(lambda x: x not in all_offset_pool_params, all_transformer_params)
+            all_offset_pool_params = list(map(lambda x: id(x), self.offset_parameters + self.offset_regressor_parameters + self.dpool_parameters))
+            all_transformer_params = filter(lambda x: id(x) not in all_offset_pool_params, all_transformer_params)
             self.offset_transformer_parameters = list(filter(lambda x: x.requires_grad, all_transformer_params))
         else:
             self.offset_transformer_parameters = []
