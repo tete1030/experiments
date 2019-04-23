@@ -68,7 +68,7 @@ model:
 
     learnable_offset:
         expand_chan_ratio: [2, 1, 1, 1, 0.5, 0.5, 0.5, 0.25, 0.25, 0.25, 0.25, 0.25, 0.125]
-        use_transformer: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        use_transformer: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
         dpool_size: 0
         regress_offset: false
         use_in_predictor: false
@@ -79,7 +79,7 @@ model:
             enable: false
             space_norm: true
         transformer:
-            enable: false
+            enable: true
             independent: true
             num_regress: 1
         arc:
