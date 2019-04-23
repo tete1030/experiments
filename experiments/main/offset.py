@@ -157,7 +157,7 @@ class OffsetBlock(nn.Module):
         else:
             self.downsample = None
 
-        if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1 and not disable_dpool and offset_transformer is not None:
+        if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1 and not disable_dpool:
             self.dpool = DynamicPooling(self.displace_planes, hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE)
         else:
             self.dpool = None
