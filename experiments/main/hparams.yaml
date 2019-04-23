@@ -68,8 +68,8 @@ model:
 
     learnable_offset:
         expand_chan_ratio: [2, 1, 1, 1, 0.5, 0.5, 0.5, 0.25, 0.25, 0.25, 0.25, 0.25, 0.125]
-        use_transformer: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        dpool_size: 7
+        use_special: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+        dpool_size: 0
         regress_offset: false
         use_in_predictor: false
         atten:
@@ -77,9 +77,9 @@ model:
             space_norm: true
         post_atten:
             enable: false
-            space_norm: true
+            space_norm: false
         transformer:
-            enable: false
+            enable: true
             independent: true
             num_regress: 1
         arc:
@@ -106,6 +106,14 @@ model:
         loss_angle_cof: 1
         loss_scale_cof: 2
         loss_var_cof: 1
+        enable_arc: false
+        dpool_size: 0
+        atten:
+            enable: true
+            space_norm: false
+        post_atten:
+            enable: false
+            space_norm: false
 
 dataset:
     profile: coco

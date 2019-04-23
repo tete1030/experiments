@@ -75,9 +75,11 @@ class DynamicPooling(nn.Module):
 
 class OffsetBlock(nn.Module):
     _counter = 0
-    def __init__(self, height, width, inplanes, outplanes, displace_planes, stride=1,
-            disable_atten=False, disable_post_atten=False, disable_transformer=False, use_arc=None,
-            disable_dpool=False, always_train_block=False):
+    def __init__(self, height, width, inplanes, outplanes, displace_planes,
+            use_atten, use_atten_space_norm,
+            use_post_atten, use_post_atten_space_norm,
+            use_transformer, use_arc,
+            dpool_size, always_train_block, stride=1):
         super(OffsetBlock, self).__init__()
 
         self.height = height
@@ -103,7 +105,7 @@ class OffsetBlock(nn.Module):
 
         num_offset = self.displace_planes
         self.transformer_regressor = None
-        if hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and not disable_transformer:
+        if use_transformer:
             offset_transformer = OffsetTransformer(
                 num_offset,
                 init_effect_scale=0. if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None)
@@ -114,7 +116,7 @@ class OffsetBlock(nn.Module):
         else:
             offset_transformer = None
 
-        if (use_arc is None and hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE and offset_transformer is not None) or use_arc:
+        if use_arc:
             arc_displacer = PositionalGaussianDisplaceModule(
                 num_offset,
                 hparams.MODEL.LEARNABLE_OFFSET.ARC.NUM_SAMPLE,
@@ -141,12 +143,12 @@ class OffsetBlock(nn.Module):
         globalvars.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
         self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
-        if hparams.MODEL.LEARNABLE_OFFSET.ATTEN.ENABLE and not disable_atten:
-            self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SPACE_NORM, stride=stride)
+        if use_atten:
+            self.atten_displace = Attention(self.inplanes, self.displace_planes, input_shape=(self.height, self.width), bias_planes=0, bias_factor=0, space_norm=use_atten_space_norm, stride=stride)
         else:
             self.atten_displace = None
-        if hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.ENABLE and not disable_post_atten:
-            self.atten_post = Attention(self.inplanes, self.outplanes, input_shape=(self.out_height, self.out_width), bias_planes=0, bias_factor=0, space_norm=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.SPACE_NORM, stride=stride)
+        if use_post_atten:
+            self.atten_post = Attention(self.inplanes, self.outplanes, input_shape=(self.out_height, self.out_width), bias_planes=0, bias_factor=0, space_norm=use_post_atten_space_norm, stride=stride)
         else:
             self.atten_post = None
         self.bn = nn.BatchNorm2d(self.outplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM)
@@ -157,8 +159,8 @@ class OffsetBlock(nn.Module):
         else:
             self.downsample = None
 
-        if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1 and not disable_dpool:
-            self.dpool = DynamicPooling(self.displace_planes, hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE)
+        if dpool_size:
+            self.dpool = DynamicPooling(self.displace_planes, dpool_size)
         else:
             self.dpool = None
 
@@ -213,12 +215,15 @@ class TransformerFeature(nn.Module):
                     cur_num_channel,
                     num_out_channel,
                     hparams.MODEL.IND_TRANSFORMER.NUM_OFFSET[i],
-                    stride=hparams.MODEL.IND_TRANSFORMER.STRIDE[i],
-                    disable_atten=False,
-                    disable_post_atten=True,
-                    use_arc=False,
-                    disable_transformer=True,
-                    always_train_block=True))
+                    use_atten=hparams.MODEL.IND_TRANSFORMER.ATTEN.ENABLE,
+                    use_atten_space_norm=hparams.MODEL.IND_TRANSFORMER.ATTEN.SPACE_NORM,
+                    use_post_atten=hparams.MODEL.IND_TRANSFORMER.POST_ATTEN.ENABLE,
+                    use_post_atten_space_norm=hparams.MODEL.IND_TRANSFORMER.POST_ATTEN.SPACE_NORM,
+                    use_transformer=False,
+                    use_arc=hparams.MODEL.IND_TRANSFORMER.ENABLE_ARC,
+                    dpool_size=hparams.MODEL.IND_TRANSFORMER.DPOOL_SIZE,
+                    always_train_block=True,
+                    stride=hparams.MODEL.IND_TRANSFORMER.STRIDE[i]))
             shape_factor *= hparams.MODEL.IND_TRANSFORMER.STRIDE[i]
             cur_num_channel = num_out_channel
         self.offblk = nn.Sequential(*offblks)

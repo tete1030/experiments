@@ -812,6 +812,7 @@ class Predictor(nn.Module):
         layers.append(nn.Conv2d(num_class, num_class,
             kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
         if hparams.MODEL.LEARNABLE_OFFSET.USE_IN_PREDICTOR:
+            raise NotImplementedError()
             layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, num_class, 256))
 
         return nn.Sequential(*layers)
@@ -876,6 +877,7 @@ class GlobalNet(nn.Module):
         layers.append(nn.Conv2d(num_class, num_class,
             kernel_size=3, stride=1, groups=num_class, padding=1, bias=True))
         if hparams.MODEL.LEARNABLE_OFFSET.USE_IN_PREDICTOR:
+            raise NotImplementedError()
             layers.append(OffsetBlock(output_shape[0], output_shape[1], num_class, 256, 256))
 
         return nn.Sequential(*layers)

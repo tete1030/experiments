@@ -29,7 +29,7 @@ class Bottleneck(nn.Module):
 
         if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK:
             expand_chan_ratio = hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter]
-            use_transformer = bool(hparams.MODEL.LEARNABLE_OFFSET.USE_TRANSFORMER[OffsetBlock._counter] > 0)
+            use_special = bool(hparams.MODEL.LEARNABLE_OFFSET.USE_SPECIAL[OffsetBlock._counter] > 0)
             if expand_chan_ratio > 0:
                 self.offset_block = OffsetBlock(
                     hparams.MODEL.INP_SHAPE[1] // self.inshape_factor,
@@ -37,8 +37,14 @@ class Bottleneck(nn.Module):
                     self.inplanes,
                     self.inplanes,
                     int(self.inplanes * expand_chan_ratio),
-                    always_train_block=hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK,
-                    disable_transformer=not use_transformer)
+                    use_atten=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.ENABLE,
+                    use_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SPACE_NORM,
+                    use_post_atten=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.ENABLE,
+                    use_post_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.SPACE_NORM,
+                    use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and use_special,
+                    use_arc=hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE and use_special,
+                    dpool_size=hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE if use_special else 0,
+                    always_train_block=hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK)
                 if hparams.MODEL.DETAIL.EARLY_PREDICTOR and hparams.MODEL.DETAIL.EARLY_PREDICTOR_FROM_OFFBLK:
                     globalvars.early_predictor_size.append((self.inplanes, self.inshape_factor))
             else:
@@ -99,7 +105,7 @@ class BasicBlock(nn.Module):
 
         if not (self.res_index in [1, 2, 3] and self.block_index == 1) and (self.res_index != 2 or self.block_index < 6) and hparams.MODEL.DETAIL.ENABLE_OFFSET_BLOCK:
             expand_chan_ratio = hparams.MODEL.LEARNABLE_OFFSET.EXPAND_CHAN_RATIO[OffsetBlock._counter]
-            use_transformer = bool(hparams.MODEL.LEARNABLE_OFFSET.USE_TRANSFORMER[OffsetBlock._counter] > 0)
+            use_special = bool(hparams.MODEL.LEARNABLE_OFFSET.USE_SPECIAL[OffsetBlock._counter] > 0)
             if expand_chan_ratio > 0:
                 self.offset_block = OffsetBlock(
                     hparams.MODEL.INP_SHAPE[1] // self.inshape_factor,
@@ -107,8 +113,14 @@ class BasicBlock(nn.Module):
                     self.inplanes,
                     self.inplanes,
                     int(self.inplanes * expand_chan_ratio),
-                    always_train_block=hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK,
-                    disable_transformer=not use_transformer)
+                    use_atten=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.ENABLE,
+                    use_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.ATTEN.SPACE_NORM,
+                    use_post_atten=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.ENABLE,
+                    use_post_atten_space_norm=hparams.MODEL.LEARNABLE_OFFSET.POST_ATTEN.SPACE_NORM,
+                    use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and use_special,
+                    use_arc=hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE and use_special,
+                    dpool_size=hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE if use_special else 0,
+                    always_train_block=hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK)
                 if hparams.MODEL.DETAIL.EARLY_PREDICTOR and hparams.MODEL.DETAIL.EARLY_PREDICTOR_FROM_OFFBLK:
                     globalvars.early_predictor_size.append((self.inplanes, self.inshape_factor))
             else:
