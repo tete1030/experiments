@@ -92,7 +92,6 @@ model:
             min_scale_std: 0.5
             sampler: gaussian
             weight_dist: uniform
-            divide_dist: true
 
     ind_transformer:
         pretrained: checkpoint/offset_102/Apr21_161229/checkpoint_3.pth.tar

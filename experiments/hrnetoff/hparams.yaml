@@ -83,7 +83,6 @@ model:
             min_scale_std: 0.5
             sampler: gaussian
             weight_dist: uniform
-            divide_dist: true
 
     hrnet:
         pretrained_layers:
