@@ -360,6 +360,7 @@ void displace_gaus_backward(
     AT_ASSERTM(grad_gaus_angles.value().dtype() == at::ScalarType::Float && grad_gaus_scales.value().dtype() == at::ScalarType::Float, "dtype of grad_gaus_angles|scales must be float");
   }
   AT_ASSERTM(gaus_angle_stds.dtype() == at::ScalarType::Float && gaus_scale_stds.dtype() == at::ScalarType::Float, "dtype of gaus_angle|scale_stds must be float");
+  AT_ASSERTM(gaus_angle_stds.size(0) == offsets_x.size(1) && gaus_scale_stds.size(0) == offsets_x.size(1), "size of gaus_angle|scale_stds must equal to num_offset");
   auto stream = THCState_getCurrentStream((THCState*)state);
   
   if (!simple) {

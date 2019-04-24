@@ -199,10 +199,10 @@ __global__ void displace_gaus_backward_cuda_kernel(
     if (UseGradSample) {
       grad_gaus_angles += gaus_index;
       grad_gaus_scales += gaus_index;
-
-      gaus_angle_stds += i_offset;
-      gaus_scale_stds += i_offset;
     }
+
+    gaus_angle_stds += i_offset;
+    gaus_scale_stds += i_offset;
 
     int64_t offset_index = ((i_samp * num_offset + i_offset) * height_out + h_out) * width_out + w_out;
     offsets_x += offset_index;
@@ -334,8 +334,8 @@ __global__ void displace_gaus_backward_cuda_kernel(
         }
 
         if (UseGradSample) {
-          atomicAdd(grad_gaus_scales + i_gau, -cur_grad_radius);
-          atomicAdd(grad_gaus_angles + i_gau, -cur_grad_angle);
+          atomicAdd(grad_gaus_scales + i_gau, -cur_grad_radius * cur_grad_gaus_weight * val_gaus_weight);
+          atomicAdd(grad_gaus_angles + i_gau, -cur_grad_angle * cur_grad_gaus_weight * val_gaus_weight);
         }
 
         /*
