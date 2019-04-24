@@ -25,7 +25,7 @@ void displace_gaus_backward_cuda(
     const at::Tensor gaus_weight, at::optional<at::Tensor> grad_gaus_weight,
     const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
     // dtype
-    float fill, bool divide_distance);
+    float fill);
 
 void displace_gaus_simple_backward_cuda(
     cudaStream_t stream,
@@ -38,4 +38,4 @@ void displace_gaus_simple_backward_cuda(
     const at::Tensor gaus_weight, at::optional<at::Tensor> grad_gaus_weight,
     const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
     // dtype
-    float fill, bool divide_distance);
+    float fill);

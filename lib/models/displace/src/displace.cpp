@@ -321,7 +321,7 @@ void displace_gaus_backward(
     const at::Tensor gaus_weight, at::optional<at::Tensor> grad_gaus_weight,
     const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
     // dtype
-    float fill, bool simple=false, bool divide_distance=true) {
+    float fill, bool simple=false) {
 
   CHECK_INPUT(data_in);
   if (grad_in) {
@@ -351,9 +351,9 @@ void displace_gaus_backward(
   auto stream = THCState_getCurrentStream((THCState*)state);
   
   if (!simple) {
-    displace_gaus_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill, divide_distance);
+    displace_gaus_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill);
   } else {
-    displace_gaus_simple_backward_cuda(stream, data_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill, divide_distance);
+    displace_gaus_simple_backward_cuda(stream, data_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, fill);
   }
 }
 
@@ -386,7 +386,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     py::arg("gaus_weight"), py::arg("grad_gaus_weight"),
     py::arg("gaus_cos_angles"), py::arg("gaus_sin_angles"),
     py::arg("fill"),
-    py::arg("simple") = false, py::arg("divide_distance") = true);
+    py::arg("simple") = false);
   m.def("cudnn_convolution_backward_input", &at::cudnn_convolution_backward_input, "cudnn convolution backward for input");
   m.def("cudnn_convolution_backward_weight", &at::cudnn_convolution_backward_weight, "cudnn convolution backward for weight");
   m.def("cudnn_convolution_backward_bias", &at::cudnn_convolution_backward_bias, "cudnn convolution backward for bias");

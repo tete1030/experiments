@@ -347,12 +347,11 @@ class PositionalDisplace(Function):
 
 class PositionalGaussianDisplace(Function):
     @staticmethod
-    def forward(ctx, inp, offsets_x, offsets_y, channel_per_off, angles, scales, gaus_weight, fill=0, simple=False, grad_off_divide_distance=True):
+    def forward(ctx, inp, offsets_x, offsets_y, channel_per_off, angles, scales, gaus_weight, fill=0, simple=False):
         ctx._backend = type2backend[inp.type()]
         ctx.channel_per_off = channel_per_off
         ctx.fill = fill
         ctx.simple = simple
-        ctx.grad_off_divide_distance = grad_off_divide_distance
         out = torch.zeros_like(inp)
         if not simple:
             cos_angles = torch.cos(angles)
@@ -389,7 +388,7 @@ class PositionalGaussianDisplace(Function):
 
             displace_cuda.displace_gaus_backward(ctx._backend.library_state,
                 inp, grad_inp, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
-                angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill, ctx.simple, ctx.grad_off_divide_distance)
+                angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill, ctx.simple)
         else:
             offsets_x_rounded, offsets_y_rounded = ctx.saved_tensors[6:]
             displace_cuda.displace_pos_sep_backward(ctx._backend.library_state,
@@ -399,6 +398,6 @@ class PositionalGaussianDisplace(Function):
                 sin_angles = torch.sin(angles)
                 displace_cuda.displace_gaus_backward(ctx._backend.library_state,
                     inp, None, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
-                    angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill, ctx.simple, ctx.grad_off_divide_distance)
+                    angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill, ctx.simple)
 
         return grad_inp, grad_offsets_x, grad_offsets_y, None, None, None, grad_gaus_weight, None, None, None
