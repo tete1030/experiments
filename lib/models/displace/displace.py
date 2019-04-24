@@ -6,9 +6,10 @@ from torch._thnn import type2backend
 import numpy as np
 
 from torch.nn.modules.utils import _pair
-from . import displace_cuda
-# These functions are not exported in pytorch python bindings, so we borrow displace_cuda to export them
-from .displace_cuda import cudnn_convolution_backward_input, cudnn_convolution_backward_weight, cudnn_convolution_backward_bias
+
+from .src.jit import get_module
+print("JIT building displace_cuda ...")
+displace_cuda = get_module()
 
 __all__ = ["DisplaceCUDA", "Displace", "DisplaceFracCUDA", "CustomizedGradConv2dCUDNN", "CustomizedGradDepthwiseConv2d", "CustomizedGradConv2dCUDNN2", "CustomizedGradDepthwiseConv2d2", "PositionalDisplace", "PositionalGaussianDisplace"]
 
@@ -32,16 +33,16 @@ class CustomizedGradConv2dCUDNN(Function):
     @staticmethod
     def backward(ctx, grad_output):
         inp, weight = ctx.saved_tensors
-        grad_input = cudnn_convolution_backward_input(tuple(inp.size()), grad_output, weight, ctx.padding, ctx.stride, ctx.dilation, ctx.groups, torch.backends.cudnn.benchmark, torch.backends.cudnn.deterministic)
+        grad_input = displace_cuda.cudnn_convolution_backward_input(tuple(inp.size()), grad_output, weight, ctx.padding, ctx.stride, ctx.dilation, ctx.groups, torch.backends.cudnn.benchmark, torch.backends.cudnn.deterministic)
 
         if ctx.offsets is not None:
             new_grad_output = torch.empty_like(grad_output)
             displace_cuda.offset_mask(ctx._backend.library_state, grad_output, ctx.offsets, ctx.chan_per_offset, new_grad_output, ctx.side_thickness)
             grad_output = new_grad_output
 
-        grad_weight = cudnn_convolution_backward_weight(weight.size(), grad_output, inp, ctx.padding, ctx.stride, ctx.dilation, ctx.groups, torch.backends.cudnn.benchmark, torch.backends.cudnn.deterministic)
+        grad_weight = displace_cuda.cudnn_convolution_backward_weight(weight.size(), grad_output, inp, ctx.padding, ctx.stride, ctx.dilation, ctx.groups, torch.backends.cudnn.benchmark, torch.backends.cudnn.deterministic)
         if ctx.have_bias:
-            grad_bias = cudnn_convolution_backward_bias(grad_output)
+            grad_bias = displace_cuda.cudnn_convolution_backward_bias(grad_output)
         else:
             grad_bias = None
         return grad_input, grad_weight, grad_bias, None, None, None, None, None, None, None
@@ -129,16 +130,16 @@ class CustomizedGradConv2dCUDNN2(Function):
     @staticmethod
     def backward(ctx, grad_output):
         inp, weight = ctx.saved_tensors
-        grad_input = cudnn_convolution_backward_input(tuple(inp.size()), grad_output, weight, ctx.padding, ctx.stride, ctx.dilation, ctx.groups, torch.backends.cudnn.benchmark, torch.backends.cudnn.deterministic)
+        grad_input = displace_cuda.cudnn_convolution_backward_input(tuple(inp.size()), grad_output, weight, ctx.padding, ctx.stride, ctx.dilation, ctx.groups, torch.backends.cudnn.benchmark, torch.backends.cudnn.deterministic)
 
         if ctx.offsets is not None:
             new_grad_output = torch.empty_like(grad_output)
             displace_cuda.offset_mask_frac(ctx._backend.library_state, grad_output, ctx.offsets, ctx.chan_per_offset, new_grad_output)
             grad_output = new_grad_output
 
-        grad_weight = cudnn_convolution_backward_weight(weight.size(), grad_output, inp, ctx.padding, ctx.stride, ctx.dilation, ctx.groups, torch.backends.cudnn.benchmark, torch.backends.cudnn.deterministic)
+        grad_weight = displace_cuda.cudnn_convolution_backward_weight(weight.size(), grad_output, inp, ctx.padding, ctx.stride, ctx.dilation, ctx.groups, torch.backends.cudnn.benchmark, torch.backends.cudnn.deterministic)
         if ctx.have_bias:
-            grad_bias = cudnn_convolution_backward_bias(grad_output)
+            grad_bias = displace_cuda.cudnn_convolution_backward_bias(grad_output)
         else:
             grad_bias = None
         return grad_input, grad_weight, grad_bias, None, None, None, None, None, None, None
