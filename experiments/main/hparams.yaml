@@ -19,6 +19,7 @@ train:
         lr_gamma: 0.3
         lr_decay_step: 100000 # 15 * 6543
         lr_dpool_sigma: 5.e-4
+        lr_arc_sigma: 5.e-4
         bn_momentum: 0.1
         momentum: 0.0
         arc_sigma_dec_iter: 0
@@ -90,6 +91,8 @@ model:
             min_angle_std: 3
             scale_std: 3
             min_scale_std: 0.5
+            optimize_sigma: true
+            soft_maxpool: true
             sampler: gaussian
             weight_dist: uniform
 

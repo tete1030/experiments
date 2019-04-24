@@ -134,7 +134,7 @@ class PositionalGaussianDisplaceModule(nn.Module):
             min_scale_std=0.2, max_scale_std=5.,
             learnable_sigma=True, transform_sigma=True,
             sampler="uniform", weight_dist="gaussian",
-            fill=0,
+            soft_maxpool=False,
             simple=False):
         super().__init__()
         self.num_offset = num_offset
@@ -155,9 +155,9 @@ class PositionalGaussianDisplaceModule(nn.Module):
         self.sampler = sampler
         self.weight_dist = weight_dist
 
-        self.fill = fill
         self.simple = simple
-        assert not self.simple or (self.fill == 0)
+        self.soft_maxpool = soft_maxpool
+        assert not self.simple or not self.soft_maxpool
 
     def _set_std(self, stdname, stdval, device=None):
         stdmin = getattr(self, "min_" + stdname + "_std")
@@ -181,7 +181,7 @@ class PositionalGaussianDisplaceModule(nn.Module):
                 stdnorm = (stdval - stdmin) / (stdmax - stdmin)
                 stdval = torch.log(stdnorm/(1-stdnorm))
             if hasattr(self, "_" + stdname + "_std"):
-                getattr(self, "_" + stdname + "_std").copy_(stdval, non_blocking=True)
+                getattr(self, "_" + stdname + "_std").data.copy_(stdval, non_blocking=True)
             else:
                 setattr(self, "_" + stdname + "_std", nn.Parameter(stdval))
         else:
@@ -249,8 +249,12 @@ class PositionalGaussianDisplaceModule(nn.Module):
                 scales = scale_sampler.sample(sample_shape=(self.num_sample,)).t().contiguous()
             weight = torch.ones_like(angles) / self.num_sample
 
-        return (PositionalGaussianDisplace.apply(
-            x.clamp(max=88.722835).exp(), offsets_x, offsets_y, channel_per_off, angle_std, scale_std, angles, scales, weight, self.fill, self.simple) + np.finfo(np.float32).eps.item()).log()
+        if self.soft_maxpool:
+            return (PositionalGaussianDisplace.apply(
+                x.clamp(max=88.722835).exp(), offsets_x, offsets_y, channel_per_off, angle_std, scale_std, angles, scales, weight, 1, self.simple) + np.finfo(np.float32).eps.item()).log()
+        else:
+            return PositionalGaussianDisplace.apply(
+                x, offsets_x, offsets_y, channel_per_off, angle_std, scale_std, angles, scales, weight, 0, self.simple)
 
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, num_channels, num_offsets,
