@@ -79,7 +79,7 @@ model:
             enable: false
             space_norm: false
         transformer:
-            enable: false
+            enable: true
             independent: true
             num_regress: 1
         arc:
