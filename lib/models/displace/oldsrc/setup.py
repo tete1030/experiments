@@ -4,6 +4,8 @@ import setuptools
 import os
 import sys
 
+print("Warning: this is for experiment code with commit id older than 12e66d178c0c9110055ec23dc4c164f030f96788", file=sys.stderr)
+
 CC=os.environ["CUDA_CC"] if "CUDA_CC" in os.environ else "61"
 
 setup(
