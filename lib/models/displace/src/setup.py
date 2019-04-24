@@ -4,10 +4,6 @@ import setuptools
 import os
 import sys
 
-if not os.getenv("TEST_BUILD"):
-    print("Backward compatibility is no longer maintained, hence disallowing building new version, current code is using JIT directly. Old version usage should build upon corresponding code version.")
-    sys.exit(1)
-
 CC=os.environ["CUDA_CC"] if "CUDA_CC" in os.environ else "61"
 
 setup(
