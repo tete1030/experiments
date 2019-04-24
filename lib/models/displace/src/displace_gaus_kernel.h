@@ -24,6 +24,8 @@ void displace_gaus_backward_cuda(
     const at::Tensor gaus_angles, const at::Tensor gaus_scales,
     const at::Tensor gaus_weight, at::optional<at::Tensor> grad_gaus_weight,
     const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
+    const at::Tensor gaus_angle_stds, const at::Tensor gaus_scale_stds,
+    at::optional<at::Tensor> grad_gaus_angles, at::optional<at::Tensor> grad_gaus_scales,
     // dtype
     float fill);
 
@@ -37,5 +39,7 @@ void displace_gaus_simple_backward_cuda(
     const at::Tensor gaus_angles, const at::Tensor gaus_scales,
     const at::Tensor gaus_weight, at::optional<at::Tensor> grad_gaus_weight,
     const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
+    const at::Tensor gaus_angle_stds, const at::Tensor gaus_scale_stds,
+    at::optional<at::Tensor> grad_gaus_angles, at::optional<at::Tensor> grad_gaus_scales,
     // dtype
     float fill);

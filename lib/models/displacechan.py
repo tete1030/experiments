@@ -152,7 +152,6 @@ class PositionalGaussianDisplaceModule(nn.Module):
 
         assert sampler in ["gaussian", "uniform"]
         assert weight_dist in ["gaussian", "uniform"]
-        assert (weight_dist == "gaussian") or not learnable_sigma
         self.sampler = sampler
         self.weight_dist = weight_dist
 
@@ -225,8 +224,13 @@ class PositionalGaussianDisplaceModule(nn.Module):
             scale_sampler = Uniform(low=-scale_std * 3, high=scale_std * 3)
         
         if self.weight_dist == "gaussian":
-            angles = angle_sampler.sample(sample_shape=(max(self.num_sample, PositionalGaussianDisplaceModule.NUM_TOTAL_SAMPLE),)).t().contiguous()
-            scales = scale_sampler.sample(sample_shape=(max(self.num_sample, PositionalGaussianDisplaceModule.NUM_TOTAL_SAMPLE),)).t().contiguous()
+            if self.learnable_sigma and angle_sampler.has_rsample:
+                assert scale_sampler.has_rsample
+                angles = angle_sampler.rsample(sample_shape=(max(self.num_sample, PositionalGaussianDisplaceModule.NUM_TOTAL_SAMPLE),)).t().contiguous()
+                scales = scale_sampler.rsample(sample_shape=(max(self.num_sample, PositionalGaussianDisplaceModule.NUM_TOTAL_SAMPLE),)).t().contiguous()
+            else:
+                angles = angle_sampler.sample(sample_shape=(max(self.num_sample, PositionalGaussianDisplaceModule.NUM_TOTAL_SAMPLE),)).t().contiguous()
+                scales = scale_sampler.sample(sample_shape=(max(self.num_sample, PositionalGaussianDisplaceModule.NUM_TOTAL_SAMPLE),)).t().contiguous()
             weight = (- angles.pow(2) / 2 / (angle_std.pow(2)[:, None] + np.finfo(np.float32).eps.item()) - scales.pow(2) / 2 / (scale_std.pow(2)[:, None] + np.finfo(np.float32).eps.item())).exp()
             # weight * 3\sigma_1 x 3\sigma_2 / N / sqrt(2PI)\sigma_1 / sqrt(2PI)\sigma_2
             # weight = weight * (9. / (2. * np.pi * self.num_sample))
@@ -236,12 +240,17 @@ class PositionalGaussianDisplaceModule(nn.Module):
             if self.num_sample < PositionalGaussianDisplaceModule.NUM_TOTAL_SAMPLE:
                 weight = weight[:, :self.num_sample] * (PositionalGaussianDisplaceModule.NUM_TOTAL_SAMPLE / float(self.num_sample))
         elif self.weight_dist == "uniform":
-            angles = angle_sampler.sample(sample_shape=(self.num_sample,)).t().contiguous()
-            scales = scale_sampler.sample(sample_shape=(self.num_sample,)).t().contiguous()
+            if self.learnable_sigma and angle_sampler.has_rsample:
+                assert scale_sampler.has_rsample
+                angles = angle_sampler.rsample(sample_shape=(self.num_sample,)).t().contiguous()
+                scales = scale_sampler.rsample(sample_shape=(self.num_sample,)).t().contiguous()
+            else:
+                angles = angle_sampler.sample(sample_shape=(self.num_sample,)).t().contiguous()
+                scales = scale_sampler.sample(sample_shape=(self.num_sample,)).t().contiguous()
             weight = torch.ones_like(angles) / self.num_sample
 
         return (PositionalGaussianDisplace.apply(
-            x.clamp(max=88.722835).exp(), offsets_x, offsets_y, channel_per_off, angles, scales, weight, self.fill, self.simple) + np.finfo(np.float32).eps.item()).log()
+            x.clamp(max=88.722835).exp(), offsets_x, offsets_y, channel_per_off, angle_std, scale_std, angles, scales, weight, self.fill, self.simple) + np.finfo(np.float32).eps.item()).log()
 
 class DisplaceChannel(nn.Module):
     def __init__(self, height, width, num_channels, num_offsets,

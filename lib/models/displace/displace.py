@@ -347,7 +347,7 @@ class PositionalDisplace(Function):
 
 class PositionalGaussianDisplace(Function):
     @staticmethod
-    def forward(ctx, inp, offsets_x, offsets_y, channel_per_off, angles, scales, gaus_weight, fill=0, simple=False):
+    def forward(ctx, inp, offsets_x, offsets_y, channel_per_off, angle_stds, scale_stds, angles, scales, gaus_weight, fill=0, simple=False):
         ctx._backend = type2backend[inp.type()]
         ctx.channel_per_off = channel_per_off
         ctx.fill = fill
@@ -358,19 +358,19 @@ class PositionalGaussianDisplace(Function):
             sin_angles = torch.sin(angles)
             displace_cuda.displace_gaus_forward(ctx._backend.library_state,
                 inp, offsets_x, offsets_y, channel_per_off, out, angles, scales, gaus_weight, cos_angles, sin_angles, fill)
-            ctx.save_for_backward(inp, offsets_x, offsets_y, angles, scales, gaus_weight, cos_angles, sin_angles)
+            ctx.save_for_backward(inp, offsets_x, offsets_y, angle_stds, scale_stds, angles, scales, gaus_weight, cos_angles, sin_angles)
         else:
             assert fill == 0
             offsets_x_rounded = offsets_x.round().int()
             offsets_y_rounded = offsets_y.round().int()
             displace_cuda.displace_pos_sep_forward(ctx._backend.library_state,
                 inp, offsets_x_rounded, offsets_y_rounded, channel_per_off, out)
-            ctx.save_for_backward(inp, offsets_x, offsets_y, angles, scales, gaus_weight, offsets_x_rounded, offsets_y_rounded)
+            ctx.save_for_backward(inp, offsets_x, offsets_y, angle_stds, scale_stds, angles, scales, gaus_weight, offsets_x_rounded, offsets_y_rounded)
         return out
 
     @staticmethod
     def backward(ctx, grad_out):
-        inp, offsets_x, offsets_y, angles, scales, gaus_weight = ctx.saved_tensors[:6]
+        inp, offsets_x, offsets_y, angle_stds, scale_stds, angles, scales, gaus_weight = ctx.saved_tensors[:8]
         grad_inp = torch.zeros_like(inp)
         if gaus_weight.requires_grad:
             grad_gaus_weight = torch.zeros_like(gaus_weight)
@@ -383,14 +383,21 @@ class PositionalGaussianDisplace(Function):
             grad_offsets_x = None
             grad_offsets_y = None
 
+        if angles.requires_grad or scales.requires_grad:
+            grad_gaus_angles = torch.zeros_like(angles)
+            grad_gaus_scales = torch.zeros_like(scales)
+        else:
+            grad_gaus_angles = None
+            grad_gaus_scales = None
+
         if not ctx.simple:
-            cos_angles, sin_angles = ctx.saved_tensors[6:]
+            cos_angles, sin_angles = ctx.saved_tensors[8:]
 
             displace_cuda.displace_gaus_backward(ctx._backend.library_state,
                 inp, grad_inp, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
-                angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill, ctx.simple)
+                angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, angle_stds, scale_stds, grad_gaus_angles, grad_gaus_scales, ctx.fill, ctx.simple)
         else:
-            offsets_x_rounded, offsets_y_rounded = ctx.saved_tensors[6:]
+            offsets_x_rounded, offsets_y_rounded = ctx.saved_tensors[8:]
             displace_cuda.displace_pos_sep_backward(ctx._backend.library_state,
                 None, grad_inp, offsets_x_rounded, offsets_y_rounded, None, None, ctx.channel_per_off, grad_out)
             if not (grad_gaus_weight is None and grad_offsets_x is None and grad_offsets_y is None):
@@ -398,6 +405,6 @@ class PositionalGaussianDisplace(Function):
                 sin_angles = torch.sin(angles)
                 displace_cuda.displace_gaus_backward(ctx._backend.library_state,
                     inp, None, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, ctx.channel_per_off, grad_out,
-                    angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, ctx.fill, ctx.simple)
+                    angles, scales, gaus_weight, grad_gaus_weight, cos_angles, sin_angles, angle_stds, scale_stds, grad_gaus_angles, grad_gaus_scales, ctx.fill, ctx.simple)
 
-        return grad_inp, grad_offsets_x, grad_offsets_y, None, None, None, grad_gaus_weight, None, None, None
+        return grad_inp, grad_offsets_x, grad_offsets_y, None, None, None, grad_gaus_angles, grad_gaus_scales, grad_gaus_weight, None, None, None
