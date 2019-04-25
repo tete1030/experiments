@@ -148,11 +148,11 @@ class MainExperiment(BaseExperiment):
             self.dpool_parameters = []
 
         if hparams.MODEL.LEARNABLE_OFFSET.ARC.OPTIMIZE_SIGMA:
-            self.arc_std_parameters = \
-                list(filter(lambda x: x.requires_grad, [dp._scale_std for dp in globalvars.arc_displacers])) + \
-                list(filter(lambda x: x.requires_grad, [dp._angle_std for dp in globalvars.arc_displacers]))
+            self.arc_scale_std_parameters = list(filter(lambda x: x.requires_grad, [dp._scale_std for dp in globalvars.arc_displacers]))
+            self.arc_angle_std_parameters = list(filter(lambda x: x.requires_grad, [dp._angle_std for dp in globalvars.arc_displacers]))
         else:
-            self.arc_std_parameters = []
+            self.arc_scale_std_parameters = []
+            self.arc_angle_std_parameters = []
 
         if len(all_transformer_params) > 0:
             all_offset_pool_params = list(map(lambda x: id(x), self.offset_parameters + self.offset_regressor_parameters + self.dpool_parameters))
@@ -168,7 +168,8 @@ class MainExperiment(BaseExperiment):
 
         all_special_parameters = self.offset_parameters + \
             self.dpool_parameters + \
-            self.arc_std_parameters + \
+            self.arc_scale_std_parameters + \
+            self.arc_angle_std_parameters + \
             self.offset_regressor_parameters + \
             self.offset_transformer_parameters + \
             self.early_predictor_parameters
@@ -183,7 +184,7 @@ class MainExperiment(BaseExperiment):
                 offset_transformer=self.offset_transformer_parameters,
                 early_predictor=self.early_predictor_parameters,
                 dpool=self.dpool_parameters,
-                arc_std=self.arc_std_parameters),
+                arc_std=self.arc_scale_std_parameters + self.arc_angle_std_parameters),
             self.model.named_parameters())
 
         # Make sure no parameter is shared
@@ -205,9 +206,12 @@ class MainExperiment(BaseExperiment):
         if len(self.dpool_parameters) > 0:
             offset_optimizer_args.append(
                 {"para_name": "offset_dpool_lr", "params": self.dpool_parameters, "lr": hparams.TRAIN.OFFSET.LR_DPOOL_SIGMA, "init_lr": hparams.TRAIN.OFFSET.LR_DPOOL_SIGMA})
-        if len(self.arc_std_parameters) > 0:
+        if len(self.arc_scale_std_parameters) > 0:
             offset_optimizer_args.append(
-                {"para_name": "arc_std_lr", "params": self.arc_std_parameters, "lr": hparams.TRAIN.OFFSET.LR_ARC_SIGMA, "init_lr": hparams.TRAIN.OFFSET.LR_ARC_SIGMA})
+                {"para_name": "arc_scale_std_lr", "params": self.arc_scale_std_parameters, "lr": hparams.TRAIN.OFFSET.LR_ARC_SIGMA * 5, "init_lr": hparams.TRAIN.OFFSET.LR_ARC_SIGMA * 5})
+        if len(self.arc_angle_std_parameters) > 0:
+            offset_optimizer_args.append(
+                {"para_name": "arc_angle_std_lr", "params": self.arc_angle_std_parameters, "lr": hparams.TRAIN.OFFSET.LR_ARC_SIGMA, "init_lr": hparams.TRAIN.OFFSET.LR_ARC_SIGMA})
         if len(offset_optimizer_args) > 0:
             self.offset_optimizer = torch.optim.Adam(offset_optimizer_args)
         else:
