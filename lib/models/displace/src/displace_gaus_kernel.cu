@@ -317,25 +317,25 @@ __global__ void displace_gaus_backward_cuda_kernel(
       }
 
       if (UseGradOffsets || UseGradSample) {
-        float cur_grad_radius = gaus_scale * 2 / (*gaus_scale_stds * *gaus_scale_stds);
-        float cur_grad_angle = gaus_angle * 2 / (*gaus_angle_stds * *gaus_angle_stds);
+        float cur_grad_scale = -gaus_scale / (*gaus_scale_stds * *gaus_scale_stds);
+        float cur_grad_angle = -gaus_angle / (*gaus_angle_stds * *gaus_angle_stds);
         
         if (UseGradOffsets) {
           // float cur_grad_arc = cur_grad_angle / val_offset_scale; // gaus_angle * val_offset_scale * 2 / (sigma_angle * sigma_angle * val_offset_scale * val_offset_scale);
           // Assue offset_scale being 1, so offset moving accordingly
           float cur_grad_arc = cur_grad_angle / 1;
 
-          float cur_grad_x_dis = cur_grad_radius * val_offset_x + cur_grad_arc * (-val_offset_y);
-          float cur_grad_y_dis = cur_grad_radius * val_offset_y + cur_grad_arc * val_offset_x;
+          float cur_grad_x_dis = cur_grad_scale * val_offset_x + cur_grad_arc * (-val_offset_y);
+          float cur_grad_y_dis = cur_grad_scale * val_offset_y + cur_grad_arc * val_offset_x;
 
           float cur_grad_off_base = cur_grad_gaus_weight * val_gaus_weight / val_offset_scale;
-          grad_x += cur_grad_off_base * cur_grad_x_dis;
-          grad_y += cur_grad_off_base * cur_grad_y_dis;
+          grad_x += cur_grad_off_base * (-cur_grad_x_dis);
+          grad_y += cur_grad_off_base * (-cur_grad_y_dis);
         }
 
         if (UseGradSample) {
-          atomicAdd(grad_gaus_scales + i_gau, -cur_grad_radius * cur_grad_gaus_weight * val_gaus_weight);
-          atomicAdd(grad_gaus_angles + i_gau, -cur_grad_angle * cur_grad_gaus_weight * val_gaus_weight);
+          atomicAdd(grad_gaus_scales + i_gau, cur_grad_scale * cur_grad_gaus_weight * val_gaus_weight);
+          atomicAdd(grad_gaus_angles + i_gau, cur_grad_angle * cur_grad_gaus_weight * val_gaus_weight);
         }
 
         /*
