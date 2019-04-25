@@ -156,7 +156,7 @@ void displace_gaus_forward_cuda(
   gpuErrchk(cudaGetLastError());
 }
 
-template <bool UseGradIn, bool UseGradWeight, bool UseGradOffsets, bool UseGradSample, bool MinusCenter, typename Dtype>
+template <bool UseGradIn, bool UseGradWeight, bool UseGradOffsets, bool UseGradStd, bool MinusCenter, typename Dtype>
 __launch_bounds__(CUDA_NUM_THREADS)
 __global__ void displace_gaus_backward_cuda_kernel(
     const int64_t n, const int64_t num_channel,
@@ -170,7 +170,7 @@ __global__ void displace_gaus_backward_cuda_kernel(
     const Dtype* __restrict__ gaus_weight, Dtype* __restrict__ grad_gaus_weight,
     const float* __restrict__ gaus_cos_angles, const float* __restrict__ gaus_sin_angles,
     const float* __restrict__ gaus_angle_stds, const float* __restrict__ gaus_scale_stds,
-    float* __restrict__ grad_gaus_angles, float* __restrict__ grad_gaus_scales,
+    float* __restrict__ grad_gaus_angle_stds, float* __restrict__ grad_gaus_scale_stds,
     const int64_t num_gaus, float fill) {
   CUDA_KERNEL_LOOP(index, n) {
 #ifdef SEP_SAMPLE
@@ -196,9 +196,9 @@ __global__ void displace_gaus_backward_cuda_kernel(
     }
     gaus_cos_angles += gaus_index;
     gaus_sin_angles += gaus_index;
-    if (UseGradSample) {
-      grad_gaus_angles += gaus_index;
-      grad_gaus_scales += gaus_index;
+    if (UseGradStd) {
+      grad_gaus_angle_stds += i_offset;
+      grad_gaus_scale_stds += i_offset;
     }
 
     gaus_angle_stds += i_offset;
@@ -316,9 +316,11 @@ __global__ void displace_gaus_backward_cuda_kernel(
         );
       }
 
-      if (UseGradOffsets || UseGradSample) {
-        float cur_grad_scale = -gaus_scale / (*gaus_scale_stds * *gaus_scale_stds);
-        float cur_grad_angle = -gaus_angle / (*gaus_angle_stds * *gaus_angle_stds);
+      if (UseGradOffsets || UseGradStd) {
+        float scale_std = *gaus_scale_stds;
+        float angle_std = *gaus_angle_stds;
+        float cur_grad_scale = -gaus_scale / (scale_std * scale_std);
+        float cur_grad_angle = -gaus_angle / (angle_std * angle_std);
         
         if (UseGradOffsets) {
           // float cur_grad_arc = cur_grad_angle / val_offset_scale; // gaus_angle * val_offset_scale * 2 / (sigma_angle * sigma_angle * val_offset_scale * val_offset_scale);
@@ -333,9 +335,11 @@ __global__ void displace_gaus_backward_cuda_kernel(
           grad_y += cur_grad_off_base * (-cur_grad_y_dis);
         }
 
-        if (UseGradSample) {
-          atomicAdd(grad_gaus_scales + i_gau, cur_grad_scale * cur_grad_gaus_weight * val_gaus_weight);
-          atomicAdd(grad_gaus_angles + i_gau, cur_grad_angle * cur_grad_gaus_weight * val_gaus_weight);
+        if (UseGradStd) {
+          float cur_grad_scale_std = (-cur_grad_scale * gaus_scale - 1) / scale_std;
+          float cur_grad_angle_std = (-cur_grad_angle * gaus_angle - 1) / angle_std;
+          atomicAdd(grad_gaus_scale_stds, cur_grad_scale_std * cur_grad_gaus_weight * val_gaus_weight);
+          atomicAdd(grad_gaus_angle_stds, cur_grad_angle_std * cur_grad_gaus_weight * val_gaus_weight);
         }
 
         /*
@@ -388,7 +392,7 @@ void displace_gaus_backward_cuda(
     const at::Tensor gaus_weight, at::optional<at::Tensor> grad_gaus_weight,
     const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
     const at::Tensor gaus_angle_stds, const at::Tensor gaus_scale_stds,
-    at::optional<at::Tensor> grad_gaus_angles, at::optional<at::Tensor> grad_gaus_scales,
+    at::optional<at::Tensor> grad_gaus_angle_stds, at::optional<at::Tensor> grad_gaus_scale_stds,
     // dtype
     float fill) {
   int64_t batch_size = grad_out.size(0);
@@ -405,10 +409,10 @@ void displace_gaus_backward_cuda(
 
   DISPATCH_TWO_BOOLS(GRAD_IN_HAS_VALUE, grad_in.has_value(), GRAD_GAUS_WEIGHT_HAS_VALUE, grad_gaus_weight.has_value(), ([&] {
     DISPATCH_BOOL(GRAD_OFFSETS_HAS_VALUE, grad_offsets_x.has_value(), ([&] {
-      DISPATCH_BOOL(GRAD_SAMPLE_HAS_VALUE, grad_gaus_angles.has_value(), ([&] {
-        if (GRAD_IN_HAS_VALUE || GRAD_GAUS_WEIGHT_HAS_VALUE || GRAD_OFFSETS_HAS_VALUE || GRAD_SAMPLE_HAS_VALUE) {
+      DISPATCH_BOOL(GRAD_STD_HAS_VALUE, grad_gaus_angle_stds.has_value(), ([&] {
+        if (GRAD_IN_HAS_VALUE || GRAD_GAUS_WEIGHT_HAS_VALUE || GRAD_OFFSETS_HAS_VALUE || GRAD_STD_HAS_VALUE) {
           AT_DISPATCH_FLOATING_TYPES(data_in.type(), "displace_gaus_backward_cuda", ([&] {
-            displace_gaus_backward_cuda_kernel<GRAD_IN_HAS_VALUE, GRAD_GAUS_WEIGHT_HAS_VALUE, GRAD_OFFSETS_HAS_VALUE, GRAD_SAMPLE_HAS_VALUE, false> <<<GET_BLOCKS(num_kernel), CUDA_NUM_THREADS, 0, stream>>> (
+            displace_gaus_backward_cuda_kernel<GRAD_IN_HAS_VALUE, GRAD_GAUS_WEIGHT_HAS_VALUE, GRAD_OFFSETS_HAS_VALUE, GRAD_STD_HAS_VALUE, false> <<<GET_BLOCKS(num_kernel), CUDA_NUM_THREADS, 0, stream>>> (
               num_kernel, num_channel,
               data_in.data<scalar_t>(), GRAD_IN_HAS_VALUE ? grad_in.value().data<scalar_t>() : nullptr,
               height_in, width_in,
@@ -421,8 +425,8 @@ void displace_gaus_backward_cuda(
               gaus_weight.data<scalar_t>(), GRAD_GAUS_WEIGHT_HAS_VALUE ? grad_gaus_weight.value().data<scalar_t>() : nullptr,
               gaus_cos_angles.data<float>(), gaus_sin_angles.data<float>(),
               gaus_angle_stds.data<float>(), gaus_scale_stds.data<float>(),
-              GRAD_SAMPLE_HAS_VALUE? grad_gaus_angles.value().data<float>() : nullptr,
-              GRAD_SAMPLE_HAS_VALUE? grad_gaus_scales.value().data<float>() : nullptr,
+              GRAD_STD_HAS_VALUE? grad_gaus_angle_stds.value().data<float>() : nullptr,
+              GRAD_STD_HAS_VALUE? grad_gaus_scale_stds.value().data<float>() : nullptr,
               gaus_weight.size(1), fill);
           }));
         }
@@ -444,7 +448,7 @@ void displace_gaus_simple_backward_cuda(
     const at::Tensor gaus_weight, at::optional<at::Tensor> grad_gaus_weight,
     const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
     const at::Tensor gaus_angle_stds, const at::Tensor gaus_scale_stds,
-    at::optional<at::Tensor> grad_gaus_angles, at::optional<at::Tensor> grad_gaus_scales,
+    at::optional<at::Tensor> grad_gaus_angle_stds, at::optional<at::Tensor> grad_gaus_scale_stds,
     // dtype
     float fill) {
   int64_t batch_size = grad_out.size(0);
@@ -460,10 +464,10 @@ void displace_gaus_simple_backward_cuda(
 #endif
 
   DISPATCH_TWO_BOOLS(GRAD_GAUS_WEIGHT_HAS_VALUE, grad_gaus_weight.has_value(), GRAD_OFFSETS_HAS_VALUE, grad_offsets_x.has_value(), ([&] {
-    DISPATCH_BOOL(GRAD_SAMPLE_HAS_VALUE, grad_gaus_angles.has_value(), ([&] {
-      if (GRAD_GAUS_WEIGHT_HAS_VALUE || GRAD_OFFSETS_HAS_VALUE || GRAD_SAMPLE_HAS_VALUE) {
+    DISPATCH_BOOL(GRAD_STD_HAS_VALUE, grad_gaus_angle_stds.has_value(), ([&] {
+      if (GRAD_GAUS_WEIGHT_HAS_VALUE || GRAD_OFFSETS_HAS_VALUE || GRAD_STD_HAS_VALUE) {
         AT_DISPATCH_FLOATING_TYPES(data_in.type(), "displace_gaus_simple_backward_cuda", ([&] {
-          displace_gaus_backward_cuda_kernel<false, GRAD_GAUS_WEIGHT_HAS_VALUE, GRAD_OFFSETS_HAS_VALUE, GRAD_SAMPLE_HAS_VALUE, true> <<<GET_BLOCKS(num_kernel), CUDA_NUM_THREADS, 0, stream>>> (
+          displace_gaus_backward_cuda_kernel<false, GRAD_GAUS_WEIGHT_HAS_VALUE, GRAD_OFFSETS_HAS_VALUE, GRAD_STD_HAS_VALUE, true> <<<GET_BLOCKS(num_kernel), CUDA_NUM_THREADS, 0, stream>>> (
             num_kernel, num_channel,
             data_in.data<scalar_t>(), (scalar_t*)nullptr,
             height_in, width_in,
@@ -476,8 +480,8 @@ void displace_gaus_simple_backward_cuda(
             gaus_weight.data<scalar_t>(), GRAD_GAUS_WEIGHT_HAS_VALUE ? grad_gaus_weight.value().data<scalar_t>() : nullptr,
             gaus_cos_angles.data<float>(), gaus_sin_angles.data<float>(),
             gaus_angle_stds.data<float>(), gaus_scale_stds.data<float>(),
-            GRAD_SAMPLE_HAS_VALUE? grad_gaus_angles.value().data<float>() : nullptr,
-            GRAD_SAMPLE_HAS_VALUE? grad_gaus_scales.value().data<float>() : nullptr,
+            GRAD_STD_HAS_VALUE? grad_gaus_angle_stds.value().data<float>() : nullptr,
+            GRAD_STD_HAS_VALUE? grad_gaus_scale_stds.value().data<float>() : nullptr,
             gaus_weight.size(1), fill);
         }));
       }

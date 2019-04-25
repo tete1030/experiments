@@ -321,7 +321,7 @@ void displace_gaus_backward(
     const at::Tensor gaus_weight, at::optional<at::Tensor> grad_gaus_weight,
     const at::Tensor gaus_cos_angles, const at::Tensor gaus_sin_angles,
     const at::Tensor gaus_angle_stds, const at::Tensor gaus_scale_stds,
-    at::optional<at::Tensor> grad_gaus_angles, at::optional<at::Tensor> grad_gaus_scales,
+    at::optional<at::Tensor> grad_gaus_angle_stds, at::optional<at::Tensor> grad_gaus_scale_stds,
     // dtype
     float fill, bool simple=false) {
 
@@ -346,27 +346,28 @@ void displace_gaus_backward(
   }
   CHECK_INPUT(gaus_cos_angles);
   CHECK_INPUT(gaus_sin_angles);
-  if (grad_gaus_angles) {
-    CHECK_INPUT(grad_gaus_angles.value());
-    CHECK_INPUT(grad_gaus_scales.value());
+  if (grad_gaus_angle_stds) {
+    CHECK_INPUT(grad_gaus_angle_stds.value());
+    CHECK_INPUT(grad_gaus_scale_stds.value());
   } else {
-    AT_ASSERTM(!grad_gaus_scales.has_value(), "grad_gaus_angles and grad_gaus_scales's existence should be same");
+    AT_ASSERTM(!grad_gaus_scale_stds.has_value(), "grad_gaus_angle_stds and grad_gaus_scale_stds's existence should be same");
   }
   AT_ASSERTM(offsets_x.dtype() == at::ScalarType::Float && offsets_y.dtype() == at::ScalarType::Float, "dtype of offsets must be float");
   if (grad_offsets_x) {
     AT_ASSERTM(grad_offsets_x.value().dtype() == at::ScalarType::Float && grad_offsets_y.value().dtype() == at::ScalarType::Float, "dtype of grad_offsets must be float");
   }
-  if (grad_gaus_angles) {
-    AT_ASSERTM(grad_gaus_angles.value().dtype() == at::ScalarType::Float && grad_gaus_scales.value().dtype() == at::ScalarType::Float, "dtype of grad_gaus_angles|scales must be float");
+  if (grad_gaus_angle_stds) {
+    AT_ASSERTM(grad_gaus_angle_stds.value().dtype() == at::ScalarType::Float && grad_gaus_scale_stds.value().dtype() == at::ScalarType::Float, "dtype of grad_gaus_angle_stds|scale_stds must be float");
+    AT_ASSERTM(grad_gaus_angle_stds.value().size(0) == offsets_x.size(1) && grad_gaus_scale_stds.value().size(0) == offsets_x.size(1), "size of grad_gaus_angle|scale_stds must equal to num_offset");
   }
   AT_ASSERTM(gaus_angle_stds.dtype() == at::ScalarType::Float && gaus_scale_stds.dtype() == at::ScalarType::Float, "dtype of gaus_angle|scale_stds must be float");
   AT_ASSERTM(gaus_angle_stds.size(0) == offsets_x.size(1) && gaus_scale_stds.size(0) == offsets_x.size(1), "size of gaus_angle|scale_stds must equal to num_offset");
   auto stream = THCState_getCurrentStream((THCState*)state);
   
   if (!simple) {
-    displace_gaus_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, gaus_angle_stds, gaus_scale_stds, grad_gaus_angles, grad_gaus_scales, fill);
+    displace_gaus_backward_cuda(stream, data_in, grad_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, gaus_angle_stds, gaus_scale_stds, grad_gaus_angle_stds, grad_gaus_scale_stds, fill);
   } else {
-    displace_gaus_simple_backward_cuda(stream, data_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, gaus_angle_stds, gaus_scale_stds, grad_gaus_angles, grad_gaus_scales, fill);
+    displace_gaus_simple_backward_cuda(stream, data_in, offsets_x, offsets_y, grad_offsets_x, grad_offsets_y, channel_per_offset, grad_out, gaus_angles, gaus_scales, gaus_weight, grad_gaus_weight, gaus_cos_angles, gaus_sin_angles, gaus_angle_stds, gaus_scale_stds, grad_gaus_angle_stds, grad_gaus_scale_stds, fill);
   }
 }
 
@@ -399,7 +400,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     py::arg("gaus_weight"), py::arg("grad_gaus_weight"),
     py::arg("gaus_cos_angles"), py::arg("gaus_sin_angles"),
     py::arg("gaus_angle_stds"), py::arg("gaus_scale_stds"),
-    py::arg("grad_gaus_angles"), py::arg("grad_gaus_scales"),
+    py::arg("grad_gaus_angle_stds"), py::arg("grad_gaus_scale_stds"),
     py::arg("fill"),
     py::arg("simple") = false);
   m.def("cudnn_convolution_backward_input", &at::cudnn_convolution_backward_input, "cudnn convolution backward for input");
