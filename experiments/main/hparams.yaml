@@ -13,7 +13,7 @@ train:
     offset:
         always_train_block: true
         train_min_step: 100
-        lr: 1.e-3
+        lr: 5.e-3
         lr_regressor: 1.e-3
         lr_transformer: 5.e-4
         lr_gamma: 1
