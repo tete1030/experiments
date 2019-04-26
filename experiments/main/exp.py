@@ -198,8 +198,13 @@ class MainExperiment(BaseExperiment):
 
         offset_optimizer_args = []
         if len(self.offset_parameters) > 0:
+            arc_offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in globalvars.displace_mods if hasattr(dm, "offset") and hasattr(dm, "arc_gaussian_displacer") and dm.arc_gaussian_displacer is not None]))
+            arc_offset_parameter_ids = list(map(lambda x: id(x), arc_offset_parameters))
+            normal_offset_parameters = list(filter(lambda x: id(x) not in arc_offset_parameter_ids, self.offset_parameters))
             offset_optimizer_args.append(
-                {"para_name": "offset_lr", "params": self.offset_parameters, "lr": hparams.TRAIN.OFFSET.LR, "init_lr": hparams.TRAIN.OFFSET.LR})
+                {"para_name": "offset_lr", "params": normal_offset_parameters, "lr": hparams.TRAIN.OFFSET.LR, "init_lr": hparams.TRAIN.OFFSET.LR})
+            offset_optimizer_args.append(
+                {"para_name": "offset_lr", "params": arc_offset_parameters, "lr": hparams.TRAIN.OFFSET.LR * 10, "init_lr": hparams.TRAIN.OFFSET.LR * 10})
         if len(self.offset_regressor_parameters) > 0:
             offset_optimizer_args.append(
                 {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams.TRAIN.OFFSET.LR_REGRESSOR, "init_lr": hparams.TRAIN.OFFSET.LR_REGRESSOR})
