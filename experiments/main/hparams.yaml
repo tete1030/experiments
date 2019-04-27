@@ -19,7 +19,7 @@ train:
         lr_gamma: 1
         lr_decay_step: 100000 # 15 * 6543
         lr_dpool_sigma: 5.e-4
-        lr_arc_sigma: 5.e-3
+        lr_arc_sigma: 1.e-3
         bn_momentum: 0.1
         momentum: 0.0
         arc_sigma_dec_iter: 0
@@ -69,7 +69,7 @@ model:
 
     learnable_offset:
         expand_chan_ratio: [2, 1, 1, 1, 0.5, 0.5, 0.5, 0.25, 0.25, 0.25, 0.25, 0.25, 0.125]
-        use_special: [0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0]
+        use_special: [0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
         dpool_size: 0
         regress_offset: false
         use_in_predictor: false
@@ -87,9 +87,9 @@ model:
             enable: true
             simple: false
             num_sample: 16
-            angle_std: 30
-            min_angle_std: 3
-            scale_std: 3
+            angle_std: 20
+            min_angle_std: 5
+            scale_std: 2
             min_scale_std: 0.5
             optimize_sigma: true
             soft_maxpool: true

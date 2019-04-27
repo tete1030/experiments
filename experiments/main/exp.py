@@ -204,7 +204,7 @@ class MainExperiment(BaseExperiment):
             offset_optimizer_args.append(
                 {"para_name": "offset_lr", "params": normal_offset_parameters, "lr": hparams.TRAIN.OFFSET.LR, "init_lr": hparams.TRAIN.OFFSET.LR})
             offset_optimizer_args.append(
-                {"para_name": "offset_lr", "params": arc_offset_parameters, "lr": hparams.TRAIN.OFFSET.LR * 10, "init_lr": hparams.TRAIN.OFFSET.LR * 10})
+                {"para_name": "offset_lr", "params": arc_offset_parameters, "lr": hparams.TRAIN.OFFSET.LR * 2, "init_lr": hparams.TRAIN.OFFSET.LR * 2})
         if len(self.offset_regressor_parameters) > 0:
             offset_optimizer_args.append(
                 {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams.TRAIN.OFFSET.LR_REGRESSOR, "init_lr": hparams.TRAIN.OFFSET.LR_REGRESSOR})
