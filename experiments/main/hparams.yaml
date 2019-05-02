@@ -19,7 +19,7 @@ train:
         lr_gamma: 1
         lr_decay_step: 100000 # 15 * 6543
         lr_dpool_sigma: 5.e-4
-        lr_arc_sigma: 1.e-4
+        lr_arc_sigma: 5.e-4
         bn_momentum: 0.1
         momentum: 0.0
         arc_sigma_dec_iter: 0

@@ -204,7 +204,7 @@ class MainExperiment(BaseExperiment):
             offset_optimizer_args.append(
                 {"para_name": "offset_lr", "params": normal_offset_parameters, "lr": hparams.TRAIN.OFFSET.LR, "init_lr": hparams.TRAIN.OFFSET.LR})
             offset_optimizer_args.append(
-                {"para_name": "offset_lr", "params": arc_offset_parameters, "lr": hparams.TRAIN.OFFSET.LR * 0.5, "init_lr": hparams.TRAIN.OFFSET.LR * 0.5})
+                {"para_name": "offset_lr", "params": arc_offset_parameters, "lr": hparams.TRAIN.OFFSET.LR, "init_lr": hparams.TRAIN.OFFSET.LR})
         if len(self.offset_regressor_parameters) > 0:
             offset_optimizer_args.append(
                 {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams.TRAIN.OFFSET.LR_REGRESSOR, "init_lr": hparams.TRAIN.OFFSET.LR_REGRESSOR})
@@ -213,7 +213,7 @@ class MainExperiment(BaseExperiment):
                 {"para_name": "offset_dpool_lr", "params": self.dpool_parameters, "lr": hparams.TRAIN.OFFSET.LR_DPOOL_SIGMA, "init_lr": hparams.TRAIN.OFFSET.LR_DPOOL_SIGMA})
         if len(self.arc_scale_std_parameters) > 0:
             offset_optimizer_args.append(
-                {"para_name": "arc_scale_std_lr", "params": self.arc_scale_std_parameters, "lr": hparams.TRAIN.OFFSET.LR_ARC_SIGMA * 5, "init_lr": hparams.TRAIN.OFFSET.LR_ARC_SIGMA * 5})
+                {"para_name": "arc_scale_std_lr", "params": self.arc_scale_std_parameters, "lr": hparams.TRAIN.OFFSET.LR_ARC_SIGMA, "init_lr": hparams.TRAIN.OFFSET.LR_ARC_SIGMA})
         if len(self.arc_angle_std_parameters) > 0:
             offset_optimizer_args.append(
                 {"para_name": "arc_angle_std_lr", "params": self.arc_angle_std_parameters, "lr": hparams.TRAIN.OFFSET.LR_ARC_SIGMA, "init_lr": hparams.TRAIN.OFFSET.LR_ARC_SIGMA})
@@ -509,13 +509,14 @@ class MainExperiment(BaseExperiment):
         if self.early_predictor_optimizer:
             self.early_predictor_optimizer.step()
 
-    def _set_training_state(self, update_weight=None, update_offset=None, update_transformer=None):
+    def _set_training_state(self, update_weight=None, update_offset=None, update_transformer=None, log=True):
         def set_requires_grad(paras, requires_grad):
             for para in paras:
                 para.requires_grad = requires_grad
 
         state_ori = dict()
-        log_i("Set training state: update_weight={}, update_offset={}, update_transformer={}".format(update_weight, update_offset, update_transformer))
+        if config.check or log:
+            log_i("Set training state: update_weight={}, update_offset={}, update_transformer={}".format(update_weight, update_offset, update_transformer))
 
         if update_weight is not None:
             state_ori["update_weight"] = self.update_weight
@@ -528,6 +529,8 @@ class MainExperiment(BaseExperiment):
             set_requires_grad(self.offset_parameters, update_offset)
             set_requires_grad(self.offset_regressor_parameters, update_offset)
             set_requires_grad(self.dpool_parameters, update_offset)
+            set_requires_grad(self.arc_angle_std_parameters, update_offset)
+            set_requires_grad(self.arc_scale_std_parameters, update_offset)
 
         if update_transformer is not None:
             state_ori["update_transformer"] = self.update_transformer
@@ -540,6 +543,11 @@ class MainExperiment(BaseExperiment):
         if step >= hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             if not only_on_boundary or step == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
                 self._set_training_state(update_offset=True, update_transformer=True)
+
+            if step % 3 == 0:
+                self._set_training_state(update_weight=True, log=False)
+            else:
+                self._set_training_state(update_weight=False, log=False)
         else:
             if not only_on_boundary or step == 0:
                 self._set_training_state(update_offset=False, update_transformer=False)
