@@ -544,7 +544,7 @@ class MainExperiment(BaseExperiment):
             if not only_on_boundary or step == hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
                 self._set_training_state(update_offset=True, update_transformer=True)
 
-            if step % 3 == 0:
+            if step % 3000 >= 2000:
                 self._set_training_state(update_weight=True, log=False)
             else:
                 self._set_training_state(update_weight=False, log=False)
