@@ -13,18 +13,18 @@ train:
     offset:
         always_train_block: true
         train_min_step: 100
-        lr: 1.e-3
+        lr: 5.e-4
         lr_regressor: 1.e-3
         lr_transformer: 5.e-4
         lr_gamma: 1
         lr_decay_step: 100000 # 15 * 6543
         lr_dpool_sigma: 5.e-4
-        lr_arc_sigma: 1.e-3
+        lr_arc_sigma: 1.e-4
         bn_momentum: 0.1
         momentum: 0.0
         arc_sigma_dec_iter: 0
         transformer_grow_iter: 0
-        joint_optimize_transformer: true
+        joint_optimize_transformer: false
 
     ind_transformer:
         ind_offset_lr: 5.e-4
@@ -80,7 +80,7 @@ model:
             enable: false
             space_norm: false
         transformer:
-            enable: true
+            enable: false
             independent: true
             num_regress: 1
         arc:
