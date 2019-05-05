@@ -24,7 +24,7 @@ train:
         momentum: 0.0
         arc_sigma_dec_iter: 0
         transformer_grow_iter: 0
-        joint_optimize_transformer: true
+        joint_optimize_transformer: false
 
     ind_transformer:
         ind_offset_lr: 5.e-4
