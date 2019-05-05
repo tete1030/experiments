@@ -79,7 +79,7 @@ class OffsetBlock(nn.Module):
             use_atten, use_atten_space_norm,
             use_post_atten, use_post_atten_space_norm,
             use_transformer, use_arc,
-            dpool_size, always_train_block, stride=1):
+            dpool_size, always_train_block, use_transformer_switcher, stride=1):
         super(OffsetBlock, self).__init__()
 
         self.height = height
@@ -141,7 +141,8 @@ class OffsetBlock(nn.Module):
             learnable_offset=True,
             regress_offset=hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET,
             transformer=offset_transformer,
-            arc_gaussian=arc_displacer)
+            arc_gaussian=arc_displacer,
+            use_transformer_switcher=use_transformer_switcher)
         globalvars.displace_mods.append(self.displace)
         self.pre_offset = nn.Conv2d(self.inplanes, self.displace_planes, 1, stride=stride)
         self.post_offset = nn.Conv2d(self.displace_planes, self.outplanes, 1)
@@ -225,6 +226,7 @@ class TransformerFeature(nn.Module):
                     use_arc=hparams.MODEL.IND_TRANSFORMER.ENABLE_ARC,
                     dpool_size=hparams.MODEL.IND_TRANSFORMER.DPOOL_SIZE,
                     always_train_block=True,
+                    use_transformer_switcher=False,
                     stride=hparams.MODEL.IND_TRANSFORMER.STRIDE[i]))
             shape_factor *= hparams.MODEL.IND_TRANSFORMER.STRIDE[i]
             cur_num_channel = num_out_channel

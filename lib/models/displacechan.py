@@ -250,8 +250,9 @@ class DisplaceChannel(nn.Module):
     def __init__(self, height, width, num_channels, num_offsets,
                  disable_displace=False, learnable_offset=False, offset_scale=None,
                  regress_offset=False, transformer=None,
-                 half_reversed_offset=False, previous_dischan=None,
-                 arc_gaussian=None):
+                 previous_dischan=None,
+                 arc_gaussian=None,
+                 use_transformer_switcher=False):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -260,9 +261,12 @@ class DisplaceChannel(nn.Module):
         assert num_channels % num_offsets == 0, "num of channels cannot be divided by number of offsets"
         self.offset_scale = float(max(width, height)) if offset_scale is None else offset_scale
         self.disable_displace = disable_displace
-        self.half_reversed_offset = half_reversed_offset
         self.regress_offset = regress_offset
         self.offset_transformer = transformer
+        if use_transformer_switcher:
+            self.transformer_switcher = nn.Parameter(torch.zeros(num_channels))
+        else:
+            self.transformer_switcher = None
         if arc_gaussian:
             self.arc_gaussian_displacer = arc_gaussian
         else:
@@ -352,30 +356,20 @@ class DisplaceChannel(nn.Module):
             bind_chan = num_channels // self.num_offsets
             if self.offset_transformer is not None:
                 assert transformer_kcos is not None and transformer_ksin is not None
-                offset_abs_x, offset_abs_y = self.offset_transformer(offset_abs, transformer_kcos, transformer_ksin, inp.size()[-2:])
-                
-                if self.half_reversed_offset:
-                    assert bind_chan % 2 == 0
-                    bind_chan = bind_chan // 2
-                    offset_abs_x = torch.cat([offset_abs_x, -offset_abs_x], dim=1)
-                    offset_abs_y = torch.cat([offset_abs_y, -offset_abs_y], dim=1)
+                offset_abs_trans_x, offset_abs_trans_y = self.offset_transformer(offset_abs, transformer_kcos, transformer_ksin, inp.size()[-2:])
                 
                 if detach_offset:
-                    offset_abs_x = offset_abs_x.detach()
-                    offset_abs_y = offset_abs_y.detach()
+                    offset_abs_trans_x = offset_abs_trans_x.detach()
+                    offset_abs_trans_y = offset_abs_trans_y.detach()
                 if self.arc_gaussian_displacer is None:
-                    out = PositionalDisplace.apply(inp, offset_abs_x, offset_abs_y, bind_chan)
+                    out_trans = PositionalDisplace.apply(inp, offset_abs_trans_x, offset_abs_trans_y, bind_chan)
                 else:
-                    out = self.arc_gaussian_displacer(inp, offset_abs_x, offset_abs_y, bind_chan)
+                    out_trans = self.arc_gaussian_displacer(inp, offset_abs_trans_x, offset_abs_trans_y, bind_chan)
             else:
+                out_trans = None
+            
+            if self.offset_transformer is None or self.transformer_switcher is not None:
                 offset_dim = offset_abs.dim()
-                if self.half_reversed_offset:
-                    assert bind_chan % 2 == 0
-                    bind_chan = bind_chan // 2
-                    if offset_dim in [2, 3]:
-                        offset_abs = torch.cat([offset_abs, -offset_abs], dim=-2)
-                    else:
-                        raise ValueError()
 
                 if detach_offset:
                     offset_abs = offset_abs.detach()
@@ -389,13 +383,24 @@ class DisplaceChannel(nn.Module):
                         offset_abs_y = offset_abs[:, :, None, None, 1].repeat(1, 1, height, width)
                     else:
                         raise ValueError()
-                    out = self.arc_gaussian_displacer(inp, offset_abs_x, offset_abs_y, bind_chan)
+                    out_normal = self.arc_gaussian_displacer(inp, offset_abs_x, offset_abs_y, bind_chan)
                 elif offset_dim == 2:
-                    out = DisplaceFracCUDA.apply(inp, offset_abs, bind_chan)
+                    out_normal = DisplaceFracCUDA.apply(inp, offset_abs, bind_chan)
                 elif offset_dim == 3:
-                    out = DisplaceFracCUDA.apply(inp.view(1, -1, height, width), offset_abs.view(-1, 2), bind_chan).view(batch_size, -1, height, width)
+                    out_normal = DisplaceFracCUDA.apply(inp.view(1, -1, height, width), offset_abs.view(-1, 2), bind_chan).view(batch_size, -1, height, width)
                 else:
                     raise ValueError()
+            else:
+                out_normal = None
+        
+            if self.transformer_switcher is None:
+                assert (out_trans is not None and out_normal is None) or \
+                    (out_normal is not None and out_trans is None)
+                out = out_trans if out_trans is not None else out_normal
+            else:
+                assert out_trans is not None and out_normal is not None
+                trans_switch = self.transformer_switcher.sigmoid()
+                out = out_trans * trans_switch[None, :, None, None] + out_normal * (1 - trans_switch)[None, :, None, None]
 
         else:
             out = inp

@@ -137,9 +137,11 @@ class MainExperiment(BaseExperiment):
 
         if not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self.offset_parameters = list(filter(lambda x: x.requires_grad, [dm.offset for dm in globalvars.displace_mods if hasattr(dm, "offset")]))
+            self.transformer_switcher_parameters = [dm.transformer_switcher for dm in globalvars.displace_mods if dm.transformer_switcher is not None]
             self.offset_regressor_parameters = list(filter(lambda x: x.requires_grad, list(itertools.chain.from_iterable([dm.offset_regressor.parameters() for dm in globalvars.displace_mods if hasattr(dm, "offset_regressor")]))))
         else:
             self.offset_parameters = []
+            self.transformer_switcher_parameters = []
             self.offset_regressor_parameters = []
 
         if hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE > 1:
@@ -172,6 +174,7 @@ class MainExperiment(BaseExperiment):
             self.arc_angle_std_parameters + \
             self.offset_regressor_parameters + \
             self.offset_transformer_parameters + \
+            self.transformer_switcher_parameters + \
             self.early_predictor_parameters
 
         special_parameter_ids = list(map(lambda x: id(x), all_special_parameters))
@@ -182,6 +185,7 @@ class MainExperiment(BaseExperiment):
                 offset=self.offset_parameters,
                 offset_regressor=self.offset_regressor_parameters,
                 offset_transformer=self.offset_transformer_parameters,
+                transformer_switcher=self.transformer_switcher_parameters,
                 early_predictor=self.early_predictor_parameters,
                 dpool=self.dpool_parameters,
                 arc_std=self.arc_scale_std_parameters + self.arc_angle_std_parameters),
@@ -208,6 +212,9 @@ class MainExperiment(BaseExperiment):
         if len(self.offset_regressor_parameters) > 0:
             offset_optimizer_args.append(
                 {"para_name": "offset_regressor_lr", "params": self.offset_regressor_parameters, "lr": hparams.TRAIN.OFFSET.LR_REGRESSOR, "init_lr": hparams.TRAIN.OFFSET.LR_REGRESSOR})
+        if len(self.transformer_switcher_parameters) > 0:
+            offset_optimizer_args.append(
+                {"para_name": "transformer_switcher_lr", "params": self.transformer_switcher_parameters, "lr": hparams.TRAIN.LEARNING_RATE, "init_lr": hparams.TRAIN.LEARNING_RATE})
         if len(self.dpool_parameters) > 0:
             offset_optimizer_args.append(
                 {"para_name": "offset_dpool_lr", "params": self.dpool_parameters, "lr": hparams.TRAIN.OFFSET.LR_DPOOL_SIGMA, "init_lr": hparams.TRAIN.OFFSET.LR_DPOOL_SIGMA})

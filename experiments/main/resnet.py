@@ -44,6 +44,7 @@ class Bottleneck(nn.Module):
                     use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and use_special,
                     use_arc=hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE and use_special,
                     dpool_size=hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE if use_special else 0,
+                    use_transformer_switcher=use_special,
                     always_train_block=hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK)
                 if hparams.MODEL.DETAIL.EARLY_PREDICTOR and hparams.MODEL.DETAIL.EARLY_PREDICTOR_FROM_OFFBLK:
                     globalvars.early_predictor_size.append((self.inplanes, self.inshape_factor))
@@ -120,6 +121,7 @@ class BasicBlock(nn.Module):
                     use_transformer=hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.ENABLE and use_special,
                     use_arc=hparams.MODEL.LEARNABLE_OFFSET.ARC.ENABLE and use_special,
                     dpool_size=hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE if use_special else 0,
+                    use_transformer_switcher=use_special,
                     always_train_block=hparams.TRAIN.OFFSET.ALWAYS_TRAIN_BLOCK)
                 if hparams.MODEL.DETAIL.EARLY_PREDICTOR and hparams.MODEL.DETAIL.EARLY_PREDICTOR_FROM_OFFBLK:
                     globalvars.early_predictor_size.append((self.inplanes, self.inshape_factor))
