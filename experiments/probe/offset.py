@@ -381,15 +381,44 @@ class Probe(nn.Module):
             offsets = torch.stack(
                 TransformCoordinate.apply(self.offsets[None, :, 0], self.offsets[None, :, 1], ksin, kcos),
                 dim=2).view(-1, 2)
+        # assert torch.isfinite(x).all() # FIXME
+        # assert torch.isfinite(offsets).all() # FIXME
         x = self.conv(x)
         
         dis = self.displace(x.repeat(1, offsets.size(0), 1, 1), offset_runtime_rel=offsets)
+        # assert torch.isfinite(dis).all() # FIXME
         dis = dis.view(x.size(0) * self.num_probes, self.num_offsets, x.size(2), x.size(3))
         out = self.summarizer(dis).view(x.size(0), self.num_probes, x.size(2), x.size(3))
+        # assert torch.isfinite(out).all() # FIXME
+
+        # out = out.clamp(max=88.722835).exp() + EPS
+        # out = out / out.size(1) / 2
+        # assert torch.isfinite(out).all() # FIXME
+
+        # out_sum = out.sum(dim=1, keepdim=True)
+        # assert torch.isfinite(out_sum).all() # FIXME
 
         out_softmax = torch.nn.functional.softmax(out, dim=1)
+        # assert torch.isfinite(out_softmax).all() # FIXME
 
         probe_val = (out_softmax * self.probe_vals.view(1, -1, 1, 1)).sum(dim=1, keepdim=True)
+        # assert torch.isfinite(probe_val).all() # FIXME
+
+        # def hook_factory(hook_name, hook_var): # FIXME
+        #     def back_hook(grad):
+        #         # nonlocal hook_var
+        #         assert torch.isfinite(grad).all(), "{} finite test failed".format(hook_name)
+
+        #     return back_hook
+
+        # if probe_val.requires_grad: # FIXME
+        #     probe_val.register_hook(hook_factory("probe_val", probe_val))
+        # if out.requires_grad: # FIXME
+        #     out.register_hook(hook_factory("out", out))
+        # if out_sum.requires_grad: # FIXME
+        #     out_sum.register_hook(hook_factory("out_sum", out_sum))
+        # if out_softmax.requires_grad: # FIXME
+        #     out_softmax.register_hook(hook_factory("out_softmax", out_softmax))
 
         return probe_val
 
@@ -453,8 +482,25 @@ class TransformerHead(nn.Module):
         scale = self.scale_regressor(x)
         angle = self.angle_regressor(x)
 
+        # def hook_factory(hook_name, hook_var): # FIXME
+        #     def back_hook(grad):
+        #         # nonlocal hook_var
+        #         assert torch.isfinite(grad).all(), "{} finite test failed".format(hook_name)
+
+        #     return back_hook
+        
+        # if angle.requires_grad: # FIXME
+        #     angle.register_hook(hook_factory("angle", angle))
+        # if scale.requires_grad: # FIXME
+        #     scale.register_hook(hook_factory("scale", scale))
+
         angle_cos = angle.cos().clamp(-1+EPS, 1-EPS)
         angle_sin = angle.sin().clamp(-1+EPS, 1-EPS)
+
+        # if angle_cos.requires_grad: # FIXME
+        #     angle_cos.register_hook(hook_factory("angle_cos", angle_cos))
+        # if angle_sin.requires_grad: # FIXME
+        #     angle_sin.register_hook(hook_factory("angle_sin", angle_sin))
 
         if not self.sep_scale:
             return angle_cos * scale, angle_sin * scale
