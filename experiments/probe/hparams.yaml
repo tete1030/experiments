@@ -71,7 +71,7 @@ model:
         offset_per_channel: 4
 
     probe:
-        num_offsets: 8
+        num_offsets: 16
         angle_min: -60
         angle_max: 60
         num_angles: 5
