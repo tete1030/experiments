@@ -1,0 +1,148 @@
+exp:
+    name: probe
+    id: 1
+
+train:
+    learning_rate: 5.e-4
+    lr_gamma: 0.5
+    num_epoch: 100
+    schedule: []
+    train_batch: 16
+    test_batch: 16
+    weight_decay: 0
+    offset:
+        always_train_block: true
+        train_min_step: 100
+        lr: 5.e-4
+        lr_regressor: 1.e-3
+        lr_transformer: 5.e-4
+        lr_gamma: 1
+        lr_decay_step: 100000 # 15 * 6543
+        lr_dpool_sigma: 5.e-4
+        lr_arc_sigma: 5.e-4
+        bn_momentum: 0.1
+        momentum: 0.0
+        arc_sigma_dec_iter: 0
+        transformer_grow_iter: 0 # NOTE: Probe should not be used with this option
+        joint_optimize_transformer: true
+
+    ind_transformer:
+        ind_offset_lr: 5.e-4
+        scale_std: 0.25
+        rotate_std: 90
+        translation_std: 0.25
+
+eval:
+    parse_threshold: 0.1
+
+config:
+    store_map: false
+    valid_interval: 1000
+
+log:
+    # TODO: Make log configurable
+    # TODO: log more:
+    # - Unstable network parapmeter changes
+    # - Intermediate result and visualization
+    move_average_cycle: 500
+    offset_save_interval: 1000
+    sigma_change_average_cycle: 500
+
+model:
+    mode: "main"
+    use_gn: true
+    resnet_pretrained: pretrained/resnet50_gn.pth
+    inp_shape: [192, 256] # W, H
+    out_shape: [48, 64] # W, H
+    gaussian_kernels: [2.6, 2., 1.7, 1.4] # sigma = 0.3*((ksize-1)*0.5 - 1) + 0.8
+    resnet: 50
+    loss_dpool_cof: 1.e-6
+    detail:
+        early_predictor_label_index: [3, 2, 1]
+        disable_displace: false
+        early_predictor: true
+        early_predictor_from_offblk: false
+        loss_early: labeled
+        loss_final: labeled
+        enable_offset_block: true
+        first_esp_only: false
+
+    active_block:
+        offset_per_channel: 4
+
+    probe:
+        num_offsets: 8
+        angle_min: -60
+        angle_max: 60
+        num_angles: 5
+        scale_min: 0.75
+        scale_max: 1.25
+        num_scales: 3
+
+    learnable_offset:
+        expand_chan_ratio: [2, 1, 1, 1, 0.5, 0.5, 0.5, 0.25, 0.25, 0.25, 0.25, 0.25, 0.125]
+        use_special: [0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+        use_active_block: true
+        dpool_size: 0
+        regress_offset: false
+        use_in_predictor: false
+        atten:
+            enable: true
+            space_norm: true
+        post_atten: # NOTE: not used by active_block
+            enable: false
+            space_norm: false
+        transformer:
+            enable: true
+            independent: false
+        arc:
+            enable: false
+            simple: false
+            num_sample: 16
+            angle_std: 20
+            min_angle_std: 5
+            scale_std: 2
+            min_scale_std: 0.5
+            optimize_sigma: true
+            soft_maxpool: true
+            sampler: gaussian
+            weight_dist: uniform
+
+    ind_transformer:
+        pretrained: null
+        num_blk: 2
+        num_offset: [64, 192]
+        stride: [1, 1]
+        num_feature: 256
+        multi_scale: [1]
+        keypoint_based: true
+        keypoint_sigma: 2
+        loss_angle_cof: 1
+        loss_scale_cof: 2
+        loss_var_cof: 1
+        enable_arc: false
+        dpool_size: 0
+        atten:
+            enable: true
+            space_norm: false
+        post_atten:
+            enable: false
+            space_norm: false
+
+dataset:
+    profile: coco
+    subset: null
+    coco:
+        mean_std_file: mean_std.pth
+        ext_border: [0.1, 0.15]
+        scale_factor: 0.25
+        rotate_factor: 30
+        translation_factor: 0.05
+        half_body_num_joints: 8
+        half_body_prob: -1
+    mpii:
+        mean_std_file: mean_std.pth
+        ext_border: [0.1, 0.15]
+        scale_factor: 0.25
+        rotate_factor: 30
+        translation_factor: 0.02

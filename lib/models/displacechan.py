@@ -251,7 +251,7 @@ class DisplaceChannel(nn.Module):
                  disable_displace=False, learnable_offset=False, offset_scale=None,
                  regress_offset=False, transformer=None,
                  half_reversed_offset=False, previous_dischan=None,
-                 arc_gaussian=None):
+                 arc_gaussian=None, runtime_offset=False):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -263,6 +263,7 @@ class DisplaceChannel(nn.Module):
         self.half_reversed_offset = half_reversed_offset
         self.regress_offset = regress_offset
         self.offset_transformer = transformer
+        self.runtime_offset = runtime_offset
         if arc_gaussian:
             self.arc_gaussian_displacer = arc_gaussian
         else:
@@ -276,7 +277,10 @@ class DisplaceChannel(nn.Module):
                 num_offsets_prev = self.previous_dischan.get_all_offsets_num()
 
             assert self.num_offsets >= num_offsets_prev
-            self.offset = nn.parameter.Parameter(torch.zeros(self.num_offsets - num_offsets_prev, 2), requires_grad=True)
+            if not runtime_offset:
+                self.offset = nn.parameter.Parameter(torch.zeros(self.num_offsets - num_offsets_prev, 2), requires_grad=True)
+            else:
+                self.offset = None
             self.switch_LO_state(learnable_offset)
 
             if regress_offset:
@@ -292,7 +296,7 @@ class DisplaceChannel(nn.Module):
         self.learnable_offset = active
 
     def reset_outsider(self):
-        if self.offset.size(0) == 0:
+        if self.offset is None or self.offset.size(0) == 0:
             return
 
         # At lease 2x2 pixels for receiving grad
@@ -302,12 +306,18 @@ class DisplaceChannel(nn.Module):
                                       max=(self.height - 2.1) / self.offset_scale)
 
     def get_all_offsets_num(self):
+        if self.runtime_offset:
+            raise RuntimeError("No offset")
+
         offsets_num = self.offset.size(0)
         if self.previous_dischan is not None:
             offsets_num += self.previous_dischan.get_all_offsets_num()
         return offsets_num
 
     def get_all_offsets(self, detach=False, cat=True):
+        if self.runtime_offset:
+            raise RuntimeError("No offset")
+
         if self.offset.size(0) == 0:
             all_offsets = []
         else:
@@ -322,7 +332,7 @@ class DisplaceChannel(nn.Module):
 
         return all_offsets
 
-    def forward(self, inp, detach_offset=False, offset_plus_rel=None, transformer_kcos=None, transformer_ksin=None):
+    def forward(self, inp, detach_offset=False, offset_runtime_rel=None, offset_plus_rel=None, transformer_kcos=None, transformer_ksin=None):
         batch_size = inp.size(0)
         num_channels = inp.size(1)
         height = inp.size(2)
@@ -335,7 +345,11 @@ class DisplaceChannel(nn.Module):
             detach_offset = True
 
         if not self.disable_displace:
-            offset_rel = self.get_all_offsets(detach=detach_offset)
+            if not self.runtime_offset:
+                offset_rel = self.get_all_offsets(detach=detach_offset)
+            else:
+                assert offset_runtime_rel is not None
+                offset_rel = offset_runtime_rel
 
             if offset_plus_rel is not None:
                 offset_rel = offset_rel[None] + offset_plus_rel
