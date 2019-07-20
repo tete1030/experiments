@@ -93,7 +93,7 @@ model:
             enable: false
             space_norm: false
         transformer:
-            enable: true
+            enable: false
             independent: false
         arc:
             enable: false
