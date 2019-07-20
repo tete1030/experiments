@@ -448,8 +448,11 @@ class TransformerHead(nn.Module):
             hparams.MODEL.PROBE.ANGLE_MIN / 180 * np.pi,
             hparams.MODEL.PROBE.ANGLE_MAX / 180 * np.pi,
             "angle")
+        self.detach = detach
 
     def forward(self, x):
+        if self.detach:
+            x = x.detach()
         scale = self.scale_regressor(x)
         angle = self.angle_regressor(x)
 
