@@ -72,11 +72,11 @@ model:
 
     probe:
         num_offsets: 8
-        angle_min: -90
-        angle_max: 90
+        angle_min: -60
+        angle_max: 60
         num_angles: 9
-        scale_min: 0.5
-        scale_max: 1.5
+        scale_min: 0.75
+        scale_max: 1.25
         num_scales: 5
 
     learnable_offset:
