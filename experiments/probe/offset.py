@@ -350,7 +350,7 @@ class ActiveBlock(nn.Module):
         return out_final
 
 class Probe(nn.Module):
-    def __init__(self, height, width, inplanes, num_offsets, num_probes, probe_min, probe_max, probe_type):
+    def __init__(self, height, width, inplanes, num_offsets, num_probes, probe_min, probe_max, probe_type, dpool_size):
         super().__init__()
         assert probe_type in ["scale", "angle"]
         total_offsets = num_offsets * num_probes
@@ -371,6 +371,10 @@ class Probe(nn.Module):
         self.probe_min = probe_min
         self.probe_max = probe_max
         self.probe_type = probe_type
+        if dpool_size:
+            self.dpool = DynamicPooling(inplanes, dpool_size)
+        else:
+            self.dpool = None
 
     def forward(self, x):
         if self.probe_type == "scale":
@@ -381,6 +385,9 @@ class Probe(nn.Module):
             offsets = torch.stack(
                 TransformCoordinate.apply(self.offsets[None, :, 0], self.offsets[None, :, 1], ksin, kcos),
                 dim=2).view(-1, 2)
+
+        if self.dpool:
+            x = self.dpool(x)
         x = self.conv(x)
         
         dis = self.displace(x.repeat(1, offsets.size(0), 1, 1), offset_runtime_rel=offsets)
@@ -440,14 +447,16 @@ class TransformerHead(nn.Module):
             hparams.MODEL.PROBE.NUM_SCALES,
             hparams.MODEL.PROBE.SCALE_MIN,
             hparams.MODEL.PROBE.SCALE_MAX,
-            "scale")
+            "scale",
+            hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE)
         self.angle_regressor = Probe(
             height, width, num_channels,
             hparams.MODEL.PROBE.NUM_OFFSETS,
             hparams.MODEL.PROBE.NUM_ANGLES,
             hparams.MODEL.PROBE.ANGLE_MIN / 180 * np.pi,
             hparams.MODEL.PROBE.ANGLE_MAX / 180 * np.pi,
-            "angle")
+            "angle",
+            hparams.MODEL.LEARNABLE_OFFSET.DPOOL_SIZE)
         self.detach = detach
 
     def forward(self, x):
