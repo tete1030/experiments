@@ -354,7 +354,20 @@ class Probe(nn.Module):
         super().__init__()
         assert probe_type in ["scale", "angle"]
         total_offsets = num_offsets * num_probes
-        self.conv = nn.Conv2d(inplanes, 1, 1)
+        self.single_source = False
+        if self.single_source:
+            if dpool_size:
+                self.dpool = DynamicPooling(inplanes, dpool_size)
+            else:
+                self.dpool = None
+            self.conv = nn.Conv2d(inplanes, 1, 1)
+        else:
+            self.conv = nn.Conv2d(inplanes, num_offsets, 1)
+            if dpool_size:
+                self.dpool = DynamicPooling(num_offsets, dpool_size)
+            else:
+                self.dpool = None
+
         self.displace = DisplaceChannel(
             height, width,
             total_offsets, total_offsets,
@@ -371,10 +384,6 @@ class Probe(nn.Module):
         self.probe_min = probe_min
         self.probe_max = probe_max
         self.probe_type = probe_type
-        if dpool_size:
-            self.dpool = DynamicPooling(inplanes, dpool_size)
-        else:
-            self.dpool = None
 
     def forward(self, x):
         if self.probe_type == "scale":
@@ -386,11 +395,17 @@ class Probe(nn.Module):
                 TransformCoordinate.apply(self.offsets[None, :, 0], self.offsets[None, :, 1], ksin, kcos),
                 dim=2).view(-1, 2)
 
-        if self.dpool:
-            x = self.dpool(x)
-        x = self.conv(x)
-        
-        dis = self.displace(x.repeat(1, offsets.size(0), 1, 1), offset_runtime_rel=offsets)
+        if self.single_source:
+            if self.dpool:
+                x = self.dpool(x)
+            x = self.conv(x)
+            dis = self.displace(x.repeat(1, offsets.size(0), 1, 1), offset_runtime_rel=offsets)
+        else:
+            x = self.conv(x)
+            if self.dpool:
+                x = self.dpool(x)
+            dis = self.displace(x.repeat(1, self.probe_vals.size(0), 1, 1), offset_runtime_rel=offsets)
+
         dis = dis.view(x.size(0) * self.num_probes, self.num_offsets, x.size(2), x.size(3))
         out = self.summarizer(dis).view(x.size(0), self.num_probes, x.size(2), x.size(3))
 
