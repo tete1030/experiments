@@ -355,6 +355,7 @@ class Probe(nn.Module):
         assert probe_type in ["scale", "angle"]
         total_offsets = num_offsets * num_probes
         self.single_source = False
+        self.use_softmax = False
         if self.single_source:
             if dpool_size:
                 self.dpool = DynamicPooling(inplanes, dpool_size)
@@ -409,9 +410,13 @@ class Probe(nn.Module):
         dis = dis.view(x.size(0) * self.num_probes, self.num_offsets, x.size(2), x.size(3))
         out = self.summarizer(dis).view(x.size(0), self.num_probes, x.size(2), x.size(3))
 
-        out_softmax = torch.nn.functional.softmax(out, dim=1)
+        if self.use_softmax:
+            score = torch.nn.functional.softmax(out, dim=1)
+        else:
+            score = torch.nn.functional.softplus(out) + EPS
+            score = score / score.sum(dim=1, keepdim=True)
 
-        probe_val = (out_softmax * self.probe_vals.view(1, -1, 1, 1)).sum(dim=1, keepdim=True)
+        probe_val = (score * self.probe_vals.view(1, -1, 1, 1)).sum(dim=1, keepdim=True)
 
         return probe_val
 
