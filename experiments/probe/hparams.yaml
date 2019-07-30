@@ -1,6 +1,6 @@
 exp:
     name: probe
-    id: 1
+    id: 2
 
 train:
     learning_rate: 5.e-4
@@ -28,6 +28,11 @@ train:
 
     ind_transformer:
         ind_offset_lr: 5.e-4
+        scale_std: 0.25
+        rotate_std: 90
+        translation_std: 0.25
+
+    feat_stab:
         scale_std: 0.25
         rotate_std: 90
         translation_std: 0.25
@@ -107,6 +112,11 @@ model:
             soft_maxpool: true
             sampler: gaussian
             weight_dist: uniform
+
+    feat_stab:
+        enable: true
+        loss_stabilizer_cof: 0.1
+        loss_displace_cof: 0.1
 
     ind_transformer:
         pretrained: null

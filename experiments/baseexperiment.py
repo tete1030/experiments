@@ -128,7 +128,7 @@ class BaseExperiment(object):
     def iter_process(self, epoch_ctx:EpochContext, batch:dict, progress:dict, train:bool) -> torch.Tensor:
         pass
 
-    def iter_step(self, epoch_ctx:EpochContext, loss:torch.Tensor, progress:dict):
+    def iter_step(self, epoch_ctx:EpochContext, loss:object, progress:dict):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()

@@ -6,6 +6,7 @@ from utils.globals import config, hparams, globalvars
 from utils.log import log_i, log_w, log_progress
 from lib.models.spacenorm import SpaceNormalization
 from lib.models.displacechan import DisplaceChannel, PositionalGaussianDisplaceModule, OffsetTransformer, TransformCoordinate
+from .featstab import save_feat_stab
 
 EPS = np.finfo(np.float32).eps.item()
 
@@ -80,7 +81,8 @@ class OffsetBlock(nn.Module):
             use_atten, use_atten_space_norm,
             use_post_atten, use_post_atten_space_norm,
             use_transformer, use_arc,
-            dpool_size, always_train_block, use_fusion=False, stride=1):
+            dpool_size, always_train_block, use_fusion=False, stride=1,
+            use_stabilizer=False):
         super(OffsetBlock, self).__init__()
 
         self.height = height
@@ -104,6 +106,15 @@ class OffsetBlock(nn.Module):
                 self.displace_planes
             ))
 
+        if use_stabilizer:
+            self.stabilizer = nn.Sequential(
+                nn.Conv2d(inplanes, inplanes, 1),
+                nn.BatchNorm2d(inplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM),
+                nn.ReLU(inplace=True))
+            globalvars.exp.feat_stab_stabilizer_parameters += self.stabilizer.parameters()
+        else:
+            self.stabilizer = None
+
         num_offset = self.displace_planes
         self.transformer_regressor = None
         if use_transformer:
@@ -112,8 +123,10 @@ class OffsetBlock(nn.Module):
                 init_effect_scale=0. if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None)
             if not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
                 self.transformer_regressor = LocalTransformerRegressor(self.height, self.width, self.inplanes)
+                globalvars.exp.feat_stab_displace_parameters += self.transformer_regressor.parameters()
             else:
                 self.transformer_regressor = IndpendentTransformerRegressorDelegate(self.inplanes)
+                raise NotImplementedError("feat_stab for independent transformer not implemented")
         else:
             offset_transformer = None
 
@@ -179,27 +192,47 @@ class OffsetBlock(nn.Module):
         if not self.always_train_block and globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             return x
 
-        out_pre = self.pre_offset(x)
+        use_feat_stab = bool(self.stabilizer is not None)
+        grad_enable = torch.is_grad_enabled() or (use_feat_stab and bool(globalvars.feat_stab_running))
+
+        if self.stabilizer is not None:
+            feat_stab_training = use_feat_stab and bool(self.training and globalvars.feat_stab_running)
+            if feat_stab_training:
+                self.stabilizer.train(False)
+            with torch.autograd.set_grad_enabled(grad_enable):
+                stab = self.stabilizer(x)
+            if feat_stab_training:
+                self.stabilizer.train(True)
+            
+            if grad_enable and use_feat_stab:
+                save_feat_stab("stabilizer", stab)
+        else:
+            stab = x
+
+        out_pre = self.pre_offset(stab)
 
         if self.dpool:
             out_pre = self.dpool(out_pre)
 
-        if self.transformer_regressor:
-            kcos, ksin = self.transformer_regressor(x)
-            assert torch.isfinite(kcos).all() and torch.isfinite(ksin).all()
-            out_dis = self.displace(out_pre, transformer_kcos=kcos, transformer_ksin=ksin)
-        else:
-            out_dis = self.displace(out_pre)
-        assert torch.isfinite(out_dis).all()
+        with torch.autograd.set_grad_enabled(grad_enable):
+            if self.transformer_regressor:
+                kcos, ksin = self.transformer_regressor(stab)
+                out_dis = self.displace(out_pre, transformer_kcos=kcos, transformer_ksin=ksin)
+            else:
+                out_dis = self.displace(out_pre)
 
-        if self.atten_displace is not None:
-            out_atten = self.atten_displace(x)
-        else:
-            out_atten = None
-        out_post = self.post_offset(out_atten * out_dis if out_atten is not None else out_dis)
+            if self.atten_displace is not None:
+                out_atten = self.atten_displace(stab)
+                out_dis = out_atten * out_dis
+
+            if grad_enable and use_feat_stab:
+                assert self.transformer_regressor is not None
+                save_feat_stab("displace", out_dis)
+
+        out_post = self.post_offset(out_dis)
         if self.downsample is not None:
             x = self.downsample(x)
-        out_skip = x + (out_post * self.atten_post(x) if self.atten_post is not None else out_post)
+        out_skip = x + (out_post * self.atten_post(stab) if self.atten_post is not None else out_post)
 
         out_final = self.relu(self.bn(out_skip))
 
@@ -238,7 +271,8 @@ class ActiveBlock(nn.Module):
     def __init__(self, height, width, inplanes, outplanes, conv_planes,
             use_atten, use_atten_space_norm,
             use_transformer, use_arc,
-            dpool_size, always_train_block, stride=1):
+            dpool_size, always_train_block, stride=1,
+            use_stabilizer=False):
         super(ActiveBlock, self).__init__()
 
         self.height = height
@@ -263,6 +297,15 @@ class ActiveBlock(nn.Module):
                 self.num_offset
             ))
 
+        if use_stabilizer:
+            self.stabilizer = nn.Sequential(
+                nn.Conv2d(inplanes, inplanes, 1),
+                nn.BatchNorm2d(inplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM),
+                nn.ReLU(inplace=True))
+            globalvars.exp.feat_stab_stabilizer_parameters += self.stabilizer.parameters()
+        else:
+            self.stabilizer = None
+
         self.transformer_regressor = None
         if use_transformer:
             offset_transformer = OffsetTransformer(
@@ -270,8 +313,10 @@ class ActiveBlock(nn.Module):
                 init_effect_scale=0. if hparams.TRAIN.OFFSET.TRANSFORMER_GROW_ITER > 0 else None)
             if not hparams.MODEL.LEARNABLE_OFFSET.TRANSFORMER.INDEPENDENT:
                 self.transformer_regressor = LocalTransformerRegressor(self.height, self.width, self.inplanes)
+                globalvars.exp.feat_stab_displace_parameters += self.transformer_regressor.parameters()
             else:
                 self.transformer_regressor = IndpendentTransformerRegressorDelegate(self.inplanes)
+                raise NotImplementedError("feat_stab for independent transformer not implemented")
         else:
             offset_transformer = None
 
@@ -328,19 +373,41 @@ class ActiveBlock(nn.Module):
         if not self.always_train_block and globalvars.progress["step"] < hparams.TRAIN.OFFSET.TRAIN_MIN_STEP:
             return x
 
-        out_pre = self.pre_offset(x)
+        use_feat_stab = bool(self.stabilizer is not None)
+        grad_enable = torch.is_grad_enabled() or (use_feat_stab and bool(globalvars.feat_stab_running))
 
-        if self.transformer_regressor:
-            kcos, ksin = self.transformer_regressor(x)
-            out_dis = self.aconv(out_pre, transformer_kcos=kcos, transformer_ksin=ksin)
-        else:
-            out_dis = self.aconv(out_pre)
+        if self.stabilizer is not None:
+            feat_stab_training = use_feat_stab and bool(self.training and globalvars.feat_stab_running)
+            if feat_stab_training:
+                self.stabilizer.train(False)
+            with torch.autograd.set_grad_enabled(grad_enable):
+                stab = self.stabilizer(x)
+            if feat_stab_training:
+                self.stabilizer.train(True)
 
-        if self.atten is not None:
-            out_atten = self.atten(x)
+            if grad_enable and use_feat_stab:
+                save_feat_stab("stabilizer", stab)
         else:
-            out_atten = None
-        out_post = self.post_offset(out_atten * out_dis if out_atten is not None else out_dis)
+            stab = x
+
+        out_pre = self.pre_offset(stab)
+
+        with torch.autograd.set_grad_enabled(grad_enable):
+            if self.transformer_regressor:
+                kcos, ksin = self.transformer_regressor(stab)
+                out_dis = self.aconv(out_pre, transformer_kcos=kcos, transformer_ksin=ksin)
+            else:
+                out_dis = self.aconv(out_pre)
+
+            if self.atten is not None:
+                out_atten = self.atten(stab)
+                out_dis = out_dis * out_atten
+
+            if grad_enable and use_feat_stab:
+                assert self.transformer_regressor is not None
+                save_feat_stab("displace", out_dis)
+
+        out_post = self.post_offset(out_dis)
         if self.downsample is not None:
             x = self.downsample(x)
         out_skip = x + out_post
@@ -355,7 +422,7 @@ class Probe(nn.Module):
         assert probe_type in ["scale", "angle"]
         total_offsets = num_offsets * num_probes
         self.single_source = False
-        self.use_softmax = False
+        self.use_softmax = True
         if self.single_source:
             if dpool_size:
                 self.dpool = DynamicPooling(inplanes, dpool_size)

@@ -26,7 +26,7 @@ from utils.miscs import nprand_init
 from experiments.baseexperiment import BaseExperiment, EpochContext
 from .resnet import resnet18, resnet50, resnet101
 from .offset import OffsetBlock, IndpendentTransformerRegressor, LocalTransformerRegressor, Probe
-from .transformer_exp import TransformerExperiment
+from .featstab import TransformedData, FeatureStabLoss, init_feat_stab, extract_feat_stab, clear_feat_stab
 
 FACTOR = 4
 
@@ -44,6 +44,7 @@ class Experiment(BaseExperiment):
 
 class MainExperiment(BaseExperiment):
     def init(self):
+        globalvars.exp = self
         super().init()
         if self.offset_optimizer is not None:
             self.move_dis_avgmeter = []
@@ -73,6 +74,13 @@ class MainExperiment(BaseExperiment):
         elif self.data_source == "mpii":
             self.init_mpii()
 
+        if hparams.MODEL.FEAT_STAB.ENABLE:
+            self.train_dataset = TransformedData(
+                self.train_dataset,
+                hparams.TRAIN.FEAT_STAB.SCALE_STD,
+                hparams.TRAIN.FEAT_STAB.ROTATE_STD / 180 * np.pi,
+                hparams.TRAIN.FEAT_STAB.TRANSLATION_STD)
+
         if hparams.DATASET.SUBSET is not None:
             if self.train_dataset:
                 self.train_dataset = Subset(self.train_dataset, list(range(int(len(self.train_dataset) * hparams.DATASET.SUBSET))))
@@ -88,6 +96,12 @@ class MainExperiment(BaseExperiment):
         if hparams.MODEL.DETAIL.EARLY_PREDICTOR:
             globalvars.early_predictors = list()
             globalvars.pre_early_predictor_outs = dict()
+
+        if hparams.MODEL.FEAT_STAB.ENABLE:
+            init_feat_stab()
+            self.feat_stab_loss = FeatureStabLoss()
+            self.feat_stab_stabilizer_parameters = list()
+            self.feat_stab_displace_parameters = list()
 
         if hparams.MODEL.USE_GN:
             globalvars.BatchNorm2dImpl = GroupNormWrapper
@@ -472,7 +486,23 @@ class MainExperiment(BaseExperiment):
         if not evaluate_only and not hparams.MODEL.DETAIL.DISABLE_DISPLACE:
             self._save_offsets(step)
 
-    def iter_step(self, epoch_ctx:EpochContext, loss:torch.Tensor, progress:dict):
+    def iter_step(self, epoch_ctx, loss_all, progress):
+        def backward_subset(tensor_vars, params, retain_graph=False):
+            params = list(filter(lambda x: x.requires_grad, params))
+            if len(params) == 0:
+                return
+            grads = torch.autograd.grad(tensor_vars, params, retain_graph=retain_graph)
+            for g, p in zip(grads, params):
+                assert p.requires_grad
+                if p.grad is None:
+                    p.grad = g
+                else:
+                    p.grad += g
+
+        loss = loss_all["loss"]
+        loss_stabilizer = loss_all["loss_stabilizer"]
+        loss_displace = loss_all["loss_displace"]
+
         optimize_weight = self.update_weight
         optimize_offset = bool(self.offset_optimizer and self.update_offset)
         optimize_transformer = bool(self.transformer_optimizer and self.update_transformer)
@@ -485,7 +515,13 @@ class MainExperiment(BaseExperiment):
             self.transformer_optimizer.zero_grad()
         if self.early_predictor_optimizer:
             self.early_predictor_optimizer.zero_grad()
-        loss.backward()
+        
+        loss.backward(retain_graph=loss_stabilizer is not None or loss_displace is not None)
+        if loss_stabilizer is not None:
+            backward_subset(loss_stabilizer * hparams.MODEL.FEAT_STAB.LOSS_STABILIZER_COF, self.feat_stab_stabilizer_parameters, retain_graph=True)
+        if loss_displace is not None:
+            backward_subset(loss_displace * hparams.MODEL.FEAT_STAB.LOSS_DISPLACE_COF, self.feat_stab_displace_parameters)
+        
         if optimize_weight:
             self.optimizer.step()
         if optimize_offset:
@@ -600,13 +636,19 @@ class MainExperiment(BaseExperiment):
         else:
             assert False
 
+        if train and hparams.MODEL.FEAT_STAB.ENABLE:
+            clear_feat_stab()
+
         # dirty trick for debug
         if config.vis:
             globalvars.cur_img = img
-        output_maps, early_predictor_outputs = self.model(img)
+        output_maps, early_predictor_outputs, feat_stab_outputs = self.model(img)
         # dirty trick for debug, release
         if config.vis:
             globalvars.cur_img = None
+
+        if train and hparams.MODEL.FEAT_STAB.ENABLE:
+            clear_feat_stab()
 
         if not hparams.MODEL.DETAIL.FIRST_ESP_ONLY:
             loss_map = 0.
@@ -637,6 +679,36 @@ class MainExperiment(BaseExperiment):
 
         loss = loss_map + loss_dpool
         epoch_ctx.set_iter_data("loss", loss)
+
+        loss_stabilizer = None
+        loss_displace = None
+        if train and hparams.MODEL.FEAT_STAB.ENABLE:
+            assert len(feat_stab_outputs["stabilizer"]) == len(feat_stab_outputs["displace"]) > 0
+            main_device = feat_stab_outputs["stabilizer"][0][0].device
+            main_dtype = feat_stab_outputs["stabilizer"][0][0].dtype
+
+            img_trans = batch["td_img_trans"]
+            scale = batch["td_scale"].to(device=main_device, dtype=main_dtype, non_blocking=True)
+            rotate = batch["td_rotate"].to(device=main_device, dtype=main_dtype, non_blocking=True)
+            translation = batch["td_translation"].to(device=main_device, dtype=main_dtype, non_blocking=True)
+            # mask = batch["td_mask"].to(device=main_device, dtype=main_dtype, non_blocking=True)
+            mask_trans = batch["td_mask_trans"].to(device=main_device, dtype=main_dtype, non_blocking=True)
+
+            clear_feat_stab()
+
+            if config.vis:
+                globalvars.cur_img = img_trans
+            globalvars.feat_stab_running = True
+            with torch.autograd.no_grad():
+                _, _, feat_stab_trans_outputs = self.model(img_trans)
+            globalvars.feat_stab_running = False
+            if config.vis:
+                globalvars.cur_img = None
+
+            clear_feat_stab()
+
+            loss_stabilizer = self.feat_stab_loss(feat_stab_outputs["stabilizer"], feat_stab_trans_outputs["stabilizer"], scale, rotate, translation, mask_trans)
+            loss_displace = self.feat_stab_loss(feat_stab_outputs["displace"], feat_stab_trans_outputs["displace"], scale, rotate, translation, mask_trans)
 
         if not train or config.vis:
             kp_pred, score = parse_map(output_maps[-1], thres=hparams.EVAL.PARSE_THRESHOLD)
@@ -694,7 +766,7 @@ class MainExperiment(BaseExperiment):
                             ax.set_title(datasets.mscoco.PART_LABELS[j])
                     plt.show()
 
-        return loss
+        return {"loss": loss, "loss_stabilizer": loss_stabilizer, "loss_displace": loss_displace}
 
     def summarize_iter(self, epoch_ctx:EpochContext, progress:dict, train:bool):
         tb_writer = globalvars.main_context.get("tb_writer")
@@ -788,9 +860,18 @@ class Controller(nn.Module):
             pre_early_predictor_outs = globalvars.pre_early_predictor_outs[x.device]
             globalvars.pre_early_predictor_outs[x.device] = list()
             assert hparams.MODEL.DETAIL.FIRST_ESP_ONLY or len(pre_early_predictor_outs) == len(self.early_predictor)
-            return out, [self.early_predictor[i](pre_early_predictor_outs[i]) for i in range(len(pre_early_predictor_outs))]
+            early_predictor_outs = [self.early_predictor[i](pre_early_predictor_outs[i]) for i in range(len(pre_early_predictor_outs))]
         else:
-            return out, None
+            early_predictor_outs = None   
+
+        if hparams.MODEL.FEAT_STAB.ENABLE:
+            stabilizer_features = extract_feat_stab("stabilizer", x.device)
+            displace_features = extract_feat_stab("displace", x.device)
+            stab_outputs = {"stabilizer": stabilizer_features, "displace": displace_features}
+        else:
+            stab_outputs = None
+
+        return out, early_predictor_outs, stab_outputs
 
 class MainModel(nn.Module):
     def __init__(self, output_shape, num_points, pretrained=None):
