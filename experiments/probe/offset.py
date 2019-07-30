@@ -110,7 +110,7 @@ class OffsetBlock(nn.Module):
             self.stabilizer = nn.Sequential(
                 nn.Conv2d(inplanes, inplanes, 1),
                 nn.BatchNorm2d(inplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM),
-                nn.ReLU(inplace=True))
+                nn.Sigmoid())
             globalvars.exp.feat_stab_stabilizer_parameters += self.stabilizer.parameters()
         else:
             self.stabilizer = None
@@ -301,7 +301,7 @@ class ActiveBlock(nn.Module):
             self.stabilizer = nn.Sequential(
                 nn.Conv2d(inplanes, inplanes, 1),
                 nn.BatchNorm2d(inplanes, momentum=hparams.TRAIN.OFFSET.BN_MOMENTUM),
-                nn.ReLU(inplace=True))
+                nn.Sigmoid())
             globalvars.exp.feat_stab_stabilizer_parameters += self.stabilizer.parameters()
         else:
             self.stabilizer = None
