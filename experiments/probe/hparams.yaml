@@ -115,8 +115,8 @@ model:
 
     feat_stab:
         enable: true
-        loss_stabilizer_cof: 0.1
-        loss_displace_cof: 0.1
+        loss_stabilizer_cof: 0.02
+        loss_displace_cof: 0.02
 
     ind_transformer:
         pretrained: null
