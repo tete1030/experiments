@@ -249,10 +249,24 @@ class ActiveConv(nn.Module):
             learnable_offset=True,
             regress_offset=hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET,
             transformer=offset_transformer,
-            arc_gaussian=arc_displacer)
+            arc_gaussian=arc_displacer,
+            inited_offsets=self.get_init_offsets(inplanes, hparams.MODEL.ACTIVE_BLOCK.OFFSET_PER_CHANNEL, optimize=False, init_as_grid=True))
         globalvars.displace_mods.append(self.displace)
         self.dpool = dpool
         self.conv = nn.Conv2d(self.num_offsets, outplanes, 1, bias=bias)
+
+    def get_init_offsets(self, inplanes, offset_per_channel, optimize=True, init_as_grid=False):
+        if init_as_grid:
+            size = int(np.sqrt(offset_per_channel))
+            assert size ** 2 == offset_per_channel
+            pos = torch.linspace(-0.1, 0.1, size)
+            grid_x, grid_y = torch.meshgrid(pos, pos)
+            offsets = torch.stack((grid_x.flatten(), grid_y.flatten()), dim=1)
+            offsets = offsets.repeat(inplanes, 1)
+        else:
+            offsets = torch.randn(inplanes * offset_per_channel, 2) * 0.1
+        offsets = nn.Parameter(offsets, requires_grad=optimize)
+        return offsets
 
     def forward(self, inp, transformer_kcos=None, transformer_ksin=None):
         out_pre = inp\
@@ -444,7 +458,7 @@ class Probe(nn.Module):
             regress_offset=hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET,
             runtime_offset=True)
         globalvars.displace_mods.append(self.displace)
-        self.offsets = nn.Parameter(torch.randn(num_offsets, 2) * 0.1)
+        self.offsets = self.init_offsets(num_offsets, optimize=False, init_as_grid=True)
         self.summarizer = nn.Conv2d(num_offsets, 1, 1)
         self.register_buffer("probe_vals", torch.linspace(probe_min, probe_max, num_probes))
         self.num_offsets = num_offsets
@@ -452,6 +466,18 @@ class Probe(nn.Module):
         self.probe_min = probe_min
         self.probe_max = probe_max
         self.probe_type = probe_type
+
+    def init_offsets(self, num_offsets, optimize=True, init_as_grid=False):
+        if init_as_grid:
+            size = int(np.sqrt(num_offsets))
+            assert size ** 2 == num_offsets
+            pos = torch.linspace(-0.2, 0.2, size)
+            grid_x, grid_y = torch.meshgrid(pos, pos)
+            offsets = torch.stack((grid_x.flatten(), grid_y.flatten()), dim=1)
+        else:
+            offsets = torch.randn(num_offsets, 2) * 0.1
+        offsets = nn.Parameter(offsets, requires_grad=optimize)
+        return offsets
 
     def forward(self, x):
         if self.probe_type == "scale":

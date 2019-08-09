@@ -251,7 +251,8 @@ class DisplaceChannel(nn.Module):
                  disable_displace=False, learnable_offset=False, offset_scale=None,
                  regress_offset=False, transformer=None,
                  half_reversed_offset=False, previous_dischan=None,
-                 arc_gaussian=None, runtime_offset=False):
+                 arc_gaussian=None, runtime_offset=False,
+                 inited_offsets=None):
         super(DisplaceChannel, self).__init__()
         self.height = height
         self.width = width
@@ -278,7 +279,10 @@ class DisplaceChannel(nn.Module):
 
             assert self.num_offsets >= num_offsets_prev
             if not runtime_offset:
-                self.offset = nn.parameter.Parameter(torch.zeros(self.num_offsets - num_offsets_prev, 2), requires_grad=True)
+                if inited_offsets is not None:
+                    self.offset = inited_offsets
+                else:
+                    self.offset = nn.parameter.Parameter(torch.zeros(self.num_offsets - num_offsets_prev, 2), requires_grad=True)
             else:
                 self.offset = None
             self.switch_LO_state(learnable_offset)

@@ -73,7 +73,7 @@ model:
         first_esp_only: false
 
     active_block:
-        offset_per_channel: 4
+        offset_per_channel: 9
 
     probe:
         num_offsets: 16
