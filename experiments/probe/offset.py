@@ -250,7 +250,7 @@ class ActiveConv(nn.Module):
             regress_offset=hparams.MODEL.LEARNABLE_OFFSET.REGRESS_OFFSET,
             transformer=offset_transformer,
             arc_gaussian=arc_displacer,
-            inited_offsets=self.get_init_offsets(inplanes, hparams.MODEL.ACTIVE_BLOCK.OFFSET_PER_CHANNEL, optimize=False, init_as_grid=True))
+            inited_offsets=self.get_init_offsets(inplanes, hparams.MODEL.ACTIVE_BLOCK.OFFSET_PER_CHANNEL, optimize=True, init_as_grid=False))
         globalvars.displace_mods.append(self.displace)
         self.dpool = dpool
         self.conv = nn.Conv2d(self.num_offsets, outplanes, 1, bias=bias)
@@ -264,7 +264,8 @@ class ActiveConv(nn.Module):
             offsets = torch.stack((grid_x.flatten(), grid_y.flatten()), dim=1)
             offsets = offsets.repeat(inplanes, 1)
         else:
-            offsets = torch.randn(inplanes * offset_per_channel, 2) * 0.1
+            # offsets = torch.randn(inplanes * offset_per_channel, 2) * 0.1
+            offsets = torch.zeros(inplanes * offset_per_channel, 2)
         offsets = nn.Parameter(offsets, requires_grad=optimize)
         return offsets
 
